@@ -1,0 +1,8 @@
+# Real Bicep parameter files - only the example template is committed.
+# Copy azure/main.example.bicepparam to azure/<name>.bicepparam (e.g. prod.bicepparam)
+# and fill in real values.
+*.bicepparam
+!*.example.bicepparam
+
+# Compiled ARM JSON from `bicep build` / `bicep build-params`.
+*.compiled.json

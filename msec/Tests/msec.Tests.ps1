@@ -35,9 +35,9 @@ Describe 'New-MsecClientAssertion (Key Vault signing)' {
             param($Thumb)
 
             $script:CapturedDigest = $null
-            Mock Invoke-AzKeyVaultKeyOperation -MockWith {
-                $script:CapturedDigest = $ByteArrayValue
-                [pscustomobject]@{ RawResult = [byte[]](100..255) }
+            Mock Invoke-MsecKeyVaultSign -MockWith {
+                $script:CapturedDigest = $Digest
+                [byte[]](100..255)
             }
 
             $jwt = New-MsecClientAssertion `
@@ -101,9 +101,7 @@ Describe 'Get-MsecAccessToken caching' {
 
     It 'hits /token only once across multiple Get-MsecAccessToken calls for the same resource' {
         InModuleScope msec {
-            Mock Invoke-AzKeyVaultKeyOperation -MockWith {
-                [pscustomobject]@{ RawResult = [byte[]](1..10) }
-            }
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'cached'; expires_in = 3600 }
             }
@@ -134,9 +132,7 @@ Describe 'Get-MsecScoreSummary' {
 
     It 'returns Overall first then categories, with correct today / prev-month / diff' {
         $rows = InModuleScope msec {
-            Mock Invoke-AzKeyVaultKeyOperation -MockWith {
-                [pscustomobject]@{ RawResult = [byte[]](1..10) }
-            }
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
             }
@@ -191,8 +187,8 @@ Describe 'Get-MsecScoreSummary' {
         $exposure.PreviousMonthPercent | Should -BeNullOrEmpty
         $exposure.DiffPercent          | Should -BeNullOrEmpty
 
-        $deviceConfig = $rows | Where-Object ScoreType -eq 'DeviceConfiguration'
-        $deviceConfig.TodayPercent         | Should -Be 88
-        $deviceConfig.PreviousMonthPercent | Should -BeNullOrEmpty
+        # DeviceConfiguration is intentionally excluded - the Defender API returns raw points
+        # with no maximum, so it can't be normalized to a comparable percentage.
+        ($rows | Where-Object ScoreType -eq 'DeviceConfiguration') | Should -BeNullOrEmpty
     }
 }

@@ -59,29 +59,8 @@ function New-MsecClientAssertion {
         $sha.Dispose()
     }
 
-    Write-Verbose "Signing JWT assertion via Key Vault $VaultName/$KeyName"
-    $signResult = Invoke-AzKeyVaultKeyOperation `
-        -Operation 'Sign' -Algorithm 'RS256' `
-        -VaultName $VaultName -Name $KeyName `
-        -ByteArrayValue $digest -ErrorAction Stop
-
-    # Cmdlet output shape varies slightly by Az.KeyVault version; accept either RawResult bytes
-    # or a base64 Result string.
-    #
-    # NB: the typed declaration `[byte[]] $sigBytes` matters. PowerShell unrolls a byte[]
-    # returned from an `if` expression and re-collects it into Object[] - that Object[] would
-    # later base64-encode via UTF-8 stringification ("100 101 102 ..."), which is wrong. A typed
-    # variable coerces the assignment back to byte[] so the unrolling doesn't survive.
-    [byte[]] $sigBytes = $null
-    if ($null -ne $signResult.RawResult) {
-        $sigBytes = $signResult.RawResult
-    }
-    elseif ($null -ne $signResult.Result) {
-        $sigBytes = [Convert]::FromBase64String([string]$signResult.Result)
-    }
-    else {
-        throw 'Invoke-AzKeyVaultKeyOperation returned no signature (neither RawResult nor Result).'
-    }
+    [byte[]] $sigBytes = Invoke-MsecKeyVaultSign `
+        -VaultName $VaultName -KeyName $KeyName -Digest $digest -Algorithm 'RS256'
 
     $signingInput + '.' + (ConvertTo-MsecBase64Url $sigBytes)
 }

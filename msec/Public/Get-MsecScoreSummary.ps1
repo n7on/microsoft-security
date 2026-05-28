@@ -9,9 +9,14 @@ function Get-MsecScoreSummary {
           - Overall Microsoft Secure Score + categories (Identity, Device, Apps, Data,
             Infrastructure - whichever your tenant exposes), sourced from Microsoft Graph
             (~90 days of history -> today, previous-month, and diff are populated).
-          - Defender Exposure Score and Device Configuration Score, sourced from the
-            Defender for Endpoint API (current value only -> previous-month/diff blank
-            until you persist your own history).
+          - Defender Exposure Score, sourced from the Defender for Endpoint API (current
+            value only -> previous-month/diff blank until you persist your own history).
+            Note: Exposure is 0-100 where LOWER is better - opposite direction from the
+            posture scores.
+
+        Get-MsecDeviceConfigurationScore is deliberately NOT included here: its API returns
+        raw points (no maximum), so a "percent" row would be misleading. Call that function
+        directly if you need the raw value.
 
         "Today" is the most recent snapshot; "previous month" is the snapshot closest to one
         month before it. Diff is in percentage points (today minus previous month).
@@ -69,15 +74,15 @@ function Get-MsecScoreSummary {
         & $reduce $group.Group
     }
 
-    # Defender (current value only): emit with blank prev-month/diff for column alignment.
-    foreach ($score in @(Get-MsecExposureScore; Get-MsecDeviceConfigurationScore)) {
-        [PSCustomObject]@{
-            ScoreType            = $score.ScoreType
-            TodayDate            = $score.Date.ToString('yyyy-MM-dd')
-            TodayPercent         = $score.ScorePercent
-            PreviousMonthDate    = $null
-            PreviousMonthPercent = $null
-            DiffPercent          = $null
-        }
+    # Defender Exposure (current value only): emit with blank prev-month/diff for column
+    # alignment. DeviceConfiguration is intentionally excluded - see function description.
+    $exposure = Get-MsecExposureScore
+    [PSCustomObject]@{
+        ScoreType            = $exposure.ScoreType
+        TodayDate            = $exposure.Date.ToString('yyyy-MM-dd')
+        TodayPercent         = $exposure.ScorePercent
+        PreviousMonthDate    = $null
+        PreviousMonthPercent = $null
+        DiffPercent          = $null
     }
 }

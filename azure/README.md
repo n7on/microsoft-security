@@ -1,30 +1,44 @@
 # Azure infrastructure for `msec`
 
-Provisions the Key Vault that holds the certificate the [msec](../msec) PowerShell module uses for app authentication.
-
-## What gets created
+Provisions the Azure resources behind the [msec](../msec) PowerShell module:
 
 | Resource | Purpose |
 |---|---|
-| **Key Vault** (`Microsoft.KeyVault/vaults`) | Stores the certificate that authenticates the msec app registration. RBAC-enabled. Soft-delete + purge protection on by default. |
+| **Key Vault** (`Microsoft.KeyVault/vaults`) | Holds the certificate that authenticates the msec app registration. RBAC-enabled. Soft-delete + purge protection on by default. |
+| **Storage Account (ADLS Gen2)** + `scores` container | Holds monthly score snapshots that Power BI can plot trends from. StorageV2 with hierarchical namespace (Data Lake), Standard_LRS, Hot. Shared-key disabled (AAD-only). HTTPS + TLS 1.2 enforced. |
 
 ## What is **not** in this template
 
-- **RBAC role assignments on the vault** — managed outside this template.
+- **RBAC role assignments** on either resource — managed outside this template.
 - The Entra **app registration** — created at runtime by `New-MsecApp` via Microsoft Graph.
 - The **certificate itself** — issued inside the vault by `New-MsecApp` via `Add-AzKeyVaultCertificate`.
+- Writing **score snapshots** into the storage account — that's a job for a scheduled run of the msec module (see "Next step" below).
 
 ## Roles you'll need to grant (elsewhere)
 
-The vault is RBAC-only; whoever manages role assignments should grant:
+Both resources are RBAC-only; whoever manages role assignments should grant:
 
-| Role (built-in) | To whom | Why |
-|---|---|---|
-| **Key Vault Certificates Officer** | The setup admin who will run `New-MsecApp` | Lets them create the cert inside the vault. |
-| **Key Vault Certificate User** | Anyone who will run `Connect-Msec` | Read the cert's metadata (thumbprint + key name) — the JWT `x5t` header needs the thumbprint. |
-| **Key Vault Crypto User** | Anyone who will run `Connect-Msec` | Sign the JWT client assertion via the Key Vault Sign API. **The private key never leaves the vault.** |
+| Role (built-in) | On | To whom | Why |
+|---|---|---|---|
+| **Key Vault Certificates Officer** | Key Vault | Setup admin (runs `New-MsecApp` once) | Create the certificate. |
+| **Key Vault Certificate User** | Key Vault | Report users (run `Connect-Msec`) | Read cert metadata + tags. |
+| **Key Vault Crypto User** | Key Vault | Report users | Sign JWT client assertions via Key Vault. |
+| **Storage Blob Data Contributor** | Storage Account | Whoever appends snapshots (the report-generating identity) | Upload the monthly CSV. |
+| **Storage Blob Data Reader** | Storage Account | Power BI users / Power BI Service workspace identity | Read the snapshots for reporting. |
 
-Note: report users do **not** need *Key Vault Secrets User*. msec deliberately avoids fetching the PFX/private key — Key Vault performs the signing.
+Note: msec does **not** need *Key Vault Secrets User* — the certificate's private key never leaves the vault.
+
+## Power BI access
+
+Because shared-key auth is disabled, Power BI connects via **AAD (OAuth2 organizational account)**:
+
+- **Power BI Desktop**: Get Data → Azure → **Azure Data Lake Storage Gen2**, paste the `dfsEndpoint` URL, choose *Organizational account* and sign in. (The "Azure Blob Storage" connector also works against ADLS Gen2, but the ADLS Gen2 connector understands the directory hierarchy properly.)
+- **Power BI Service** (scheduled refresh): use a service principal or the workspace's managed identity with *Storage Blob Data Reader* on the account. Configure under *Workspace settings → Data source credentials*.
+
+The endpoints are in the deployment outputs:
+- `dfsEndpoint` — for the ADLS Gen2 connector (preferred when HNS is on)
+- `blobEndpoint` — for the legacy blob connector / tools that don't know about HNS
+- `scoresContainerName` — the container (a.k.a. "filesystem" in ADLS Gen2 terminology)
 
 ## Deploy
 
@@ -32,7 +46,7 @@ Note: report users do **not** need *Key Vault Secrets User*. msec deliberately a
    ```bash
    az group create -n rg-mysec -l westeurope
    ```
-2. Copy the example params file to a real one (gitignored — see root `.gitignore`) and set a globally-unique `keyVaultName`:
+2. Copy the example params file to a real one (gitignored — see root `.gitignore`) and set unique `keyVaultName` + `storageAccountName`:
    ```bash
    cp azure/main.example.bicepparam azure/prod.bicepparam
    # edit azure/prod.bicepparam
@@ -52,7 +66,7 @@ Note: report users do **not** need *Key Vault Secrets User*. msec deliberately a
      -TemplateParameterFile ./azure/prod.bicepparam
    ```
 
-## What to do after the vault exists
+## What to do after the resources exist
 
 ```powershell
 # One-time, by a setup admin (with Key Vault Certificates Officer on the vault):
@@ -67,8 +81,13 @@ Connect-Msec -KeyVaultName 'kv-mysec'   # defaults: CertificateName = 'msec-app'
 Get-MsecScoreSummary | Format-Table -AutoSize
 ```
 
+## Next step: persisting snapshots
+
+The storage account is provisioned but currently empty. To start trending scores in Power BI, the next step is a small msec helper (or a scheduled job) that runs `Get-MsecScoreSummary`, serializes it to CSV, and uploads it to the `scores` container. Each monthly run leaves a new dated file behind; Power BI's *Folder* connector picks up all of them.
+
 ## Defaults worth knowing
 
-- `enablePurgeProtection: true` — recommended, but **once on it cannot be turned off**, and the vault cannot be permanently deleted before `softDeleteRetentionInDays` elapses. If that is too strict for a learning environment, override to `false` in your `.bicepparam`.
-- `publicNetworkAccess: Enabled`, `networkAcls.defaultAction: Allow` — fine for an internal tool consumed from admin laptops. For production tightening, switch to private endpoints / IP allow-listing.
-- Standard SKU — sufficient; the Premium HSM SKU is only needed if you must keep the private key in an HSM.
+- **Key Vault `enablePurgeProtection: true`** — once on it cannot be turned off, and the vault cannot be permanently deleted before `softDeleteRetentionInDays` elapses. Override to `false` in your `.bicepparam` for test/learning environments.
+- **Storage `allowSharedKeyAccess: false`** — no account keys. Everything is AAD/RBAC. If a tool only supports key auth, this template won't let it in (which is the point).
+- **Storage `isHnsEnabled: true`** (ADLS Gen2) — hierarchical namespace is set at creation and **cannot be disabled** later. Same cost as flat blob, gives you real directories, POSIX-style ACLs, and native compatibility with Synapse / Databricks / Fabric / OneLake. If you'd rather start with plain blob, change this to `false` *before* the first deployment.
+- **`publicNetworkAccess: Enabled`** on both — fine for an internal tool consumed from admin laptops and Power BI. For production tightening, switch to private endpoints / IP allow-listing.

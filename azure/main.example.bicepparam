@@ -13,6 +13,9 @@ using './main.bicep'
 // Globally unique, 3-24 chars, alphanumeric + dashes.
 param keyVaultName = 'kv-CHANGEME'
 
+// Globally unique, 3-24 chars, lowercase letters + digits only (no dashes).
+param storageAccountName = 'stCHANGEME'
+
 param tags = {
   application: 'msec'
   purpose: 'security-posture-reporting'

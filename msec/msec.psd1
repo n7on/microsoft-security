@@ -30,7 +30,10 @@
         'Get-MsecInfrastructureSecureScore',
         'Get-MsecExposureScore',
         'Get-MsecDeviceConfigurationScore',
-        'Get-MsecScoreSummary'
+        'Get-MsecScoreSummary',
+        'Get-MsecIntuneConfiguration',
+        'Get-MsecIntuneCompliancePolicy',
+        'Export-MsecIntuneConfiguration'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

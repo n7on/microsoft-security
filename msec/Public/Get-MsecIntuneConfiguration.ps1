@@ -108,9 +108,15 @@ function Get-MsecIntuneConfiguration {
         }
 
         if ($IncludeStatus) {
-            $statusArgs = @{ Id = $id; Source = $sourceTag }
-            if ($scStatusCache) { $statusArgs['SettingsCatalogStatusCache'] = $scStatusCache }
-            $status = Get-MsecPolicyStatus @statusArgs
+            # Skip the per-policy status call when AssignmentCount=0 - the answer is
+            # "all zeros / NotDeployed" regardless of what the API would return, and
+            # the call would be wasted (or, for Templates, a real network round-trip).
+            $status = if ($assignmentCount -gt 0) {
+                $statusArgs = @{ Id = $id; Source = $sourceTag }
+                if ($scStatusCache) { $statusArgs['SettingsCatalogStatusCache'] = $scStatusCache }
+                Get-MsecPolicyStatus @statusArgs
+            }
+            else { $null }
 
             # Status rollup - a single label that summarises everything else.
             #   NotDeployed   : AssignmentCount=0   (no devices targeted)
@@ -136,12 +142,26 @@ function Get-MsecIntuneConfiguration {
         $obj.LastModifiedDateTime = if ($modified) { [datetime]$modified } else { $null }
 
         if ($IncludeStatus) {
-            $obj.SuccessCount       = $status.SuccessCount
-            $obj.ErrorCount         = $status.ErrorCount
-            $obj.ConflictCount      = $status.ConflictCount
-            $obj.NotApplicableCount = $status.NotApplicableCount
-            $obj.PendingCount       = $status.PendingCount
-            $obj.SuccessPercent     = $status.SuccessPercent
+            # NotDeployed and NotReporting both mean "no devices are effectively reporting
+            # status against this policy" (either no devices targeted, or none currently
+            # evaluating it). Zero across the board is the consistent and meaningful answer
+            # in both cases - avoids confusing mixes of "0" and blank in the same row.
+            if ($obj.Status -in 'NotDeployed', 'NotReporting') {
+                $obj.SuccessCount       = 0
+                $obj.ErrorCount         = 0
+                $obj.ConflictCount      = 0
+                $obj.NotApplicableCount = 0
+                $obj.PendingCount       = 0
+                $obj.SuccessPercent     = 0
+            }
+            else {
+                $obj.SuccessCount       = $status.SuccessCount
+                $obj.ErrorCount         = $status.ErrorCount
+                $obj.ConflictCount      = $status.ConflictCount
+                $obj.NotApplicableCount = $status.NotApplicableCount
+                $obj.PendingCount       = $status.PendingCount
+                $obj.SuccessPercent     = $status.SuccessPercent
+            }
         }
 
         [PSCustomObject]$obj

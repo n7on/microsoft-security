@@ -337,7 +337,46 @@ Describe 'Get-MsecIntuneConfiguration' {
         $sc.Status  | Should -Be 'Degraded'  # 75% with an error
     }
 
-    It 'Status is NotReporting when assigned but no status data for the policy' {
+    It 'NotDeployed policies get zero counts (not nulls) on every status field' {
+        $rows = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/beta/deviceManagement/configurationPolicies\?' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{
+                        id = 'sc-unassigned'; name = 'Unassigned SC policy'; platforms = 'windows10'
+                        assignments = @()  # AssignmentCount = 0 -> NotDeployed
+                    }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/deviceConfigurations\?' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{
+                        id = 'tpl-unassigned'; displayName = 'Unassigned Template'
+                        '@odata.type' = '#microsoft.graph.windows10GeneralConfiguration'
+                        assignments = @()
+                    }
+                ) }
+            }
+            Mock Get-MsecSettingsCatalogStatusReport -MockWith { @{} }
+
+            Get-MsecIntuneConfiguration -IncludeStatus
+        }
+
+        foreach ($r in $rows) {
+            $r.Status             | Should -Be 'NotDeployed'
+            $r.SuccessCount       | Should -Be 0
+            $r.ErrorCount         | Should -Be 0
+            $r.ConflictCount      | Should -Be 0
+            $r.NotApplicableCount | Should -Be 0
+            $r.PendingCount       | Should -Be 0
+            $r.SuccessPercent     | Should -Be 0
+        }
+    }
+
+    It 'Status is NotReporting when assigned but no status data, and all counts are zero (consistent with NotDeployed)' {
         $rows = InModuleScope msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -361,9 +400,17 @@ Describe 'Get-MsecIntuneConfiguration' {
             Get-MsecIntuneConfiguration -IncludeStatus
         }
 
-        $rows[0].AssignmentCount | Should -Be 1
-        $rows[0].Status          | Should -Be 'NotReporting'
-        $rows[0].SuccessPercent  | Should -BeNullOrEmpty
+        $r = $rows[0]
+        $r.AssignmentCount    | Should -Be 1
+        $r.Status             | Should -Be 'NotReporting'
+        # NotReporting now zeros every status field (consistent with NotDeployed) so the
+        # table doesn't mix blanks and integers per row.
+        $r.SuccessCount       | Should -Be 0
+        $r.ErrorCount         | Should -Be 0
+        $r.ConflictCount      | Should -Be 0
+        $r.NotApplicableCount | Should -Be 0
+        $r.PendingCount       | Should -Be 0
+        $r.SuccessPercent     | Should -Be 0
     }
 }
 

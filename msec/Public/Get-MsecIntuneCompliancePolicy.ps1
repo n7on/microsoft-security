@@ -77,7 +77,12 @@ function Get-MsecIntuneCompliancePolicy {
         }
 
         if ($IncludeStatus) {
-            $status = Get-MsecPolicyStatus -Id $c.id -Source 'CompliancePolicy'
+            # Skip the per-policy status call when AssignmentCount=0 - the answer is
+            # "all zeros / NotDeployed" regardless. Saves an API round-trip per row.
+            $status = if ($assignmentCount -gt 0) {
+                Get-MsecPolicyStatus -Id $c.id -Source 'CompliancePolicy'
+            }
+            else { $null }
 
             # Status rollup - see Get-MsecIntuneConfiguration for the same semantics.
             $obj.Status = if ($assignmentCount -eq 0) {
@@ -98,12 +103,23 @@ function Get-MsecIntuneCompliancePolicy {
         $obj.LastModifiedDateTime = if ($c.lastModifiedDateTime) { [datetime]$c.lastModifiedDateTime } else { $null }
 
         if ($IncludeStatus) {
-            $obj.SuccessCount       = $status.SuccessCount
-            $obj.ErrorCount         = $status.ErrorCount
-            $obj.ConflictCount      = $status.ConflictCount
-            $obj.NotApplicableCount = $status.NotApplicableCount
-            $obj.PendingCount       = $status.PendingCount
-            $obj.SuccessPercent     = $status.SuccessPercent
+            # NotDeployed / NotReporting -> all counts 0 (see Get-MsecIntuneConfiguration).
+            if ($obj.Status -in 'NotDeployed', 'NotReporting') {
+                $obj.SuccessCount       = 0
+                $obj.ErrorCount         = 0
+                $obj.ConflictCount      = 0
+                $obj.NotApplicableCount = 0
+                $obj.PendingCount       = 0
+                $obj.SuccessPercent     = 0
+            }
+            else {
+                $obj.SuccessCount       = $status.SuccessCount
+                $obj.ErrorCount         = $status.ErrorCount
+                $obj.ConflictCount      = $status.ConflictCount
+                $obj.NotApplicableCount = $status.NotApplicableCount
+                $obj.PendingCount       = $status.PendingCount
+                $obj.SuccessPercent     = $status.SuccessPercent
+            }
         }
 
         [PSCustomObject]$obj

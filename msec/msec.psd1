@@ -15,7 +15,9 @@
     # by the cert, and all API calls go through Invoke-RestMethod.
     RequiredModules   = @(
         'Az.Accounts',
-        'Az.KeyVault'
+        'Az.KeyVault',
+        'Az.Compute',
+        'Az.ResourceGraph'
     )
 
     FunctionsToExport = @(
@@ -33,7 +35,10 @@
         'Get-MsecScoreSummary',
         'Get-MsecIntuneConfiguration',
         'Get-MsecIntuneCompliancePolicy',
-        'Export-MsecIntuneConfiguration'
+        'Export-MsecIntuneConfiguration',
+        'Search-MsecGraph',
+        'Invoke-MsecVMScriptLinux',
+        'Invoke-MsecVMScriptWindows'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

@@ -1,0 +1,20 @@
+// All Azure VMs across every accessible subscription, projected to msec's flat shape.
+//
+// Loaded by Search-MsecGraph -ResourceType VM.
+// No filtering is applied here - filter the output in PowerShell with Where-Object.
+
+Resources
+| where type =~ 'microsoft.compute/virtualmachines'
+| extend Os        = tostring(properties.storageProfile.osDisk.osType),
+         PowerCode = tostring(properties.extended.instanceView.powerState.code),
+         Running   = tostring(properties.extended.instanceView.powerState.code) == 'PowerState/running',
+         Size      = tostring(properties.hardwareProfile.vmSize)
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          Os,
+          Running,
+          PowerCode,
+          Location          = location,
+          Size,
+          SubscriptionId    = subscriptionId,
+          Id                = id

@@ -11,6 +11,10 @@ foreach ($function in @($private + $public)) {
     }
 }
 
+# Module root path - used by functions that need to find bundled assets such as
+# the Scripts/Linux and Scripts/Windows folders.
+$script:MsecModuleRoot = $PSScriptRoot
+
 # Module-scoped session populated by Connect-Msec, used by all score functions.
 # The private key NEVER leaves Key Vault - signing happens via Invoke-AzKeyVaultKeyOperation.
 # Shape:

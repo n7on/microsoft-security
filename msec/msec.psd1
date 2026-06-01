@@ -36,9 +36,8 @@
         'Get-MsecIntuneConfiguration',
         'Get-MsecIntuneCompliancePolicy',
         'Export-MsecIntuneConfiguration',
-        'Search-MsecGraph',
-        'Invoke-MsecVMScriptLinux',
-        'Invoke-MsecVMScriptWindows'
+        'Search-MsecResourceGraph',
+        'Invoke-MsecVMScript'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

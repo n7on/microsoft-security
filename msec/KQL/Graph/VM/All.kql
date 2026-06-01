@@ -1,6 +1,6 @@
 // All Azure VMs across every accessible subscription, projected to msec's flat shape.
 //
-// Loaded by Search-MsecGraph -ResourceType VM.
+// Loaded by Search-MsecResourceGraph -ResourceType VM.
 // No filtering is applied here - filter the output in PowerShell with Where-Object.
 
 Resources

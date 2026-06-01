@@ -1,49 +1,69 @@
-function Invoke-MsecVMScriptWindows {
+function Invoke-MsecVMScript {
     <#
     .SYNOPSIS
-        Runs a bundled PowerShell script on one or more Azure Windows VMs.
+        Runs a bundled script on one or more Azure VMs. -Os selects the script flavour
+        (Linux .sh under Scripts/Linux/ or Windows .ps1 under Scripts/Windows/).
 
     .DESCRIPTION
         Pipeline-friendly. Consumes the Name + ResourceGroupName columns from any VM source
-        (Search-MsecGraph, Get-AzVM, hand-built objects) - filter to Windows yourself before
-        piping:
+        (Search-MsecResourceGraph, Get-AzVM, hand-built objects). Filter to the target OS yourself
+        before piping - this function does not look at each row's Os property:
 
-            Search-MsecGraph -ResourceType VM | Where-Object Os -eq 'Windows' |
-                Invoke-MsecVMScriptWindows -ScriptName os-info
+            Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
+                Invoke-MsecVMScript -Os Linux -ScriptName os-info
 
-        -ScriptName tab-completes from msec/Scripts/Windows/*.ps1. Names not present there
-        are accepted at parameter binding (no class-based ValidateSet) but rejected
-        immediately in the function's begin block with a clear path-not-found error - same
-        pattern as Search-MsecGraph.
+        -ScriptName tab-completes from the Scripts/<Os>/ folder based on whichever -Os value
+        you've already entered on the command line (so type -Os first, then -ScriptName, for
+        completion to work properly).
 
-        Execution uses Invoke-AzVMRunCommand with CommandId='RunPowerShellScript'. Scripts
-        run as SYSTEM via the VM agent. RBAC: caller needs
+        Linux scripts run via CommandId='RunShellScript' (as root); Windows scripts via
+        CommandId='RunPowerShellScript' (as SYSTEM). RBAC: caller needs
         Microsoft.Compute/virtualMachines/runCommand/action on each VM (Virtual Machine
         Contributor covers it).
 
+    .PARAMETER Os
+        'Linux' or 'Windows'. Determines which Scripts/<Os>/ folder is used, the script
+        extension (.sh / .ps1), and the run-command id.
+
     .PARAMETER ScriptName
-        Base name (no extension) of the script under msec/Scripts/Windows/. Tab-completes
-        from that folder.
+        Base name (no extension) of the script under msec/Scripts/<Os>/. Tab-completes from
+        that folder once -Os is set. Invalid names produce a clear "Linux/Windows script
+        not found" error in the function's begin block.
 
     .PARAMETER Name
         VM name. Bound from the pipeline.
     .PARAMETER ResourceGroupName
         VM's resource group. Bound from the pipeline.
 
+    .EXAMPLE
+        Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
+            Invoke-MsecVMScript -Os Linux -ScriptName os-info | Format-Table
+
+    .EXAMPLE
+        Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Windows' |
+            Invoke-MsecVMScript -Os Windows -ScriptName os-info
+
     .OUTPUTS
-        PSCustomObject per VM: VmName, ResourceGroupName, ScriptName, Status, Output, Error,
-        DurationSeconds.
+        PSCustomObject per VM: VmName, ResourceGroupName, Os, ScriptName, Status, Output,
+        Error, DurationSeconds.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [ValidateSet('Linux', 'Windows')]
+        [string] $Os,
+
+        [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+            $os = $fakeBoundParameters['Os']
+            if (-not $os) { return }
             $base = (Get-Module msec).ModuleBase
             if (-not $base) { return }
-            $folder = Join-Path $base 'Scripts/Windows'
+            $folder = Join-Path $base "Scripts/$os"
             if (-not (Test-Path -LiteralPath $folder)) { return }
-            Get-ChildItem -LiteralPath $folder -Filter *.ps1 -File |
+            $filter = if ($os -eq 'Linux') { '*.sh' } else { '*.ps1' }
+            Get-ChildItem -LiteralPath $folder -Filter $filter -File |
                 Where-Object { $_.BaseName -like "$wordToComplete*" } |
                 ForEach-Object {
                     [System.Management.Automation.CompletionResult]::new(
@@ -61,22 +81,26 @@ function Invoke-MsecVMScriptWindows {
 
     begin {
         if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
-            throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecVMScriptWindows.'
+            throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecVMScript.'
         }
-        $scriptPath = Join-Path $script:MsecModuleRoot "Scripts/Windows/$ScriptName.ps1"
+
+        $extension  = if ($Os -eq 'Linux') { '.sh' }            else { '.ps1' }
+        $commandId  = if ($Os -eq 'Linux') { 'RunShellScript' } else { 'RunPowerShellScript' }
+        $scriptPath = Join-Path $script:MsecModuleRoot "Scripts/$Os/$ScriptName$extension"
+
         if (-not (Test-Path -LiteralPath $scriptPath)) {
-            throw "Windows script not found: $scriptPath"
+            throw "$Os script not found: $scriptPath"
         }
     }
 
     process {
-        Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name (Windows) via RunPowerShellScript"
+        Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os) via $commandId"
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $resp = $null
         $errorMessage = $null
         try {
             $resp = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -Name $Name `
-                -CommandId 'RunPowerShellScript' -ScriptPath $scriptPath -ErrorAction Stop
+                -CommandId $commandId -ScriptPath $scriptPath -ErrorAction Stop
         }
         catch {
             $errorMessage = $_.Exception.Message
@@ -105,6 +129,7 @@ function Invoke-MsecVMScriptWindows {
         [PSCustomObject]@{
             VmName            = $Name
             ResourceGroupName = $ResourceGroupName
+            Os                = $Os
             ScriptName        = $ScriptName
             Status            = $status
             Output            = $stdout

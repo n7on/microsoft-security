@@ -466,7 +466,7 @@ Describe 'Get-MsecIntuneCompliancePolicy' {
     }
 }
 
-Describe 'Search-MsecGraph' {
+Describe 'Search-MsecResourceGraph' {
     It 'loads KQL/Graph/VM/All.kql by convention and shuttles it to Search-AzGraph unchanged' {
         $result = InModuleScope msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
@@ -478,7 +478,7 @@ Describe 'Search-MsecGraph' {
                 )
             }
 
-            $rows = Search-MsecGraph -ResourceType VM
+            $rows = Search-MsecResourceGraph -ResourceType VM
             [pscustomobject]@{ Rows = $rows; Query = $script:CapturedQuery }
         }
 
@@ -509,7 +509,7 @@ Describe 'Search-MsecGraph' {
                     )
                 }
             }
-            Search-MsecGraph -ResourceType VM
+            Search-MsecResourceGraph -ResourceType VM
         }
 
         # We should see two rows, with the actual VM properties accessible for filtering.
@@ -524,7 +524,7 @@ Describe 'Search-MsecGraph' {
         InModuleScope msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Search-AzGraph -MockWith { @() }
-            { Search-MsecGraph -ResourceType VM -Name 'NoSuchQuery' } |
+            { Search-MsecResourceGraph -ResourceType VM -Name 'NoSuchQuery' } |
                 Should -Throw -ExpectedMessage 'KQL query file not found:*'
         }
     }
@@ -535,20 +535,20 @@ Describe 'Search-MsecGraph' {
     # scope available, whereas the real completion engine does not. These tests would
     # catch a regression to module-scoped state usage in the completer scriptblock.
     It 'tab completion for -ResourceType returns folders containing .kql files' {
-        $line = 'Search-MsecGraph -ResourceType '
+        $line = 'Search-MsecResourceGraph -ResourceType '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'VM'
     }
 
     It 'tab completion for -Name returns the .kql file basenames in the chosen ResourceType folder' {
-        $line = 'Search-MsecGraph -ResourceType VM -Name '
+        $line = 'Search-MsecResourceGraph -ResourceType VM -Name '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'All'
     }
 
-    It 'pipes cleanly through Where-Object into Invoke-MsecVMScriptLinux' {
-        # End-to-end: ARG-shaped rows -> Where-Object -> OS-specific runner. Validates that
-        # Search-MsecGraph's output (Name + ResourceGroupName) binds correctly to the runner.
+    It 'pipes cleanly through Where-Object into Invoke-MsecVMScript' {
+        # End-to-end: ARG-shaped rows -> Where-Object -> runner. Validates that
+        # Search-MsecResourceGraph's output (Name + ResourceGroupName) binds correctly to the runner.
         $captured = InModuleScope msec {
             Mock Get-AzContext  -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Search-AzGraph -MockWith {
@@ -563,9 +563,9 @@ Describe 'Search-MsecGraph' {
                 [pscustomobject]@{ Status = 'Succeeded'; Value = @() }
             }
 
-            Search-MsecGraph -ResourceType VM |
+            Search-MsecResourceGraph -ResourceType VM |
                 Where-Object Os -eq Linux |
-                Invoke-MsecVMScriptLinux -ScriptName os-info |
+                Invoke-MsecVMScript -Os Linux -ScriptName os-info |
                 Out-Null
             ,$script:CapturedVmNames
         }
@@ -575,8 +575,8 @@ Describe 'Search-MsecGraph' {
     }
 }
 
-Describe 'Invoke-MsecVMScriptLinux' {
-    It 'runs the bundled .sh script via RunShellScript and projects the response' {
+Describe 'Invoke-MsecVMScript' {
+    It '-Os Linux runs the bundled .sh via RunShellScript and projects the response' {
         $results = InModuleScope msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             $script:CapturedScriptPath = $null
@@ -594,37 +594,19 @@ Describe 'Invoke-MsecVMScriptLinux' {
             }
 
             $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' }
-            $out = $vm | Invoke-MsecVMScriptLinux -ScriptName os-info
+            $out = $vm | Invoke-MsecVMScript -Os Linux -ScriptName os-info
             [pscustomobject]@{ Out = $out; Path = $script:CapturedScriptPath; Cmd = $script:CapturedCommandId }
         }
 
         $results.Cmd        | Should -Be 'RunShellScript'
         $results.Path       | Should -Match '/Scripts/Linux/os-info\.sh$'
         $results.Out.VmName | Should -Be 'lin-1'
+        $results.Out.Os     | Should -Be 'Linux'
         $results.Out.Status | Should -Be 'Succeeded'
         $results.Out.Output | Should -Match 'os-info\.sh'
     }
 
-    It 'throws a clear "Linux script not found" error at runtime when the .sh does not exist' {
-        InModuleScope msec {
-            Mock Get-AzContext         -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
-            Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called' }
-
-            $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' }
-            { $vm | Invoke-MsecVMScriptLinux -ScriptName does-not-exist } |
-                Should -Throw -ExpectedMessage 'Linux script not found:*'
-        }
-    }
-
-    It 'tab completion for -ScriptName returns the .sh basenames in Scripts/Linux' {
-        $line = 'Invoke-MsecVMScriptLinux -ScriptName '
-        $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
-        $result.CompletionMatches.CompletionText | Should -Contain 'os-info'
-    }
-}
-
-Describe 'Invoke-MsecVMScriptWindows' {
-    It 'runs the bundled .ps1 script via RunPowerShellScript and projects the response' {
+    It '-Os Windows runs the bundled .ps1 via RunPowerShellScript and projects the response' {
         $results = InModuleScope msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             $script:CapturedScriptPath = $null
@@ -642,30 +624,63 @@ Describe 'Invoke-MsecVMScriptWindows' {
             }
 
             $vm = [pscustomobject]@{ Name = 'win-1'; ResourceGroupName = 'rg-a' }
-            $out = $vm | Invoke-MsecVMScriptWindows -ScriptName os-info
+            $out = $vm | Invoke-MsecVMScript -Os Windows -ScriptName os-info
             [pscustomobject]@{ Out = $out; Path = $script:CapturedScriptPath; Cmd = $script:CapturedCommandId }
         }
 
         $results.Cmd        | Should -Be 'RunPowerShellScript'
         $results.Path       | Should -Match '/Scripts/Windows/os-info\.ps1$'
         $results.Out.VmName | Should -Be 'win-1'
+        $results.Out.Os     | Should -Be 'Windows'
         $results.Out.Status | Should -Be 'Succeeded'
         $results.Out.Output | Should -Match 'os-info\.ps1'
     }
 
-    It 'throws a clear "Windows script not found" error at runtime when the .ps1 does not exist' {
+    It 'falls back to concatenating Value[].Message when the StdOut/StdErr Code filter misses' {
+        # Reproduces the user-reported case: script succeeded, took ~30s, but Output came
+        # back blank because Az.Compute's Code field didn't contain 'StdOut'.
+        $out = InModuleScope msec {
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Invoke-AzVMRunCommand -MockWith {
+                [pscustomobject]@{
+                    Status = 'Succeeded'
+                    Value  = @(
+                        # Code without StdOut/StdErr in it - the preferred filter would miss this.
+                        [pscustomobject]@{ Code = 'ProvisioningState/succeeded'; Message = 'hostname: web-test' }
+                    )
+                }
+            }
+
+            [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' } |
+                Invoke-MsecVMScript -Os Linux -ScriptName os-info
+        }
+
+        $out.Status | Should -Be 'Succeeded'
+        $out.Output | Should -Be 'hostname: web-test'
+    }
+
+    It 'throws a clear "<Os> script not found" error at runtime when the script does not exist' {
         InModuleScope msec {
             Mock Get-AzContext         -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called' }
 
-            $vm = [pscustomobject]@{ Name = 'win-1'; ResourceGroupName = 'rg-a' }
-            { $vm | Invoke-MsecVMScriptWindows -ScriptName does-not-exist } |
+            $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' }
+            { $vm | Invoke-MsecVMScript -Os Linux -ScriptName does-not-exist } |
+                Should -Throw -ExpectedMessage 'Linux script not found:*'
+
+            { $vm | Invoke-MsecVMScript -Os Windows -ScriptName does-not-exist } |
                 Should -Throw -ExpectedMessage 'Windows script not found:*'
         }
     }
 
-    It 'tab completion for -ScriptName returns the .ps1 basenames in Scripts/Windows' {
-        $line = 'Invoke-MsecVMScriptWindows -ScriptName '
+    It 'tab completion for -ScriptName returns the right basenames based on -Os' {
+        # With -Os Linux already in the command line, completion should look in Scripts/Linux.
+        $line = 'Invoke-MsecVMScript -Os Linux -ScriptName '
+        $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
+        $result.CompletionMatches.CompletionText | Should -Contain 'os-info'
+
+        # And with -Os Windows, it should look in Scripts/Windows.
+        $line = 'Invoke-MsecVMScript -Os Windows -ScriptName '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'os-info'
     }

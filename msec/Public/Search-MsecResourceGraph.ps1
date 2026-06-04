@@ -114,6 +114,15 @@ function Search-MsecResourceGraph {
     }
     $query = Get-Content -LiteralPath $path -Raw
 
+    # Default to EVERY accessible subscription. Search-AzGraph's own default is just
+    # the current context's sub, which is wrong for audit scenarios - the whole point
+    # of using Resource Graph is to span the estate. Enumerate up front and pass the
+    # explicit list so the user sees what's being queried.
+    if (-not $SubscriptionId) {
+        $SubscriptionId = (Get-AzSubscription -ErrorAction Stop).Id
+        Write-Verbose "Querying $($SubscriptionId.Count) accessible subscription(s): $($SubscriptionId -join ', ')"
+    }
+
     Write-Verbose ("Search-AzGraph query (first $First rows):" + [Environment]::NewLine + $query)
     $azParams = @{ Query = $query; First = $First; ErrorAction = 'Stop' }
     if ($SubscriptionId) { $azParams['Subscription'] = $SubscriptionId }

@@ -6,3 +6,5 @@
 
 # Compiled ARM JSON from `bicep build` / `bicep build-params`.
 *.compiled.json
+
+.DS_Store

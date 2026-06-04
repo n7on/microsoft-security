@@ -2,72 +2,115 @@ function Invoke-MsecVMScript {
     <#
     .SYNOPSIS
         Runs a bundled script on one or more Azure VMs. -Os selects the script flavour
-        (Linux .sh under Scripts/Linux/ or Windows .ps1 under Scripts/Windows/).
+        (Linux .sh under Scripts/VM/Linux/ or Windows .ps1 under Scripts/VM/Windows/).
 
     .DESCRIPTION
-        Pipeline-friendly. Consumes the Name + ResourceGroupName columns from any VM source
-        (Search-MsecResourceGraph, Get-AzVM, hand-built objects). Filter to the target OS yourself
-        before piping - this function does not look at each row's Os property:
+        Pipeline-friendly. Consumes Name + ResourceGroupName (and optionally Os, Location)
+        from any VM source - Search-MsecResourceGraph, Get-AzVM, hand-built objects.
 
-            Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
-                Invoke-MsecVMScript -Os Linux -ScriptName os-info
+        -Os can be set on the command line (all piped rows use that OS) OR bound per-row
+        from the pipeline's Os property. The latter is what Search-MsecResourceGraph
+        produces, so the simple form Just Works:
 
-        -ScriptName tab-completes from the Scripts/<Os>/ folder based on whichever -Os value
-        you've already entered on the command line (so type -Os first, then -ScriptName, for
-        completion to work properly).
+            Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
+                Invoke-MsecVMScript -ScriptName ntp-status -ThrottleLimit 8
+
+        -ScriptName tab-completes from Scripts/<Os>/ when -Os is on the command line,
+        or falls back to scripts that exist for BOTH OSes when -Os is being supplied
+        via the pipeline.
 
         Linux scripts run via CommandId='RunShellScript' (as root); Windows scripts via
         CommandId='RunPowerShellScript' (as SYSTEM). RBAC: caller needs
         Microsoft.Compute/virtualMachines/runCommand/action on each VM (Virtual Machine
         Contributor covers it).
 
+        -ThrottleLimit > 1 fans the run-commands out across the pipeline in parallel via
+        ForEach-Object -Parallel, using the caller's Az context. Order of output is the
+        order results complete in, not input order - sort downstream if you care.
+
     .PARAMETER Os
-        'Linux' or 'Windows'. Determines which Scripts/<Os>/ folder is used, the script
-        extension (.sh / .ps1), and the run-command id.
+        'Linux' or 'Windows'. Either supply on the command line, or pipe rows that have
+        an Os property and the value is taken per-row.
 
     .PARAMETER ScriptName
-        Base name (no extension) of the script under msec/Scripts/<Os>/. Tab-completes from
-        that folder once -Os is set. Invalid names produce a clear "Linux/Windows script
-        not found" error in the function's begin block.
+        Base name (no extension) of the script under msec/Scripts/<Os>/. Must exist for
+        every OS that comes down the pipeline - missing scripts produce a clear
+        "<Os> script not found" error at first encounter.
 
     .PARAMETER Name
         VM name. Bound from the pipeline.
     .PARAMETER ResourceGroupName
         VM's resource group. Bound from the pipeline.
+    .PARAMETER Location
+        Optional pass-through column. If the piped source has Location, it appears in
+        each output row.
+
+    .PARAMETER ThrottleLimit
+        Maximum number of VMs to run the script against concurrently. Default 1
+        (sequential, streams results as each VM finishes). Values >1 buffer pipeline
+        input and dispatch via ForEach-Object -Parallel.
+
+    .PARAMETER TimeoutSeconds
+        Max seconds to wait for any single VM's Run-Command to complete. Default
+        300 (5 min) - generous enough for cold/slow VMs while still bounding the
+        worst case far below Az's own 45-minute internal timeout. Each call is
+        wrapped in a ThreadJob with Wait-Job -Timeout, so a stuck agent yields
+        one Failed/Timeout row instead of hanging the whole batch. Raise to 600
+        for very slow fleets, lower (e.g. 120) for tight aggressive runs. Set to
+        0 to disable the wrap entirely (useful for tests that mock
+        Invoke-AzVMRunCommand - Pester mocks don't propagate into ThreadJob
+        runspaces).
 
     .EXAMPLE
+        # Mixed Linux + Windows, single call, parallel:
+        Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
+            Invoke-MsecVMScript -ScriptName ntp-status -ThrottleLimit 8
+
+    .EXAMPLE
+        # Explicit -Os (overrides any per-row Os; safe when you've filtered already):
         Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
-            Invoke-MsecVMScript -Os Linux -ScriptName os-info | Format-Table
-
-    .EXAMPLE
-        Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Windows' |
-            Invoke-MsecVMScript -Os Windows -ScriptName os-info
+            Invoke-MsecVMScript -Os Linux -ScriptName ntp-status -ThrottleLimit 8
 
     .OUTPUTS
-        PSCustomObject per VM: VmName, ResourceGroupName, Os, ScriptName, Status, Output,
-        Error, DurationSeconds.
+        PSCustomObject per VM: VmName, ResourceGroupName, Location, Os, ScriptName,
+        Status, Output, Error, DurationSeconds.
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter(Mandatory, ValueFromPipelineByPropertyName)]
         [ValidateSet('Linux', 'Windows')]
         [string] $Os,
 
         [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-            $os = $fakeBoundParameters['Os']
-            if (-not $os) { return }
             $base = (Get-Module msec).ModuleBase
             if (-not $base) { return }
-            $folder = Join-Path $base "Scripts/$os"
-            if (-not (Test-Path -LiteralPath $folder)) { return }
-            $filter = if ($os -eq 'Linux') { '*.sh' } else { '*.ps1' }
-            Get-ChildItem -LiteralPath $folder -Filter $filter -File |
-                Where-Object { $_.BaseName -like "$wordToComplete*" } |
+
+            $os = $fakeBoundParameters['Os']
+            if ($os) {
+                # -Os is on the command line - filter to that OS's folder.
+                $folder = Join-Path $base "Scripts/VM/$os"
+                if (-not (Test-Path -LiteralPath $folder)) { return }
+                $filter = if ($os -eq 'Linux') { '*.sh' } else { '*.ps1' }
+                $names  = Get-ChildItem -LiteralPath $folder -Filter $filter -File |
+                    ForEach-Object BaseName
+            } else {
+                # No -Os yet - the user is likely binding it from the pipeline. Suggest
+                # only scripts that exist in BOTH OS folders so the same -ScriptName is
+                # safe to use across a mixed Linux/Windows pipeline.
+                $linux = @(Get-ChildItem (Join-Path $base 'Scripts/VM/Linux')   -Filter '*.sh'  -File -EA SilentlyContinue |
+                    ForEach-Object BaseName)
+                $win   = @(Get-ChildItem (Join-Path $base 'Scripts/VM/Windows') -Filter '*.ps1' -File -EA SilentlyContinue |
+                    ForEach-Object BaseName)
+                $names = $linux | Where-Object { $_ -in $win }
+            }
+
+            $names |
+                Where-Object { $_ -like "$wordToComplete*" } |
                 ForEach-Object {
                     [System.Management.Automation.CompletionResult]::new(
-                        $_.BaseName, $_.BaseName, 'ParameterValue', $_.BaseName)
+                        $_, $_, 'ParameterValue', $_)
                 }
         })]
         [string] $ScriptName,
@@ -76,7 +119,22 @@ function Invoke-MsecVMScript {
         [string] $Name,
 
         [Parameter(Mandatory, ValueFromPipelineByPropertyName)]
-        [string] $ResourceGroupName
+        [string] $ResourceGroupName,
+
+        [Parameter(ValueFromPipelineByPropertyName)]
+        [string] $Location,
+
+        # Optional. When the piped row carries SubscriptionId (Search-MsecResourceGraph
+        # projects it), each VM is dispatched against the Az context for THAT sub -
+        # which is what makes cross-subscription audits work in a single command.
+        [Parameter(ValueFromPipelineByPropertyName)]
+        [string] $SubscriptionId,
+
+        [ValidateRange(1, 32)]
+        [int] $ThrottleLimit = 1,
+
+        [ValidateRange(0, 3600)]
+        [int] $TimeoutSeconds = 300
     )
 
     begin {
@@ -84,57 +142,118 @@ function Invoke-MsecVMScript {
             throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecVMScript.'
         }
 
-        $extension  = if ($Os -eq 'Linux') { '.sh' }            else { '.ps1' }
-        $commandId  = if ($Os -eq 'Linux') { 'RunShellScript' } else { 'RunPowerShellScript' }
-        $scriptPath = Join-Path $script:MsecModuleRoot "Scripts/$Os/$ScriptName$extension"
-
-        if (-not (Test-Path -LiteralPath $scriptPath)) {
-            throw "$Os script not found: $scriptPath"
+        # Resolve script path / commandId on first sight of each OS. -Os may be
+        # constant (from the command line) or vary row-by-row (pipeline-bound), so we
+        # cache rather than precompute. Missing scripts throw on first encounter.
+        $osCache = @{}
+        $resolveOs = {
+            param($targetOs)
+            if (-not $osCache.ContainsKey($targetOs)) {
+                $ext  = if ($targetOs -eq 'Linux') { '.sh' }            else { '.ps1' }
+                $cmd  = if ($targetOs -eq 'Linux') { 'RunShellScript' } else { 'RunPowerShellScript' }
+                $path = Join-Path $script:MsecModuleRoot "Scripts/VM/$targetOs/$ScriptName$ext"
+                if (-not (Test-Path -LiteralPath $path)) {
+                    throw "$targetOs script not found: $path"
+                }
+                $osCache[$targetOs] = @{ ScriptPath = $path; CommandId = $cmd }
+            }
+            $osCache[$targetOs]
         }
+
+        # The per-VM work lives in Private/Invoke-MsecVMScriptCore.ps1. The sequential
+        # path calls it directly. The parallel path can't (ForEach-Object -Parallel
+        # runspaces don't see module-scope functions, and PS 7+ refuses scriptblocks
+        # passed via $using:), so we capture the function BODY as a string here and
+        # re-define the function inside each parallel runspace below.
+        $coreFn = (Get-Command Invoke-MsecVMScriptCore -CommandType Function).Definition
+
+        # Buffer used only by the parallel path; sequential streams each VM as it arrives.
+        $pending = [System.Collections.Generic.List[pscustomobject]]::new()
     }
 
     process {
-        Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os) via $commandId"
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $resp = $null
-        $errorMessage = $null
-        try {
-            $resp = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -Name $Name `
-                -CommandId $commandId -ScriptPath $scriptPath -ErrorAction Stop
-        }
-        catch {
-            $errorMessage = $_.Exception.Message
-        }
-        $sw.Stop()
+        # $Os is per-row when pipeline-bound, constant when set on the command line.
+        $dispatch = & $resolveOs $Os
 
-        $stdout = $null; $stderr = $null
-        if ($resp -and $resp.Value) {
-            # Preferred path: identify stdout/stderr by the Code field's StdOut/StdErr suffix.
-            $stdout = ($resp.Value | Where-Object Code -like '*StdOut*' | Select-Object -First 1).Message
-            $stderr = ($resp.Value | Where-Object Code -like '*StdErr*' | Select-Object -First 1).Message
-
-            # Fallback: if the Code-based filter didn't find anything but Value had entries,
-            # concatenate every non-empty Message - Invoke-AzVMRunCommand's response shape
-            # has varied between Az.Compute versions.
-            if (-not $stdout -and -not $stderr) {
-                $stdout = (@($resp.Value) | ForEach-Object { $_.Message } |
-                    Where-Object { $_ }) -join "`n`n"
-            }
-        }
-
-        $status = if ($errorMessage)    { 'Failed' }
-                  elseif ($resp.Status) { $resp.Status }
-                  else                  { 'Unknown' }
-
-        [PSCustomObject]@{
-            VmName            = $Name
+        $vm = [pscustomobject]@{
+            Name              = $Name
             ResourceGroupName = $ResourceGroupName
+            Location          = $Location
             Os                = $Os
+            SubscriptionId    = $SubscriptionId
             ScriptName        = $ScriptName
-            Status            = $status
-            Output            = $stdout
-            Error             = if ($errorMessage) { $errorMessage } else { $stderr }
-            DurationSeconds   = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            ScriptPath        = $dispatch.ScriptPath
+            CommandId         = $dispatch.CommandId
         }
+
+        if ($ThrottleLimit -le 1) {
+            $subTag = if ($SubscriptionId) { " sub=$SubscriptionId" } else { '' }
+            Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os$subTag) via $($dispatch.CommandId)"
+            Invoke-MsecVMScriptCore -Vm $vm -TimeoutSeconds $TimeoutSeconds
+        } else {
+            $pending.Add($vm)
+        }
+    }
+
+    end {
+        if ($ThrottleLimit -le 1 -or $pending.Count -eq 0) { return }
+
+        Write-Host "Dispatching $($pending.Count) VM(s) with ThrottleLimit=$ThrottleLimit, TimeoutSeconds=$TimeoutSeconds" -ForegroundColor Cyan
+
+        # Thread-safe progress counter. Synchronized hashtable lets every runspace
+        # increment concurrently; the Monitor.Enter/Exit lock around print+update
+        # keeps the count and message atomic, so two simultaneous completions
+        # don't garble each other's output.
+        $progress = [hashtable]::Synchronized(@{
+            Total     = $pending.Count
+            Completed = 0
+            Failed    = 0
+        })
+
+        $pending | ForEach-Object -ThrottleLimit $ThrottleLimit -Parallel {
+            # Re-create the module's private worker function inside this runspace
+            # from the body we captured up in begin{}. This is the canonical PS 7+
+            # idiom for sharing function code with ForEach-Object -Parallel. The
+            # worker resolves the per-sub Az context itself (Az autosaves all
+            # accessible contexts to disk so every runspace can read them).
+            ${function:Invoke-MsecVMScriptCore} = $using:coreFn
+            $r = Invoke-MsecVMScriptCore -Vm $_ -TimeoutSeconds $using:TimeoutSeconds
+
+            # Progress update. Lock-wrap so increment + print stay atomic across
+            # concurrent completions - otherwise the [n/N] count and the message
+            # can interleave from different VMs on the same terminal line.
+            $p = $using:progress
+            [System.Threading.Monitor]::Enter($p)
+            try {
+                $p.Completed++
+                if ($r.Status -ne 'Succeeded') { $p.Failed++ }
+
+                $sym    = if ($r.Status -eq 'Succeeded') { 'OK  ' } else { 'FAIL' }
+                $color  = if ($r.Status -eq 'Succeeded') { 'Green' } else { 'Red'  }
+                $tag    = '[{0,3}/{1,-3}]' -f $p.Completed, $p.Total
+                $name   = '{0,-32}' -f $r.VmName
+                $osTag  = '{0,-7}' -f $r.Os
+                $detail = if ($r.Status -eq 'Succeeded') {
+                    "in $($r.DurationSeconds)s"
+                } elseif ($r.Error) {
+                    $msg = ($r.Error -replace '\s+', ' ').Trim()
+                    if ($msg.Length -gt 80) { $msg.Substring(0, 77) + '...' } else { $msg }
+                } else {
+                    'no error details'
+                }
+                Write-Host "$tag $sym $name $osTag $detail" -ForegroundColor $color
+            }
+            finally {
+                [System.Threading.Monitor]::Exit($p)
+            }
+
+            # Emit the result for the downstream pipeline (Sort-Object, Export-Excel, etc).
+            $r
+        }
+
+        # Final summary - useful when the user has redirected output elsewhere and
+        # wants the headline number without scrolling.
+        $sumColor = if ($progress.Failed -eq 0) { 'Green' } else { 'Yellow' }
+        Write-Host "Done. $($progress.Completed - $progress.Failed) succeeded, $($progress.Failed) failed of $($progress.Total)." -ForegroundColor $sumColor
     }
 }

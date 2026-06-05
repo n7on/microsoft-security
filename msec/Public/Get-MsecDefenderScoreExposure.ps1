@@ -1,4 +1,4 @@
-function Get-MsecExposureScore {
+function Get-MsecDefenderScoreExposure {
     <#
     .SYNOPSIS
         Returns the current Defender Vulnerability Management Exposure Score.

@@ -28,7 +28,8 @@ function New-MsecApp {
          11. Returns an object with TenantId, ClientId, KeyVaultName, CertificateName.
 
         Current required permissions (configured at the top of the function in $resources):
-          - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All
+          - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
+                             ThreatHunting.Read.All, SecurityIncident.Read.All
           - WindowsDefenderATP: Score.Read.All
 
         Prerequisites (the user running this command needs):
@@ -104,7 +105,9 @@ function New-MsecApp {
             AppId      = '00000003-0000-0000-c000-000000000000'
             RoleValues = @(
                 'SecurityEvents.Read.All',                # Microsoft Secure Score (Graph)
-                'DeviceManagementConfiguration.Read.All'  # Intune configurations / compliance policies
+                'DeviceManagementConfiguration.Read.All', # Intune configurations / compliance policies
+                'ThreatHunting.Read.All',                 # Advanced hunting / EmailEvents (Get-MsecDefenderEmailStats)
+                'SecurityIncident.Read.All'               # Defender XDR incidents (Get-MsecDefenderIncidentStats)
             )
         }
         @{

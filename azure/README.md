@@ -78,12 +78,12 @@ New-MsecApp -KeyVaultName 'kv-mysec'
 # Per user, per session, by a report user (with Key Vault Certificate User + Crypto User):
 Connect-AzAccount
 Connect-Msec -KeyVaultName 'kv-mysec'   # defaults: CertificateName = 'msec-app'
-Get-MsecScoreSummary | Format-Table -AutoSize
+Get-MsecSecureScore -Top 1 | Format-Table -AutoSize
 ```
 
 ## Next step: persisting snapshots
 
-The storage account is provisioned but currently empty. To start trending scores in Power BI, the next step is a small msec helper (or a scheduled job) that runs `Get-MsecScoreSummary`, serializes it to CSV, and uploads it to the `scores` container. Each monthly run leaves a new dated file behind; Power BI's *Folder* connector picks up all of them.
+The storage account is provisioned but currently empty. To start trending scores in Power BI, the next step is a small msec helper (or a scheduled job) that runs `Get-MsecSecureScore -Top 1` (plus `Get-MsecDefenderScoreExposure` / `Get-MsecDefenderScoreDeviceConfiguration` if you want them too), serializes the combined snapshot to CSV/JSON, and uploads it to the `scores` container. Each monthly run leaves a new dated file behind; Power BI's *Folder* connector picks up all of them. Trend math (diff vs previous month, etc.) lives in the consumer — msec only ever returns point-in-time snapshots.
 
 ## Defaults worth knowing
 

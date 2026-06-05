@@ -1,4 +1,4 @@
-function Get-MsecDeviceConfigurationScore {
+function Get-MsecDefenderScoreDeviceConfiguration {
     <#
     .SYNOPSIS
         Returns the current Microsoft Secure Score for Devices (raw configuration score).
@@ -9,12 +9,10 @@ function Get-MsecDeviceConfigurationScore {
         could be derived. The output field is therefore named 'Score' (not 'ScorePercent') to
         avoid implying a 0-100 scale.
 
-        IMPORTANT: This function is deliberately NOT part of Get-MsecScoreSummary - mixing
-        raw points with percentage scores in one table is misleading. Call this on its own
-        when you want the raw value.
-
-        For an apples-to-apples device-control percentage in your posture report, use the
-        Microsoft Secure Score 'Device' category row from Get-MsecScoreSummary instead.
+        For an apples-to-apples device-control percentage in your posture report, prefer
+        the 'Device' row from `Get-MsecSecureScore -Category Device` (a 0-100 percentage
+        normalised against control maxima). Use this function only when you specifically
+        need the raw Defender configuration points.
 
     .OUTPUTS
         PSCustomObject with ScoreType ('DeviceConfiguration'), Date (today), Score (raw points).

@@ -1,13 +1,15 @@
-function Get-MsecIntuneConfiguration {
+function Get-MsecIntuneConfigurationProfile {
     <#
     .SYNOPSIS
-        Lists Intune configurations - Settings Catalog policies and classic device configuration
-        profiles, merged into one stream.
+        Lists Intune configuration profiles - Settings Catalog policies and classic device
+        configuration profiles - merged into one stream, with the full Graph object kept
+        in a Raw column for audit / backup / diff.
 
     .DESCRIPTION
         Microsoft is migrating Intune configuration from the older "device configuration
-        profiles" (Templates) model to the newer "Settings Catalog" model. The Intune portal
-        under Devices -> Configuration shows both side by side, and most tenants have a mix.
+        profiles" (Templates) model to the newer "Settings Catalog" model. The Intune
+        portal under Devices > Configuration profiles shows both side by side, and most
+        tenants have a mix.
 
         This function queries both Graph endpoints:
           - /beta/deviceManagement/configurationPolicies (Settings Catalog - new; still beta-only)
@@ -16,20 +18,30 @@ function Get-MsecIntuneConfiguration {
         and projects each entry to a uniform shape with a Source discriminator
         ('SettingsCatalog' or 'Templates') so the rows can be combined or filtered.
 
-        Assignments are pulled via $expand in the same call - no extra round trip - so
-        AssignmentCount is always populated.
+        Each row also carries:
 
-        Per-policy check-in status (SuccessCount / ErrorCount / ConflictCount /
-        NotApplicableCount / PendingCount / SuccessPercent) is opt-in via -IncludeStatus.
+          - Assignments (count): pulled via $expand in the same call - no extra round trip.
 
-        How status is sourced:
-          - Templates: /deviceStatusOverview - one call per policy.
-          - Settings Catalog: the Intune Reports API. SC has no per-policy navigation
-            property, so we kick off ONE async exportJob (reportName=
-            ConfigurationPolicyAggregate) covering all SC policies in the tenant, poll
-            until it completes (~5-15s), download the result, and look up each policy's
-            counts in the resulting hashtable. The job runs once per -IncludeStatus
-            invocation regardless of how many SC policies you have.
+          - Status (optional, -IncludeStatus): per-policy check-in counts. Templates use
+            /deviceStatusOverview (one call per policy); Settings Catalog uses the Intune
+            Reports API exportJob (one job per tenant, ~5-15s, results cached in a
+            hashtable for the per-policy loop).
+
+          - Raw: the verbatim Graph object for the policy. For Templates this includes
+            every configured setting inline (the Graph response is naturally deep). For
+            Settings Catalog, Raw only contains the policy metadata unless you pass
+            -IncludeSettings, which fetches /configurationPolicies/{id}/settings per
+            policy and merges the result into Raw.settings.
+
+        The Raw column replaces the old Export-MsecIntuneConfiguration function - JSON
+        backup, change diffs, and audit drill-downs all work directly off Raw:
+
+            # Backup all SC policies' full config as JSON files
+            Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -IncludeSettings |
+                ForEach-Object {
+                    $name = $_.DisplayName -replace '[\/:*?"<>|]', '_'
+                    $_.Raw | ConvertTo-Json -Depth 20 | Set-Content "./intune/$name.json"
+                }
 
         Required Graph permission: DeviceManagementConfiguration.Read.All (Application).
 
@@ -41,33 +53,40 @@ function Get-MsecIntuneConfiguration {
 
     .PARAMETER IncludeStatus
         Fetch the per-policy device check-in counts. Adds one extra Graph call per policy
-        (the Settings Catalog call also paginates per device), so it can be noticeably slower
-        on large tenants. Off by default.
+        (the Settings Catalog call also paginates per device), so it can be noticeably
+        slower on large tenants. Off by default.
+
+    .PARAMETER IncludeSettings
+        For Settings Catalog policies: fetch each policy's settings via
+        /configurationPolicies/{id}/settings and merge them into Raw.settings. Adds one
+        extra Graph call per SC policy. Off by default. Templates already include their
+        settings inline in the list response - this switch is a no-op for them.
 
     .EXAMPLE
-        # Quick inventory (no status calls):
-        Get-MsecIntuneConfiguration | Format-Table -AutoSize
+        # Quick inventory (fastest)
+        Get-MsecIntuneConfigurationProfile | Format-Table
 
     .EXAMPLE
-        # Find policies failing on many devices:
-        Get-MsecIntuneConfiguration -IncludeStatus |
-            Where-Object { $_.SuccessPercent -ne $null -and $_.SuccessPercent -lt 95 } |
-            Sort-Object SuccessPercent |
-            Select-Object DisplayName, SuccessPercent, ErrorCount, ConflictCount
+        # Find policies failing on many devices
+        Get-MsecIntuneConfigurationProfile -IncludeStatus |
+            Where SuccessPercent -lt 95 |
+            Sort SuccessPercent | Select DisplayName, SuccessPercent, ErrorCount
 
     .EXAMPLE
-        # Find unassigned policies:
-        Get-MsecIntuneConfiguration | Where-Object AssignmentCount -eq 0
+        # Audit drill-down: pull one specific SC policy's full settings
+        $row = Get-MsecIntuneConfigurationProfile -IncludeSettings |
+            Where Id -eq 'sc-1'
+        $row.Raw | ConvertTo-Json -Depth 20
 
     .OUTPUTS
-        PSCustomObject: Id, DisplayName, Description, Platform, Type, Source, AssignmentCount,
-        CreatedDateTime, LastModifiedDateTime; with -IncludeStatus also Status, SuccessCount,
-        ErrorCount, ConflictCount, NotApplicableCount, PendingCount, SuccessPercent.
+        PSCustomObject with PSTypeName 'MsecIntuneConfigurationProfile'. Default
+        Format-Table view is: DisplayName, Source, Platform, AssignmentCount, Status
+        (last column only present with -IncludeStatus). All other columns including
+        Raw remain available via Select-Object / Format-List / direct property access.
 
         Status values (only present with -IncludeStatus):
           - NotDeployed   - AssignmentCount=0
-          - NotReporting  - assigned but no devices currently evaluated (empty assignment
-                            scope, enrollment-time-only policy like Autopilot device prep)
+          - NotReporting  - assigned but no devices currently evaluated
           - Healthy       - 100% success, no errors or conflicts
           - Degraded      - any errors / conflicts / pending or partial success
     #>
@@ -78,7 +97,10 @@ function Get-MsecIntuneConfiguration {
         [string] $Source = 'All',
 
         [Parameter()]
-        [switch] $IncludeStatus
+        [switch] $IncludeStatus,
+
+        [Parameter()]
+        [switch] $IncludeSettings
     )
 
     Assert-MsecSession
@@ -92,12 +114,14 @@ function Get-MsecIntuneConfiguration {
     }
 
     # Local projection helper so both branches produce the same shape.
-    # The Status / Success* / Error* / etc. columns only appear when -IncludeStatus is set,
-    # so callers don't see half-populated columns when they did not ask for status.
+    # The Status / Success* / Error* / etc. columns only appear when -IncludeStatus is set.
+    # Raw is always set to the (optionally settings-expanded) Graph object.
     $project = {
-        param($id, $displayName, $description, $platform, $type, $sourceTag, $created, $modified, $assignments)
+        param($id, $displayName, $description, $platform, $type, $sourceTag,
+              $created, $modified, $assignments, $raw)
         $assignmentCount = @($assignments).Count
         $obj = [ordered]@{
+            PSTypeName      = 'MsecIntuneConfigurationProfile'
             Id              = $id
             DisplayName     = $displayName
             Description     = $description
@@ -109,8 +133,7 @@ function Get-MsecIntuneConfiguration {
 
         if ($IncludeStatus) {
             # Skip the per-policy status call when AssignmentCount=0 - the answer is
-            # "all zeros / NotDeployed" regardless of what the API would return, and
-            # the call would be wasted (or, for Templates, a real network round-trip).
+            # "all zeros / NotDeployed" regardless of what the API would return.
             $status = if ($assignmentCount -gt 0) {
                 $statusArgs = @{ Id = $id; Source = $sourceTag }
                 if ($scStatusCache) { $statusArgs['SettingsCatalogStatusCache'] = $scStatusCache }
@@ -118,12 +141,7 @@ function Get-MsecIntuneConfiguration {
             }
             else { $null }
 
-            # Status rollup - a single label that summarises everything else.
-            #   NotDeployed   : AssignmentCount=0   (no devices targeted)
-            #   NotReporting  : assigned but no status data available (empty assignment scope,
-            #                   enrollment-time-only policy like Autopilot device preparation, etc.)
-            #   Healthy       : 100% success with no errors or conflicts
-            #   Degraded      : any errors / conflicts / pending / partial success
+            # Status rollup label - see .OUTPUTS in the help for the meaning of each value.
             $obj.Status = if ($assignmentCount -eq 0) {
                 'NotDeployed'
             }
@@ -142,10 +160,8 @@ function Get-MsecIntuneConfiguration {
         $obj.LastModifiedDateTime = if ($modified) { [datetime]$modified } else { $null }
 
         if ($IncludeStatus) {
-            # NotDeployed and NotReporting both mean "no devices are effectively reporting
-            # status against this policy" (either no devices targeted, or none currently
-            # evaluating it). Zero across the board is the consistent and meaningful answer
-            # in both cases - avoids confusing mixes of "0" and blank in the same row.
+            # NotDeployed and NotReporting both mean "no devices effectively reporting".
+            # Zero across the board is the consistent answer in both cases.
             if ($obj.Status -in 'NotDeployed', 'NotReporting') {
                 $obj.SuccessCount       = 0
                 $obj.ErrorCount         = 0
@@ -164,6 +180,11 @@ function Get-MsecIntuneConfiguration {
             }
         }
 
+        # Raw - the full Graph object for the policy. Templates carry their settings
+        # inline; Settings Catalog only does when -IncludeSettings was passed (in
+        # which case the caller has already attached them as a 'settings' property).
+        $obj.Raw = $raw
+
         [PSCustomObject]$obj
     }
 
@@ -172,8 +193,15 @@ function Get-MsecIntuneConfiguration {
         # NB: configurationPolicies is still in beta only (Microsoft has not GA'd it to /v1.0).
         $scPath = '/beta/deviceManagement/configurationPolicies?$expand=assignments'
         foreach ($p in (Invoke-MsecGraphRequest -Path $scPath -All)) {
+            if ($IncludeSettings) {
+                # One extra call per SC policy - settings are not inline in the list
+                # response. Attach them as a 'settings' property on the raw object so
+                # Raw stays a single coherent shape rather than splitting policy/settings.
+                $settingsResp = @(Invoke-MsecGraphRequest -Path "/beta/deviceManagement/configurationPolicies/$($p.id)/settings" -All)
+                Add-Member -InputObject $p -NotePropertyName 'settings' -NotePropertyValue $settingsResp -Force
+            }
             & $project $p.id $p.name $p.description $p.platforms 'Settings Catalog' 'SettingsCatalog' `
-                $p.createdDateTime $p.lastModifiedDateTime $p.assignments
+                $p.createdDateTime $p.lastModifiedDateTime $p.assignments $p
         }
     }
 
@@ -185,7 +213,7 @@ function Get-MsecIntuneConfiguration {
             $typeShort = if ($odataType) { $odataType -replace '^#microsoft\.graph\.', '' } else { $null }
 
             # Classic configs don't expose a platform field directly; derive it from the type name.
-            # NB: 'switch -Wildcard' falls through to every matching case by default; the
+            # 'switch -Wildcard' falls through to every matching case by default; the
             # 'break' on each case ensures the most-specific match wins (e.g. windows10*
             # before windows*).
             $platform = $null
@@ -201,7 +229,7 @@ function Get-MsecIntuneConfiguration {
             }
 
             & $project $c.id $c.displayName $c.description $platform $typeShort 'Templates' `
-                $c.createdDateTime $c.lastModifiedDateTime $c.assignments
+                $c.createdDateTime $c.lastModifiedDateTime $c.assignments $c
         }
     }
 }

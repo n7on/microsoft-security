@@ -30,4 +30,17 @@ $script:MsecModuleRoot = $PSScriptRoot
 #   }
 $script:MsecSession = $null
 
+# Default display property sets for msec types. Each Get-Msec* row that embeds a
+# `Raw` (or otherwise heavy nested) property gets a PowerShell type name so
+# Format-Table only shows the curated columns by default. The Raw column is still
+# fully accessible via $row.Raw or Format-List - this only affects the *default*
+# table layout. -Force is required because Pester / repeated imports re-register.
+Update-TypeData -TypeName 'MsecEntraConditionalAccessPolicy' `
+    -DefaultDisplayPropertySet 'DisplayName', 'State', 'Requires', 'IncludedGroups' `
+    -Force
+
+Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
+    -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentCount', 'Status' `
+    -Force
+
 Export-ModuleMember -Function $public.BaseName

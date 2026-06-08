@@ -29,9 +29,11 @@
         'Get-MsecDefenderScoreDeviceConfiguration',
         'Get-MsecDefenderEmailStats',
         'Get-MsecDefenderIncidentStats',
-        'Get-MsecIntuneConfiguration',
+        'Get-MsecIntuneConfigurationProfile',
         'Get-MsecIntuneCompliancePolicy',
-        'Export-MsecIntuneConfiguration',
+        'Get-MsecIntuneDevice',
+        'Get-MsecEntraConditionalAccessPolicy',
+        'Get-MsecEntraConditionalAccessSignInLog',
         'Search-MsecResourceGraph',
         'Invoke-MsecVMScript',
         'Export-MsecWordReport'

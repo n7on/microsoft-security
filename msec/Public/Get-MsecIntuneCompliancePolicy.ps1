@@ -16,7 +16,7 @@ function Get-MsecIntuneCompliancePolicy {
         via -IncludeStatus (one extra Graph call per policy).
 
         Required Graph permission: DeviceManagementConfiguration.Read.All (Application) -
-        the same permission Get-MsecIntuneConfiguration uses.
+        the same permission Get-MsecIntuneConfigurationProfile uses.
 
     .PARAMETER IncludeStatus
         Fetch the per-policy device check-in counts. Off by default to keep the call cheap
@@ -37,7 +37,7 @@ function Get-MsecIntuneCompliancePolicy {
         PSCustomObject: Id, DisplayName, Description, Platform, Type, AssignmentCount,
         CreatedDateTime, LastModifiedDateTime; with -IncludeStatus also Status, SuccessCount,
         ErrorCount, ConflictCount, NotApplicableCount, PendingCount, SuccessPercent.
-        See Get-MsecIntuneConfiguration for Status value semantics.
+        See Get-MsecIntuneConfigurationProfile for Status value semantics.
     #>
     [CmdletBinding()]
     param(
@@ -84,7 +84,7 @@ function Get-MsecIntuneCompliancePolicy {
             }
             else { $null }
 
-            # Status rollup - see Get-MsecIntuneConfiguration for the same semantics.
+            # Status rollup - see Get-MsecIntuneConfigurationProfile for the same semantics.
             $obj.Status = if ($assignmentCount -eq 0) {
                 'NotDeployed'
             }
@@ -103,7 +103,7 @@ function Get-MsecIntuneCompliancePolicy {
         $obj.LastModifiedDateTime = if ($c.lastModifiedDateTime) { [datetime]$c.lastModifiedDateTime } else { $null }
 
         if ($IncludeStatus) {
-            # NotDeployed / NotReporting -> all counts 0 (see Get-MsecIntuneConfiguration).
+            # NotDeployed / NotReporting -> all counts 0 (see Get-MsecIntuneConfigurationProfile).
             if ($obj.Status -in 'NotDeployed', 'NotReporting') {
                 $obj.SuccessCount       = 0
                 $obj.ErrorCount         = 0

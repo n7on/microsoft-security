@@ -22,7 +22,7 @@ function Get-MsecSettingsCatalogStatusReport {
              ConflictCount / NotApplicableCount / PendingCount.
 
         Required Graph permission: DeviceManagementConfiguration.Read.All (the same
-        permission already needed by Get-MsecIntuneConfiguration).
+        permission already needed by Get-MsecIntuneConfigurationProfile).
 
     .PARAMETER TimeoutSeconds
         Maximum time to wait for the report job to complete. Default 120.

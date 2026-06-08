@@ -29,7 +29,8 @@ function New-MsecApp {
 
         Current required permissions (configured at the top of the function in $resources):
           - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
-                             ThreatHunting.Read.All, SecurityIncident.Read.All
+                             DeviceManagementManagedDevices.Read.All, ThreatHunting.Read.All,
+                             SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All
           - WindowsDefenderATP: Score.Read.All
 
         Prerequisites (the user running this command needs):
@@ -106,8 +107,11 @@ function New-MsecApp {
             RoleValues = @(
                 'SecurityEvents.Read.All',                # Microsoft Secure Score (Graph)
                 'DeviceManagementConfiguration.Read.All', # Intune configurations / compliance policies
+                'DeviceManagementManagedDevices.Read.All',# Intune managed devices (Get-MsecIntuneDevice)
                 'ThreatHunting.Read.All',                 # Advanced hunting / EmailEvents (Get-MsecDefenderEmailStats)
-                'SecurityIncident.Read.All'               # Defender XDR incidents (Get-MsecDefenderIncidentStats)
+                'SecurityIncident.Read.All',              # Defender XDR incidents (Get-MsecDefenderIncidentStats)
+                'Policy.Read.All',                        # Conditional Access policies (Get-MsecEntraConditionalAccessPolicy)
+                'AuditLog.Read.All'                       # Sign-in logs (Get-MsecEntraConditionalAccessSignInLog)
             )
         }
         @{

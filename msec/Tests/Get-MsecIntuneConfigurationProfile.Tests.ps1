@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Get-MsecIntuneConfiguration. The function merges Settings Catalog and
+# Tests for Get-MsecIntuneConfigurationProfile. The function merges Settings Catalog and
 # classic Templates into a unified shape, derives Platform from @odata.type, gets
 # AssignmentCount via $expand, and optionally adds per-policy status counts.
 
@@ -15,7 +15,7 @@ AfterAll {
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Get-MsecIntuneConfiguration' {
+Describe 'Get-MsecIntuneConfigurationProfile' {
     BeforeEach {
         InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
@@ -65,7 +65,7 @@ Describe 'Get-MsecIntuneConfiguration' {
                 ) }
             }
 
-            Get-MsecIntuneConfiguration
+            Get-MsecIntuneConfigurationProfile
         }
 
         $rows.Count | Should -Be 3
@@ -94,6 +94,57 @@ Describe 'Get-MsecIntuneConfiguration' {
         # Status column only appears with -IncludeStatus - the rows here should not have it.
         $sc.PSObject.Properties.Name  | Should -Not -Contain 'Status'
         $win.PSObject.Properties.Name | Should -Not -Contain 'Status'
+
+        # Raw - every row carries the full Graph object verbatim. Lets the consumer
+        # access fields we don't flatten (createdDateTime is just an obvious one).
+        $sc.Raw  | Should -Not -BeNullOrEmpty
+        $sc.Raw.id   | Should -Be 'sc-1'
+        $sc.Raw.name | Should -Be 'Win10 Hardening'
+
+        $win.Raw                | Should -Not -BeNullOrEmpty
+        $win.Raw.id             | Should -Be 'tpl-2'
+        $win.Raw.'@odata.type'  | Should -Match 'windows10CustomConfiguration'
+
+        # PSTypeName tag - so the .psm1's Update-TypeData picks the right
+        # DefaultDisplayPropertySet (hides Raw from default Format-Table).
+        $sc.PSObject.TypeNames  | Should -Contain 'MsecIntuneConfigurationProfile'
+        $win.PSObject.TypeNames | Should -Contain 'MsecIntuneConfigurationProfile'
+    }
+
+    It '-IncludeSettings fetches per-policy settings for SC and merges them into Raw' {
+        $rows = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            # SC list endpoint returns one policy
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/beta/deviceManagement/configurationPolicies\?' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{
+                        id = 'sc-1'; name = 'Win10 Hardening'; platforms = 'windows10'
+                        assignments = @()
+                    }
+                ) }
+            }
+            # Per-policy settings endpoint - this is the extra call -IncludeSettings makes
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/configurationPolicies/sc-1/settings' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ id = '0'; settingInstance = @{ settingDefinitionId = 'firewall_state' } }
+                    [pscustomobject]@{ id = '1'; settingInstance = @{ settingDefinitionId = 'bitlocker_required' } }
+                ) }
+            }
+            # No Templates in this test
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/deviceConfigurations' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+
+            Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -IncludeSettings
+        }
+
+        $rows.Count | Should -Be 1
+        $rows[0].Raw.settings        | Should -Not -BeNullOrEmpty
+        $rows[0].Raw.settings.Count  | Should -Be 2
+        $rows[0].Raw.settings[0].settingInstance.settingDefinitionId | Should -Be 'firewall_state'
     }
 
     It '-IncludeStatus adds check-in counts from the right endpoint per Source' {
@@ -138,7 +189,7 @@ Describe 'Get-MsecIntuneConfiguration' {
                 }
             }
 
-            Get-MsecIntuneConfiguration -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus
         }
 
         # Templates: real counts from deviceStatusOverview
@@ -184,7 +235,7 @@ Describe 'Get-MsecIntuneConfiguration' {
             }
             Mock Get-MsecSettingsCatalogStatusReport -MockWith { @{} }
 
-            Get-MsecIntuneConfiguration -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus
         }
 
         foreach ($r in $rows) {
@@ -219,7 +270,7 @@ Describe 'Get-MsecIntuneConfiguration' {
             }
             Mock Get-MsecSettingsCatalogStatusReport -MockWith { @{} }  # empty report
 
-            Get-MsecIntuneConfiguration -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus
         }
 
         $r = $rows[0]

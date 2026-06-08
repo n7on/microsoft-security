@@ -13,7 +13,7 @@ function Export-MsecWordReport {
                       Courier New. The ISO-27001-evidence layout.
           - Generic  : anything else. A single Word table whose columns are the
                       visible properties of the first row. Useful for piping things
-                      like Get-MsecSecureScore, Get-MsecIntuneConfiguration, etc.
+                      like Get-MsecSecureScore, Get-MsecIntuneConfigurationProfile, etc.
 
         Pure-PowerShell via PSWriteOffice (which wraps OfficeIMO). No pandoc,
         no Word, no Windows-only Interop. Install once:

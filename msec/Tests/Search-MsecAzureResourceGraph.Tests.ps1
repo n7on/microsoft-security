@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Search-MsecResourceGraph. Verifies the KQL-file convention, the
+# Tests for Search-MsecAzureResourceGraph. Verifies the KQL-file convention, the
 # Az.ResourceGraph response unwrap, error handling for missing query files, and
 # the tab-completion pathway (which has caught real bugs that InModuleScope
 # would miss because it inherits the module's $script: state).
@@ -14,7 +14,7 @@ AfterAll {
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Search-MsecResourceGraph' {
+Describe 'Search-MsecAzureResourceGraph' {
     It 'loads KQL/Graph/VM/All.kql by convention and shuttles it to Search-AzGraph unchanged' {
         $result = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
@@ -27,7 +27,7 @@ Describe 'Search-MsecResourceGraph' {
                 )
             }
 
-            $rows = Search-MsecResourceGraph -ResourceType VM
+            $rows = Search-MsecAzureResourceGraph -ResourceType VM
             [pscustomobject]@{ Rows = $rows; Query = $script:CapturedQuery }
         }
 
@@ -59,7 +59,7 @@ Describe 'Search-MsecResourceGraph' {
                     )
                 }
             }
-            Search-MsecResourceGraph -ResourceType VM
+            Search-MsecAzureResourceGraph -ResourceType VM
         }
 
         # We should see two rows, with the actual VM properties accessible for filtering.
@@ -75,7 +75,7 @@ Describe 'Search-MsecResourceGraph' {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith { @() }
-            { Search-MsecResourceGraph -ResourceType VM -Name 'NoSuchQuery' } |
+            { Search-MsecAzureResourceGraph -ResourceType VM -Name 'NoSuchQuery' } |
                 Should -Throw -ExpectedMessage 'KQL query file not found:*'
         }
     }
@@ -86,20 +86,20 @@ Describe 'Search-MsecResourceGraph' {
     # scope available, whereas the real completion engine does not. These tests would
     # catch a regression to module-scoped state usage in the completer scriptblock.
     It 'tab completion for -ResourceType returns folders containing .kql files' {
-        $line = 'Search-MsecResourceGraph -ResourceType '
+        $line = 'Search-MsecAzureResourceGraph -ResourceType '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'VM'
     }
 
     It 'tab completion for -Name returns the .kql file basenames in the chosen ResourceType folder' {
-        $line = 'Search-MsecResourceGraph -ResourceType VM -Name '
+        $line = 'Search-MsecAzureResourceGraph -ResourceType VM -Name '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'All'
     }
 
-    It 'pipes cleanly through Where-Object into Invoke-MsecVMScript' {
+    It 'pipes cleanly through Where-Object into Invoke-MsecAzureVMScript' {
         # End-to-end: ARG-shaped rows -> Where-Object -> runner. Validates that
-        # Search-MsecResourceGraph's output (Name + ResourceGroupName) binds correctly to the runner.
+        # Search-MsecAzureResourceGraph's output (Name + ResourceGroupName) binds correctly to the runner.
         $captured = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
@@ -115,9 +115,9 @@ Describe 'Search-MsecResourceGraph' {
                 [pscustomobject]@{ Status = 'Succeeded'; Value = @() }
             }
 
-            Search-MsecResourceGraph -ResourceType VM |
+            Search-MsecAzureResourceGraph -ResourceType VM |
                 Where-Object Os -eq Linux |
-                Invoke-MsecVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0 |
+                Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0 |
                 Out-Null
             ,$script:CapturedVmNames
         }

@@ -81,7 +81,6 @@ function Get-MsecEntraConditionalAccessSignInLog {
           deviceDetail.trustType          -> DeviceTrustType
           conditionalAccessStatus         -> ConditionalAccessStatus  (success/failure/notApplied)
           appliedConditionalAccessPolicies-> AppliedPolicies   (array; each row has id/displayName/result)
-          mfaDetail.authMethod            -> MfaAuthMethod
           riskLevelAggregated             -> RiskLevelAggregated
           riskLevelDuringSignIn           -> RiskLevelDuringSignIn
           status.errorCode                -> ResultCode
@@ -102,6 +101,12 @@ function Get-MsecEntraConditionalAccessSignInLog {
     # $select trims each event from ~50 columns to the ones documented above.
     # appliedConditionalAccessPolicies has to stay as the nested array (it's
     # multi-valued per event) - we just don't try to flatten it further.
+    #
+    # NB: 'mfaDetail' is a beta-only field; v1.0/signIns has 'authenticationDetails'
+    # as a different shape (array of per-step records). For CA-insights queries the
+    # MFA method isn't a headline metric, so we skip both - if you need per-step
+    # auth detail, query /beta/auditLogs/signIns directly or extend this $select
+    # with 'authenticationDetails'.
     $select = @(
         'id'
         'createdDateTime'
@@ -112,7 +117,6 @@ function Get-MsecEntraConditionalAccessSignInLog {
         'deviceDetail'
         'conditionalAccessStatus'
         'appliedConditionalAccessPolicies'
-        'mfaDetail'
         'riskLevelAggregated', 'riskLevelDuringSignIn'
         'status'
     ) -join ','
@@ -149,7 +153,6 @@ function Get-MsecEntraConditionalAccessSignInLog {
             DeviceTrustType         = $e.deviceDetail.trustType
             ConditionalAccessStatus = $e.conditionalAccessStatus
             AppliedPolicies         = @($e.appliedConditionalAccessPolicies)
-            MfaAuthMethod           = $e.mfaDetail.authMethod
             RiskLevelAggregated     = $e.riskLevelAggregated
             RiskLevelDuringSignIn   = $e.riskLevelDuringSignIn
             ResultCode              = $e.status.errorCode

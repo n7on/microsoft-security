@@ -25,6 +25,7 @@
         'Connect-Msec',
         'Disconnect-Msec',
         'Get-MsecSecureScore',
+        'Get-MsecAzureSecureScore',
         'Get-MsecDefenderScoreExposure',
         'Get-MsecDefenderScoreDeviceConfiguration',
         'Get-MsecDefenderEmailStats',
@@ -34,8 +35,9 @@
         'Get-MsecIntuneDevice',
         'Get-MsecEntraConditionalAccessPolicy',
         'Get-MsecEntraConditionalAccessSignInLog',
-        'Search-MsecResourceGraph',
-        'Invoke-MsecVMScript',
+        'Get-MsecEntraConditionalAccessStats',
+        'Search-MsecAzureResourceGraph',
+        'Invoke-MsecAzureVMScript',
         'Export-MsecWordReport'
     )
     CmdletsToExport   = @()

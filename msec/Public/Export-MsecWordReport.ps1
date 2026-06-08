@@ -8,7 +8,7 @@ function Export-MsecWordReport {
         Shape-aware: the function inspects the first row's properties and picks the
         right layout.
 
-          - VMScript : Invoke-MsecVMScript rows (have VmName + ScriptName + Output).
+          - VMScript : Invoke-MsecAzureVMScript rows (have VmName + ScriptName + Output).
                       One VM per page, with captured Output/Error rendered in
                       Courier New. The ISO-27001-evidence layout.
           - Generic  : anything else. A single Word table whose columns are the
@@ -22,8 +22,8 @@ function Export-MsecWordReport {
 
     .EXAMPLE
         # VMScript-shaped input -> one VM per page, monospaced script output.
-        Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
-            Invoke-MsecVMScript -ScriptName ntp-status |
+        Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Running |
+            Invoke-MsecAzureVMScript -ScriptName ntp-status |
             Export-MsecWordReport -Path ./ntp-evidence.docx -Title 'NTP / Time sync evidence'
 
     .EXAMPLE

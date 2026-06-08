@@ -1,15 +1,15 @@
-function Invoke-MsecVMScriptCore {
+function Invoke-MsecAzureVMScriptCore {
     <#
     .SYNOPSIS
         Runs one Run-Command on one VM and emits a single result row. Private worker
-        for Invoke-MsecVMScript - factored out so the sequential and parallel paths
+        for Invoke-MsecAzureVMScript - factored out so the sequential and parallel paths
         share identical logic.
 
     .DESCRIPTION
         The sequential path calls this directly; the parallel path captures
-        (Get-Command Invoke-MsecVMScriptCore).Definition once in the caller's
+        (Get-Command Invoke-MsecAzureVMScriptCore).Definition once in the caller's
         runspace and re-injects it inside each ForEach-Object -Parallel runspace via
-        ${function:Invoke-MsecVMScriptCore} = $using:funcDef. PowerShell 7 refuses to
+        ${function:Invoke-MsecAzureVMScriptCore} = $using:funcDef. PowerShell 7 refuses to
         pass scriptblocks across runspace boundaries via $using:, but it happily
         passes the function BODY (a string) and lets each runspace redefine the
         function in its own session state.
@@ -23,7 +23,7 @@ function Invoke-MsecVMScriptCore {
     .PARAMETER Vm
         A PSCustomObject with the dispatch metadata: Name, ResourceGroupName,
         Location, Os, SubscriptionId, ScriptName, ScriptPath, CommandId. Built by
-        Invoke-MsecVMScript's process{} block.
+        Invoke-MsecAzureVMScript's process{} block.
 
     .PARAMETER TimeoutSeconds
         Max seconds to wait for Invoke-AzVMRunCommand on this one VM. 0 (default)

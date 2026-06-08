@@ -10,7 +10,7 @@ function Get-MsecIntuneDevice {
         emits one PSCustomObject per device.
 
         Aggregate stats are produced in PowerShell on the consumer side - msec only
-        returns the raw device list. This matches Search-MsecResourceGraph /
+        returns the raw device list. This matches Search-MsecAzureResourceGraph /
         Get-MsecIntuneCompliancePolicy: the module returns rows, the consumer
         decides what to do with them.
 

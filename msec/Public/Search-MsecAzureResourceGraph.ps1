@@ -1,4 +1,4 @@
-function Search-MsecResourceGraph {
+function Search-MsecAzureResourceGraph {
     <#
     .SYNOPSIS
         Runs a bundled KQL query against Azure Resource Graph and returns the rows.
@@ -8,14 +8,14 @@ function Search-MsecResourceGraph {
 
             msec/KQL/Graph/<ResourceType>/<Name>.kql
 
-        For example, Search-MsecResourceGraph -ResourceType VM loads KQL/Graph/VM/All.kql. Each
+        For example, Search-MsecAzureResourceGraph -ResourceType VM loads KQL/Graph/VM/All.kql. Each
         resource-type folder has at least an All.kql; named variants (e.g. "Running.kql")
         live alongside it and are selected via -Name.
 
         Filtering is intentionally NOT done here - that's what PowerShell pipelines are
         for. Pipe the output into Where-Object / Sort-Object / Select-Object:
 
-            Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' | ...
+            Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' | ...
 
         Required: Az.ResourceGraph, an Az context, and Reader RBAC at the resources'
         scope (ARG honours RBAC and just omits resources you cannot see).
@@ -41,11 +41,11 @@ function Search-MsecResourceGraph {
         Page size (1-1000). Default 1000.
 
     .EXAMPLE
-        Search-MsecResourceGraph -ResourceType VM
+        Search-MsecAzureResourceGraph -ResourceType VM
 
     .EXAMPLE
-        Search-MsecResourceGraph -ResourceType VM | Where-Object { $_.Os -eq 'Linux' -and $_.Running } |
-            Invoke-MsecVMScript -Os Linux -ScriptName os-info
+        Search-MsecAzureResourceGraph -ResourceType VM | Where-Object { $_.Os -eq 'Linux' -and $_.Running } |
+            Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info
 
     .OUTPUTS
         PSCustomObject rows shaped by the .kql file's project clause.
@@ -105,7 +105,7 @@ function Search-MsecResourceGraph {
     )
 
     if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
-        throw 'No Azure context. Run Connect-AzAccount before Search-MsecResourceGraph.'
+        throw 'No Azure context. Run Connect-AzAccount before Search-MsecAzureResourceGraph.'
     }
 
     $path = Join-Path $script:MsecModuleRoot "KQL/Graph/$ResourceType/$Name.kql"

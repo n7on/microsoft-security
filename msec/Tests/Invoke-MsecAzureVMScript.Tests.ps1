@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Invoke-MsecVMScript - the runner that dispatches bundled scripts to
+# Tests for Invoke-MsecAzureVMScript - the runner that dispatches bundled scripts to
 # Azure VMs via Invoke-AzVMRunCommand. Covers OS-specific dispatch (RunShellScript
 # vs RunPowerShellScript), output extraction (StdOut/StdErr filtering + the
 # Linux agent's "[stdout]/[stderr]" wrapper unwrap), cross-subscription routing,
@@ -15,7 +15,7 @@ AfterAll {
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Invoke-MsecVMScript' {
+Describe 'Invoke-MsecAzureVMScript' {
     It '-Os Linux runs the bundled .sh via RunShellScript and projects the response' {
         $results = InModuleScope msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
@@ -35,7 +35,7 @@ Describe 'Invoke-MsecVMScript' {
 
             # Includes Location in the input so we verify passthrough.
             $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a'; Location = 'westeu' }
-            $out = $vm | Invoke-MsecVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
+            $out = $vm | Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
             [pscustomobject]@{ Out = $out; Path = $script:CapturedScriptPath; Cmd = $script:CapturedCommandId }
         }
 
@@ -66,7 +66,7 @@ Describe 'Invoke-MsecVMScript' {
             }
 
             $vm = [pscustomobject]@{ Name = 'win-1'; ResourceGroupName = 'rg-a' }
-            $out = $vm | Invoke-MsecVMScript -Os Windows -ScriptName os-info -TimeoutSeconds 0
+            $out = $vm | Invoke-MsecAzureVMScript -Os Windows -ScriptName os-info -TimeoutSeconds 0
             [pscustomobject]@{ Out = $out; Path = $script:CapturedScriptPath; Cmd = $script:CapturedCommandId }
         }
 
@@ -107,7 +107,7 @@ Enable succeeded:
             }
 
             [pscustomobject]@{ Name='lin-1'; ResourceGroupName='rg-a'; Location='westeu' } |
-                Invoke-MsecVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
+                Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
         }
 
         # Wrapper artefacts must be gone, leaving only the real stdout.
@@ -137,7 +137,7 @@ Enable succeeded:
             }
 
             [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' } |
-                Invoke-MsecVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
+                Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info -TimeoutSeconds 0
         }
 
         $out.Status | Should -Be 'Succeeded'
@@ -150,10 +150,10 @@ Enable succeeded:
             Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called' }
 
             $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' }
-            { $vm | Invoke-MsecVMScript -Os Linux -ScriptName does-not-exist } |
+            { $vm | Invoke-MsecAzureVMScript -Os Linux -ScriptName does-not-exist } |
                 Should -Throw -ExpectedMessage 'Linux script not found:*'
 
-            { $vm | Invoke-MsecVMScript -Os Windows -ScriptName does-not-exist } |
+            { $vm | Invoke-MsecAzureVMScript -Os Windows -ScriptName does-not-exist } |
                 Should -Throw -ExpectedMessage 'Windows script not found:*'
         }
     }
@@ -183,7 +183,7 @@ Enable succeeded:
             @(
                 [pscustomobject]@{ Name='a-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-A' }
                 [pscustomobject]@{ Name='b-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-B' }
-            ) | Invoke-MsecVMScript -ScriptName os-info -TimeoutSeconds 0 | Out-Null
+            ) | Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0 | Out-Null
 
             # a-vm went to sub-A's context, b-vm went to sub-B's.
             Should -Invoke Invoke-AzVMRunCommand -Exactly 1 -ParameterFilter {
@@ -211,7 +211,7 @@ Enable succeeded:
             Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called - no context for sub-B' }
 
             [pscustomobject]@{ Name='b-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-B' } |
-                Invoke-MsecVMScript -ScriptName os-info -TimeoutSeconds 0
+                Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0
         }
 
         $result.VmName | Should -Be 'b-vm'
@@ -244,7 +244,7 @@ Enable succeeded:
                 [pscustomobject]@{ Name='lin-1'; ResourceGroupName='rg-a'; Os='Linux';   Location='westeu' }
                 [pscustomobject]@{ Name='win-1'; ResourceGroupName='rg-a'; Os='Windows'; Location='westeu' }
                 [pscustomobject]@{ Name='lin-2'; ResourceGroupName='rg-a'; Os='Linux';   Location='westeu' }
-            ) | Invoke-MsecVMScript -ScriptName os-info -TimeoutSeconds 0
+            ) | Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0
         }
 
         $out.Count                    | Should -Be 3
@@ -256,7 +256,7 @@ Enable succeeded:
     }
 
     It 'exposes -TimeoutSeconds with sensible bounds and a real default' {
-        $param = (Get-Command Invoke-MsecVMScript).Parameters['TimeoutSeconds']
+        $param = (Get-Command Invoke-MsecAzureVMScript).Parameters['TimeoutSeconds']
         $param                        | Should -Not -BeNullOrEmpty
         $param.ParameterType.FullName | Should -Be 'System.Int32'
 
@@ -269,7 +269,7 @@ Enable succeeded:
         # The default must be a real positive number - opting OUT of timeout (=0)
         # should be an explicit decision, not the default. Catches accidental
         # regression to the original "0 = no protection" default.
-        $sourceLine = (Get-Command Invoke-MsecVMScript).Definition |
+        $sourceLine = (Get-Command Invoke-MsecAzureVMScript).Definition |
             Select-String -Pattern '\[int\]\s*\$TimeoutSeconds\s*=\s*(\d+)' |
             Select-Object -First 1
         [int]$sourceLine.Matches.Groups[1].Value | Should -BeGreaterThan 0
@@ -280,7 +280,7 @@ Enable succeeded:
         # parallel dispatch can't be unit-tested against mocks (ForEach-Object -Parallel
         # runspaces don't see Pester mocks), but verifying the parameter is wired up
         # catches accidental removal.
-        $param = (Get-Command Invoke-MsecVMScript).Parameters['ThrottleLimit']
+        $param = (Get-Command Invoke-MsecAzureVMScript).Parameters['ThrottleLimit']
         $param                       | Should -Not -BeNullOrEmpty
         $param.ParameterType.FullName | Should -Be 'System.Int32'
 
@@ -309,7 +309,7 @@ Enable succeeded:
             @(
                 [pscustomobject]@{ Name='lin-1'; ResourceGroupName='rg-a'; Location='westeu' }
                 [pscustomobject]@{ Name='lin-2'; ResourceGroupName='rg-a'; Location='westeu' }
-            ) | Invoke-MsecVMScript -Os Linux -ScriptName os-info -ThrottleLimit 1 -TimeoutSeconds 0
+            ) | Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info -ThrottleLimit 1 -TimeoutSeconds 0
         }
 
         $out.Count            | Should -Be 2
@@ -320,12 +320,12 @@ Enable succeeded:
 
     It 'tab completion for -ScriptName returns the right basenames based on -Os' {
         # With -Os Linux already in the command line, completion should look in Scripts/VM/Linux.
-        $line = 'Invoke-MsecVMScript -Os Linux -ScriptName '
+        $line = 'Invoke-MsecAzureVMScript -Os Linux -ScriptName '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'os-info'
 
         # And with -Os Windows, it should look in Scripts/VM/Windows.
-        $line = 'Invoke-MsecVMScript -Os Windows -ScriptName '
+        $line = 'Invoke-MsecAzureVMScript -Os Windows -ScriptName '
         $result = TabExpansion2 -inputScript $line -cursorColumn $line.Length
         $result.CompletionMatches.CompletionText | Should -Contain 'os-info'
     }

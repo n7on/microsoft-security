@@ -6,7 +6,7 @@ accidentally be invoked through another.
 
 ```
 msec/Scripts/
-└── VM/                ← Azure VM Run-Command (Invoke-MsecVMScript)
+└── VM/                ← Azure VM Run-Command (Invoke-MsecAzureVMScript)
     ├── Linux/
     │   └── *.sh      ← bash scripts (CommandId: RunShellScript)
     └── Windows/
@@ -57,8 +57,8 @@ parsing pipeline gets structured data without regex.
 ## CSV report (the audit-friendly path)
 
 ```powershell
-Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
-    Invoke-MsecVMScript -ScriptName ntp-status -ThrottleLimit 8 |
+Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Running |
+    Invoke-MsecAzureVMScript -ScriptName ntp-status -ThrottleLimit 8 |
     ForEach-Object {
         $j = if ($_.Output) { $_.Output | ConvertFrom-Json } else { $null }
         [PSCustomObject]@{
@@ -105,11 +105,11 @@ each VM page, which is honestly fine for evidence. Use this when an auditor asks
 
 ## Filtering VMs by OS
 
-`Invoke-MsecVMScript` requires `-Os`, so filter to that OS first:
+`Invoke-MsecAzureVMScript` requires `-Os`, so filter to that OS first:
 
 ```powershell
-Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
-    Invoke-MsecVMScript -Os Linux -ScriptName ntp-status
+Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
+    Invoke-MsecAzureVMScript -Os Linux -ScriptName ntp-status
 ```
 
 If you prefer `Get-AzVM`, you'll need a `Where-Object` clause because OS lives in a
@@ -117,7 +117,7 @@ nested property:
 
 ```powershell
 Get-AzVM | Where-Object { $_.StorageProfile.OsDisk.OsType -eq 'Linux' } |
-    Invoke-MsecVMScript -Os Linux -ScriptName ntp-status
+    Invoke-MsecAzureVMScript -Os Linux -ScriptName ntp-status
 ```
 
 ## Authoring new check scripts

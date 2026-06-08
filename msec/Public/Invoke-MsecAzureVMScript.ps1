@@ -1,4 +1,4 @@
-function Invoke-MsecVMScript {
+function Invoke-MsecAzureVMScript {
     <#
     .SYNOPSIS
         Runs a bundled script on one or more Azure VMs. -Os selects the script flavour
@@ -6,14 +6,14 @@ function Invoke-MsecVMScript {
 
     .DESCRIPTION
         Pipeline-friendly. Consumes Name + ResourceGroupName (and optionally Os, Location)
-        from any VM source - Search-MsecResourceGraph, Get-AzVM, hand-built objects.
+        from any VM source - Search-MsecAzureResourceGraph, Get-AzVM, hand-built objects.
 
         -Os can be set on the command line (all piped rows use that OS) OR bound per-row
-        from the pipeline's Os property. The latter is what Search-MsecResourceGraph
+        from the pipeline's Os property. The latter is what Search-MsecAzureResourceGraph
         produces, so the simple form Just Works:
 
-            Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
-                Invoke-MsecVMScript -ScriptName ntp-status -ThrottleLimit 8
+            Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Running |
+                Invoke-MsecAzureVMScript -ScriptName ntp-status -ThrottleLimit 8
 
         -ScriptName tab-completes from Scripts/<Os>/ when -Os is on the command line,
         or falls back to scripts that exist for BOTH OSes when -Os is being supplied
@@ -63,13 +63,13 @@ function Invoke-MsecVMScript {
 
     .EXAMPLE
         # Mixed Linux + Windows, single call, parallel:
-        Search-MsecResourceGraph -ResourceType VM | Where-Object Running |
-            Invoke-MsecVMScript -ScriptName ntp-status -ThrottleLimit 8
+        Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Running |
+            Invoke-MsecAzureVMScript -ScriptName ntp-status -ThrottleLimit 8
 
     .EXAMPLE
         # Explicit -Os (overrides any per-row Os; safe when you've filtered already):
-        Search-MsecResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
-            Invoke-MsecVMScript -Os Linux -ScriptName ntp-status -ThrottleLimit 8
+        Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Os -eq 'Linux' |
+            Invoke-MsecAzureVMScript -Os Linux -ScriptName ntp-status -ThrottleLimit 8
 
     .OUTPUTS
         PSCustomObject per VM: VmName, ResourceGroupName, Location, Os, ScriptName,
@@ -124,7 +124,7 @@ function Invoke-MsecVMScript {
         [Parameter(ValueFromPipelineByPropertyName)]
         [string] $Location,
 
-        # Optional. When the piped row carries SubscriptionId (Search-MsecResourceGraph
+        # Optional. When the piped row carries SubscriptionId (Search-MsecAzureResourceGraph
         # projects it), each VM is dispatched against the Az context for THAT sub -
         # which is what makes cross-subscription audits work in a single command.
         [Parameter(ValueFromPipelineByPropertyName)]
@@ -139,7 +139,7 @@ function Invoke-MsecVMScript {
 
     begin {
         if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
-            throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecVMScript.'
+            throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecAzureVMScript.'
         }
 
         # Resolve script path / commandId on first sight of each OS. -Os may be
@@ -160,12 +160,12 @@ function Invoke-MsecVMScript {
             $osCache[$targetOs]
         }
 
-        # The per-VM work lives in Private/Invoke-MsecVMScriptCore.ps1. The sequential
+        # The per-VM work lives in Private/Invoke-MsecAzureVMScriptCore.ps1. The sequential
         # path calls it directly. The parallel path can't (ForEach-Object -Parallel
         # runspaces don't see module-scope functions, and PS 7+ refuses scriptblocks
         # passed via $using:), so we capture the function BODY as a string here and
         # re-define the function inside each parallel runspace below.
-        $coreFn = (Get-Command Invoke-MsecVMScriptCore -CommandType Function).Definition
+        $coreFn = (Get-Command Invoke-MsecAzureVMScriptCore -CommandType Function).Definition
 
         # Buffer used only by the parallel path; sequential streams each VM as it arrives.
         $pending = [System.Collections.Generic.List[pscustomobject]]::new()
@@ -189,7 +189,7 @@ function Invoke-MsecVMScript {
         if ($ThrottleLimit -le 1) {
             $subTag = if ($SubscriptionId) { " sub=$SubscriptionId" } else { '' }
             Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os$subTag) via $($dispatch.CommandId)"
-            Invoke-MsecVMScriptCore -Vm $vm -TimeoutSeconds $TimeoutSeconds
+            Invoke-MsecAzureVMScriptCore -Vm $vm -TimeoutSeconds $TimeoutSeconds
         } else {
             $pending.Add($vm)
         }
@@ -216,8 +216,8 @@ function Invoke-MsecVMScript {
             # idiom for sharing function code with ForEach-Object -Parallel. The
             # worker resolves the per-sub Az context itself (Az autosaves all
             # accessible contexts to disk so every runspace can read them).
-            ${function:Invoke-MsecVMScriptCore} = $using:coreFn
-            $r = Invoke-MsecVMScriptCore -Vm $_ -TimeoutSeconds $using:TimeoutSeconds
+            ${function:Invoke-MsecAzureVMScriptCore} = $using:coreFn
+            $r = Invoke-MsecAzureVMScriptCore -Vm $_ -TimeoutSeconds $using:TimeoutSeconds
 
             # Progress update. Lock-wrap so increment + print stay atomic across
             # concurrent completions - otherwise the [n/N] count and the message

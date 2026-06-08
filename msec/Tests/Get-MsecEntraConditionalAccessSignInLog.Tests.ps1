@@ -65,7 +65,6 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
                         appliedConditionalAccessPolicies = @(
                             [pscustomobject]@{ id = 'pol-1'; displayName = 'Require MFA for all admins'; result = 'success' }
                         )
-                        mfaDetail              = [pscustomobject]@{ authMethod = 'Microsoft Authenticator' }
                         riskLevelAggregated    = 'none'
                         riskLevelDuringSignIn  = 'none'
                         status                 = [pscustomobject]@{ errorCode = 0; failureReason = '' }
@@ -111,7 +110,6 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
         $e1.DeviceCompliant         | Should -BeTrue
         $e1.ConditionalAccessStatus | Should -Be 'success'
         $e1.ResultCode              | Should -Be 0
-        $e1.MfaAuthMethod           | Should -Be 'Microsoft Authenticator'
 
         # AppliedPolicies preserved as an array of objects - consumer filters on .result
         ($e1.AppliedPolicies | Where-Object result -eq 'success').displayName |

@@ -43,4 +43,8 @@ Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
     -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentCount', 'Status' `
     -Force
 
+Update-TypeData -TypeName 'MsecAdoServiceConnection' `
+    -DefaultDisplayPropertySet 'Name', 'Type', 'AuthScheme', 'IsShared' `
+    -Force
+
 Export-ModuleMember -Function $public.BaseName

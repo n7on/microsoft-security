@@ -1,0 +1,69 @@
+// Update Manager readiness for every accessible VM: which machines can report patch
+// assessment data, and for those that can't ("No update data" in the portal), the most
+// likely reason - power state, assessment mode, or a failed/absent assessment.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType VM -Name UpdateReadiness.
+// No filtering here - filter the output in PowerShell with Where-Object (e.g.
+//   ... | Where-Object Reason -ne 'OK').
+//
+// NB: VM *agent* health is not reliably exposed in Resource Graph (only power state is),
+// so readiness is inferred from power state + assessment mode + presence of assessment
+// data. A VM that is Running, in AutomaticByPlatform, but still has no data is the
+// signature of an agent or repo/network-egress problem - confirm with a per-VM check.
+
+Resources
+| where type =~ 'microsoft.compute/virtualmachines'
+| extend Os             = tostring(properties.storageProfile.osDisk.osType),
+         PowerCode      = tostring(properties.extended.instanceView.powerState.code)
+| extend Running        = PowerCode == 'PowerState/running'
+| extend AssessmentMode = tostring(coalesce(
+             properties.osProfile.windowsConfiguration.patchSettings.assessmentMode,
+             properties.osProfile.linuxConfiguration.patchSettings.assessmentMode,
+             'ImageDefault'))
+| extend PatchMode      = tostring(coalesce(
+             properties.osProfile.windowsConfiguration.patchSettings.patchMode,
+             properties.osProfile.linuxConfiguration.patchSettings.patchMode,
+             'ImageDefault'))
+// Lowercase the VM id once so the join key matches the (lowercased) parent id we
+// extract from the assessment resource below - Resource Graph emits id in lowercase.
+| extend JoinId = tolower(id)
+| join kind=leftouter (
+    patchassessmentresources
+    | where type =~ 'microsoft.compute/virtualmachines/patchassessmentresults'
+    // The summary resource id is {vmResourceId}/patchAssessmentResults/latest -
+    // capture everything before that suffix to recover the owning VM's id. The
+    // regex is case-insensitive ((?i)) so it matches regardless of how ARG cases id;
+    // indexof() would NOT, and silently breaks the join against a lowercased id.
+    | extend VmId            = tolower(extract(@'(?i)^(.+)/patchassessmentresults/', 1, id))
+    | extend AssessStatus    = tostring(properties.status),
+             LastAssessed    = todatetime(properties.startDateTime),
+             SecurityPending  = toint(properties.availablePatchCountByClassification.security),
+             CriticalPending  = toint(properties.availablePatchCountByClassification.critical),
+             RebootPending    = tostring(properties.rebootPending),
+             ErrorDetail      = tostring(properties.errorDetails[0].message)
+    | project VmId, AssessStatus, LastAssessed, SecurityPending, CriticalPending, RebootPending, ErrorDetail
+) on $left.JoinId == $right.VmId
+| extend HasData = isnotempty(AssessStatus)
+| extend Reason = case(
+        not(Running),                                          strcat('VM not running (', PowerCode, ') - cannot assess'),
+        AssessStatus =~ 'Failed',                              strcat('Last assessment failed: ', coalesce(ErrorDetail, 'see VM extension logs')),
+        not(HasData) and AssessmentMode != 'AutomaticByPlatform', 'No periodic assessment (mode=ImageDefault) - run on-demand or set AutomaticByPlatform',
+        not(HasData),                                          'No data despite periodic assessment - check VM agent health and repo/network egress',
+        'OK')
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          Os,
+          Running,
+          PowerCode,
+          AssessmentMode,
+          PatchMode,
+          AssessStatus,
+          LastAssessed,
+          SecurityPending,
+          CriticalPending,
+          RebootPending,
+          Reason,
+          ErrorDetail,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          Id                = id

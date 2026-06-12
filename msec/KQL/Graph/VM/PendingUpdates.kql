@@ -1,0 +1,49 @@
+// Every individual pending update across all accessible VMs - one row per patch, with
+// its classification, KB (Windows), version (Linux), and reboot behaviour. This is the
+// "what are the 3 pending updates, actually?" companion to UpdateReadiness.kql (which
+// only gives per-VM counts).
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType VM -Name PendingUpdates.
+// No filtering here - filter in PowerShell, e.g. to security-relevant patches only:
+//   ... | Where-Object Classifications -match 'Security|Critical'
+//
+// NB: this is PER-PATCH, so row counts climb fast. Search-MsecAzureResourceGraph pages
+// once at up to 1000 rows (-First); a large fleet with many pending patches can hit that
+// cap. Narrow with -SubscriptionId, or filter to specific VMs, if you approach it.
+
+patchassessmentresources
+| where type =~ 'microsoft.compute/virtualmachines/patchassessmentresults/softwarepatches'
+// Recover the owning VM id from {vmId}/patchAssessmentResults/latest/softwarePatches/{id}.
+// Case-insensitive ((?i)) so it matches regardless of how ARG cases the id.
+| extend VmId            = tolower(extract(@'(?i)^(.+)/patchassessmentresults/', 1, id))
+| extend PatchName       = tostring(coalesce(properties.patchName, properties.name)),
+         KbId            = tostring(properties.kbId),
+         Version         = tostring(properties.version),
+         Classifications = strcat_array(properties.classifications, ', '),
+         RebootBehavior  = tostring(properties.rebootBehavior),
+         PublishedDate   = todatetime(coalesce(properties.publishedDateTime, properties.publishedDate)),
+         AssessmentState = tostring(properties.assessmentState)
+| join kind=inner (
+    Resources
+    | where type =~ 'microsoft.compute/virtualmachines'
+    | project VmId             = tolower(id),
+              Name             = name,
+              ResourceGroupName = resourceGroup,
+              Os               = tostring(properties.storageProfile.osDisk.osType),
+              Location         = location,
+              SubscriptionId   = subscriptionId
+) on VmId
+| project Name,
+          ResourceGroupName,
+          Os,
+          PatchName,
+          KbId,
+          Version,
+          Classifications,
+          RebootBehavior,
+          PublishedDate,
+          AssessmentState,
+          Location,
+          SubscriptionId,
+          Id = id
+| order by Name asc, Classifications asc, PatchName asc

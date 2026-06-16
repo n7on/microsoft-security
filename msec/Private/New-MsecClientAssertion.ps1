@@ -26,6 +26,13 @@ function New-MsecClientAssertion {
         [Parameter(Mandatory)]
         [byte[]] $ThumbprintBytes,
 
+        # AAD login authority for the target cloud (no trailing slash), e.g.
+        # 'https://login.microsoftonline.com' (commercial) or
+        # 'https://login.chinacloudapi.cn' (Azure China). The aud claim MUST match the
+        # token endpoint Get-MsecAccessToken POSTs to, or Entra rejects the assertion.
+        [Parameter()]
+        [string] $Authority = 'https://login.microsoftonline.com',
+
         # Assertion lifetime in seconds; Entra accepts up to ~600.
         [Parameter()]
         [int] $LifetimeSeconds = 300
@@ -38,7 +45,7 @@ function New-MsecClientAssertion {
         x5t = ConvertTo-MsecBase64Url -InputObject $ThumbprintBytes
     }
     $payload = [ordered]@{
-        aud = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+        aud = "$($Authority.TrimEnd('/'))/$TenantId/oauth2/v2.0/token"
         iss = $ClientId
         sub = $ClientId
         jti = [guid]::NewGuid().Guid

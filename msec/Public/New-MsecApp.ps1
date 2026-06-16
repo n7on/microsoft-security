@@ -31,7 +31,9 @@ function New-MsecApp {
           - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
                              DeviceManagementManagedDevices.Read.All, ThreatHunting.Read.All,
                              SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All
-          - WindowsDefenderATP: Score.Read.All
+          - WindowsDefenderATP: Score.Read.All - commercial-only. Skipped automatically in
+            clouds without a Defender for Endpoint presence (e.g. Azure China), since its
+            service principal doesn't exist there; the rest of the app is still created.
 
         Prerequisites (the user running this command needs):
           - Azure RBAC to create certificates in the target Key Vault.
@@ -71,8 +73,15 @@ function New-MsecApp {
     }
     $tenantId = $ctx.Tenant.Id
 
+    # Cloud endpoints for the current context (China, US Gov, commercial). The well-known
+    # permission resource appIds assigned below are constant across clouds; only the HTTP
+    # endpoint to call Graph differs. DefenderResource is null where Defender for Endpoint
+    # has no presence (e.g. retired in Azure China) - we use that to skip its permission.
+    $envInfo   = Get-MsecEnvironment
+    $graphBase = $envInfo.GraphResource
+
     Write-Verbose 'Acquiring Graph token via Az.Accounts (your identity, not the app)'
-    $tokenInfo = Get-AzAccessToken -ResourceUrl 'https://graph.microsoft.com' -ErrorAction Stop
+    $tokenInfo = Get-AzAccessToken -ResourceUrl $graphBase -ErrorAction Stop
     $userGraphToken = if ($tokenInfo.Token -is [securestring]) {
         $tokenInfo.Token | ConvertFrom-SecureString -AsPlainText
     }
@@ -84,7 +93,7 @@ function New-MsecApp {
     # session that does not exist yet).
     $graph = {
         param($Method, $Path, $Body)
-        $uri = if ($Path -like 'https://*') { $Path } else { "https://graph.microsoft.com$Path" }
+        $uri = if ($Path -like 'https://*') { $Path } else { "$graphBase$Path" }
         $p = @{
             Method      = $Method
             Uri         = $uri
@@ -114,26 +123,59 @@ function New-MsecApp {
                 'AuditLog.Read.All'                       # Sign-in logs (Get-MsecEntraConditionalAccessSignInLog)
             )
         }
-        @{
+    )
+
+    # WindowsDefenderATP (Defender for Endpoint) is commercial-only. Its service principal
+    # doesn't exist in clouds where Defender has no presence (e.g. Azure China), so resolving
+    # it would 404 and abort the whole bootstrap. Add it only where Defender is available;
+    # the Defender-backed functions (Get-MsecDefenderScore*) simply won't apply elsewhere.
+    if ($envInfo.DefenderResource) {
+        $resources += @{
             Name       = 'WindowsDefenderATP'
             AppId      = 'fc780465-2017-40d4-a0c5-307022471b92'
             RoleValues = @('Score.Read.All')              # Defender exposure + device config score
         }
-    )
+    }
+    else {
+        Write-Warning "Defender for Endpoint is not available in '$($envInfo.EnvironmentName)' - skipping the WindowsDefenderATP (Score.Read.All) permission. Defender score functions will be unavailable in this cloud."
+    }
 
+    # Resolve each requested role to its app-role GUID. Sovereign clouds (notably Azure
+    # China) expose a REDUCED set of Microsoft Graph app roles - some security permissions
+    # like SecurityEvents.Read.All simply don't exist there. Rather than hard-fail on the
+    # first missing role (which would block the whole app), warn and skip the ones this
+    # cloud doesn't offer, then proceed with whatever subset is available - same philosophy
+    # as the Defender skip above. Functions needing a skipped permission won't work here.
+    $missingRoles = @()
     foreach ($r in $resources) {
         Write-Verbose "Resolving $($r.Name) service principal and app roles"
         $sp = & $graph GET "/v1.0/servicePrincipals(appId='$($r.AppId)')"
         $r.ResourceSpId = $sp.id
-        $r.Roles = foreach ($rv in $r.RoleValues) {
+        $r.Roles = @(foreach ($rv in $r.RoleValues) {
             $role = $sp.appRoles | Where-Object {
                 $_.value -eq $rv -and $_.allowedMemberTypes -contains 'Application'
             } | Select-Object -First 1
-            if (-not $role) {
-                throw "Could not find app role '$rv' on $($r.Name) ($($r.AppId))."
+            if ($role) {
+                [PSCustomObject]@{ Value = $rv; Id = $role.id }
             }
-            [PSCustomObject]@{ Value = $rv; Id = $role.id }
-        }
+            else {
+                $missingRoles += "$($r.Name): $rv"
+            }
+        })
+    }
+
+    if ($missingRoles) {
+        Write-Warning (
+            "These app roles are not available in '$($envInfo.EnvironmentName)' and will be skipped - " +
+            "msec functions that need them won't work in this cloud:`n  - " + ($missingRoles -join "`n  - "))
+    }
+
+    # Drop resources left with no available roles - nothing to request or consent for them.
+    # Existing requiredResourceAccess entries for such resources are preserved untouched by
+    # the merge below (they fall through the 'else' branch), so re-runs don't clobber them.
+    $resources = @($resources | Where-Object { $_.Roles.Count -gt 0 })
+    if ($resources.Count -eq 0) {
+        throw "None of the required app roles are available in '$($envInfo.EnvironmentName)'; cannot configure the app."
     }
 
     # ---- 2. Find-or-create the application (idempotent) ----

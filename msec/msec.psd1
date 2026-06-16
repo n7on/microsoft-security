@@ -38,6 +38,7 @@
         'Get-MsecEntraConditionalAccessStats',
         'Search-MsecAzureResourceGraph',
         'Invoke-MsecAzureVMScript',
+        'Select-MsecAzureContext',
         'Get-MsecAdoServiceConnection',
         'Export-MsecWordReport'
     )

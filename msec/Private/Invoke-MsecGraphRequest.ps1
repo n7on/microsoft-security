@@ -28,10 +28,19 @@ function Invoke-MsecGraphRequest {
         [switch] $All
     )
 
-    $token = Get-MsecAccessToken -Resource 'https://graph.microsoft.com'
+    # Graph endpoint for the session's cloud (microsoftgraph.chinacloudapi.cn in China,
+    # graph.microsoft.us in US Gov). Falls back to commercial for sessions that predate
+    # endpoint resolution. The same value is both the token resource and the base URL.
+    $base = if ($script:MsecSession.Endpoints -and $script:MsecSession.Endpoints.GraphResource) {
+        $script:MsecSession.Endpoints.GraphResource
+    }
+    else {
+        'https://graph.microsoft.com'
+    }
+
+    $token = Get-MsecAccessToken -Resource $base
     $headers = @{ Authorization = "Bearer $token" }
 
-    $base = 'https://graph.microsoft.com'
     $uri  = if ($Path -like 'https://*') { $Path } else { $base + $Path }
 
     $invokeParams = @{

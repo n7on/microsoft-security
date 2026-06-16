@@ -77,9 +77,13 @@ function Get-MsecAzureSecureScore {
         Get-AzSubscription -ErrorAction Stop
     }
 
+    # ARM endpoint for the current cloud (management.chinacloudapi.cn in China). Derived
+    # from the Az context so this works in every sovereign cloud, not just commercial.
+    $arm = (Get-MsecEnvironment).ArmResource
+
     # ARM token. Get-AzAccessToken returns SecureString in Az.Accounts 5.x+ and
     # plain string in older versions - handle both transparently.
-    $tokenResp = Get-AzAccessToken -ResourceUrl 'https://management.azure.com/' -ErrorAction Stop
+    $tokenResp = Get-AzAccessToken -ResourceUrl "$arm/" -ErrorAction Stop
     $token = if ($tokenResp.Token -is [System.Security.SecureString]) {
         [System.Net.NetworkCredential]::new('', $tokenResp.Token).Password
     }
@@ -98,7 +102,7 @@ function Get-MsecAzureSecureScore {
         # secureScores collection. There's only ever one item per sub - this
         # endpoint returns a collection for forward compatibility, not because
         # multiple scores exist today.
-        $overallUri = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Security/secureScores?api-version=2020-01-01"
+        $overallUri = "$arm/subscriptions/$subId/providers/Microsoft.Security/secureScores?api-version=2020-01-01"
         try {
             $resp = Invoke-RestMethod -Method GET -Uri $overallUri -Headers $headers -ErrorAction Stop
         }
@@ -123,7 +127,7 @@ function Get-MsecAzureSecureScore {
         }
 
         if ($IncludeControls) {
-            $controlsUri = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Security/secureScores/ascScore/secureScoreControls?api-version=2020-01-01"
+            $controlsUri = "$arm/subscriptions/$subId/providers/Microsoft.Security/secureScores/ascScore/secureScoreControls?api-version=2020-01-01"
             try {
                 $cResp = Invoke-RestMethod -Method GET -Uri $controlsUri -Headers $headers -ErrorAction Stop
             }

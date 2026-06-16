@@ -70,6 +70,30 @@ Describe 'Search-MsecAzureResourceGraph' {
         $rows[0].PSObject.Properties.Name | Should -Not -Contain 'Data'
     }
 
+    It '-CurrentSubscription scopes the query to just the active context subscription' {
+        # Must NOT enumerate every accessible sub - it should pass only the current one
+        # to Search-AzGraph.
+        $sub = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-current' } } }
+            Mock Get-AzSubscription -MockWith { throw 'should not enumerate all subscriptions with -CurrentSubscription' }
+            $script:CapturedSub = $null
+            Mock Search-AzGraph -MockWith { $script:CapturedSub = $Subscription; @() }
+
+            $null = Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription
+            , $script:CapturedSub
+        }
+        $sub | Should -Be @('sub-current')
+    }
+
+    It 'throws when -CurrentSubscription and -SubscriptionId are both supplied' {
+        InModuleScope msec {
+            Mock Get-AzContext  -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-1' } } }
+            Mock Search-AzGraph -MockWith { @() }
+            { Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription -SubscriptionId 'sub-2' } |
+                Should -Throw -ExpectedMessage '*either -CurrentSubscription or -SubscriptionId*'
+        }
+    }
+
     It 'throws a clear error when the named .kql file does not exist' {
         InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }

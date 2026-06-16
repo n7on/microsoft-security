@@ -3,8 +3,9 @@
 # Tests for Invoke-MsecAzureVMScript - the runner that dispatches bundled scripts to
 # Azure VMs via Invoke-AzVMRunCommand. Covers OS-specific dispatch (RunShellScript
 # vs RunPowerShellScript), output extraction (StdOut/StdErr filtering + the
-# Linux agent's "[stdout]/[stderr]" wrapper unwrap), cross-subscription routing,
-# per-row Os binding, parameter validation, and tab completion.
+# Linux agent's "[stdout]/[stderr]" wrapper unwrap), the active-context subscription
+# guard (graceful fail for out-of-context VMs), per-row Os binding, parameter
+# validation, and tab completion.
 
 BeforeAll {
     $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
@@ -158,57 +159,46 @@ Enable succeeded:
         }
     }
 
-    It 'routes per-VM to the matching Az context when the row carries a SubscriptionId' {
-        # The whole point of the cross-sub plumbing: a VM in sub-B must be dispatched
-        # with sub-B's context as -DefaultProfile, even when the caller's default
-        # context is sub-A. The worker looks up the matching context from
-        # Get-AzContext -ListAvailable per-row. We need -RemoveParameterType on
-        # DefaultProfile because the real cmdlet types it as [IAzureContextContainer]
-        # and our fake context objects are plain PSCustomObjects - without this,
-        # Pester's mock dispatcher would silently fail type binding and drop the call.
+    It 'runs VMs in the active-context subscription and gracefully fails VMs in another sub' {
+        # Single-context model: with the active context on sub-A, a VM in sub-A dispatches
+        # normally; a VM in sub-B is NOT dispatched - it comes back as a Failed row
+        # explaining the mismatch. No per-VM context switching, no -DefaultProfile.
         InModuleScope msec {
             Mock Get-AzContext -MockWith {
-                @(
-                    [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' }
-                    [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-B' }; Name = 'ctx-B' }
-                )
+                [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' }
             }
-            Mock Invoke-AzVMRunCommand -RemoveParameterType 'DefaultProfile' -MockWith {
+            Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
                     Status = 'Succeeded'
-                    Value  = @([pscustomobject]@{ Code = 'ComponentStatus/StdOut/succeeded'; Message = '' })
+                    Value  = @([pscustomobject]@{ Code = 'ComponentStatus/StdOut/succeeded'; Message = 'ok' })
                 }
             }
 
-            @(
+            $out = @(
                 [pscustomobject]@{ Name='a-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-A' }
                 [pscustomobject]@{ Name='b-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-B' }
-            ) | Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0 | Out-Null
+            ) | Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0
 
-            # a-vm went to sub-A's context, b-vm went to sub-B's.
-            Should -Invoke Invoke-AzVMRunCommand -Exactly 1 -ParameterFilter {
-                $Name -eq 'a-vm' -and $DefaultProfile.Subscription.Id -eq 'sub-A'
-            }
-            Should -Invoke Invoke-AzVMRunCommand -Exactly 1 -ParameterFilter {
-                $Name -eq 'b-vm' -and $DefaultProfile.Subscription.Id -eq 'sub-B'
-            }
-            # And nothing crossed wires.
-            Should -Invoke Invoke-AzVMRunCommand -Exactly 0 -ParameterFilter {
-                $Name -eq 'a-vm' -and $DefaultProfile.Subscription.Id -eq 'sub-B'
-            }
+            # a-vm (matches active context) ran; b-vm (other sub) was failed gracefully.
+            ($out | Where-Object VmName -eq 'a-vm').Status | Should -Be 'Succeeded'
+            ($out | Where-Object VmName -eq 'b-vm').Status | Should -Be 'Failed'
+            ($out | Where-Object VmName -eq 'b-vm').Error  | Should -Match 'subscription sub-B'
+
+            # Invoke-AzVMRunCommand was only ever called for the in-context VM.
+            Should -Invoke Invoke-AzVMRunCommand -Exactly 1 -ParameterFilter { $Name -eq 'a-vm' }
+            Should -Invoke Invoke-AzVMRunCommand -Exactly 0 -ParameterFilter { $Name -eq 'b-vm' }
         }
     }
 
-    It 'returns a Failed row (rather than throwing) when no Az context exists for the VMs subscription' {
-        # Surfacing the gap in the report is more useful than silently dropping the VM
-        # or aborting the whole batch - the auditor sees exactly which subs need a
-        # Connect-AzAccount.
+    It 'returns a Failed row (rather than throwing or dispatching) when a VMs subscription differs from the active context' {
+        # Surfacing the gap in the report - with the remedy - is more useful than silently
+        # dropping the VM, dispatching to the wrong sub, or aborting the whole batch.
         $result = InModuleScope msec {
-            # User connected only to sub-A; VM lives in sub-B - nothing matches.
+            # Active context is sub-A; the VM lives in sub-B.
             Mock Get-AzContext -MockWith {
-                @([pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' })
+                [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' }
             }
-            Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called - no context for sub-B' }
+            Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called - b-vm is in another sub' }
 
             [pscustomobject]@{ Name='b-vm'; ResourceGroupName='rg'; Os='Linux'; SubscriptionId='sub-B' } |
                 Invoke-MsecAzureVMScript -ScriptName os-info -TimeoutSeconds 0
@@ -216,8 +206,9 @@ Enable succeeded:
 
         $result.VmName | Should -Be 'b-vm'
         $result.Status | Should -Be 'Failed'
-        $result.Error  | Should -Match 'No Az PowerShell context for subscription sub-B'
-        $result.Error  | Should -Match 'Connect-AzAccount'
+        $result.Error  | Should -Match 'subscription sub-B'
+        $result.Error  | Should -Match 'active Az context is sub-A'
+        $result.Error  | Should -Match 'Set-AzContext'
     }
 
     It 'binds -Os per-row from the pipeline so mixed Linux/Windows VMs work in one call' {

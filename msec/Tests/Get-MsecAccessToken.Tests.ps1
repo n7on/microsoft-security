@@ -44,4 +44,31 @@ Describe 'Get-MsecAccessToken caching' {
             Should -Invoke Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -Times 1 -Exactly
         }
     }
+
+    It 'posts to the China AAD authority and stamps a matching aud when the session is Azure China' {
+        InModuleScope msec {
+            # Pin the session to Azure China endpoints.
+            $script:MsecSession.Endpoints = [pscustomobject]@{
+                EnvironmentName = 'AzureChinaCloud'
+                AadAuthority    = 'https://login.chinacloudapi.cn'
+                GraphResource   = 'https://microsoftgraph.chinacloudapi.cn'
+            }
+
+            $script:CapturedAuthority = $null
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            # Capture the authority the assertion was built with - it MUST match the token URL.
+            Mock New-MsecClientAssertion -MockWith {
+                $script:CapturedAuthority = $Authority
+                'fake.jwt.assertion'
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'login\.chinacloudapi\.cn/.+/oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'cn'; expires_in = 3600 }
+            }
+
+            [void](Get-MsecAccessToken -Resource 'https://microsoftgraph.chinacloudapi.cn')
+
+            $script:CapturedAuthority | Should -Be 'https://login.chinacloudapi.cn'
+            Should -Invoke Invoke-RestMethod -ParameterFilter { $Uri -match 'login\.chinacloudapi\.cn/.+/oauth2/v2.0/token' } -Times 1 -Exactly
+        }
+    }
 }

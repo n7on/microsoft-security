@@ -1,0 +1,52 @@
+// When each accessible VM last had patches INSTALLED by Azure Update Manager - the most
+// recent install run per VM, with its status, counts, and reboot outcome.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType VM -Name LastUpdated.
+// No filtering here - filter in PowerShell, e.g. machines not patched in 35+ days:
+//   ... | Where-Object { $_.LastRun -lt (Get-Date).AddDays(-35) }
+//
+// IMPORTANT - this reflects ONLY installations Update Manager performed (on-demand runs
+// or maintenance-configuration schedules). If a VM patches itself in-guest (Windows
+// automatic updates, Ubuntu unattended-upgrades) outside Update Manager, it contributes
+// NO rows here and will look "never updated" - which is false. For those, query the
+// guest directly (Get-HotFix / WUA history on Windows; /var/log/dpkg.log on Ubuntu) via
+// Invoke-MsecAzureVMScript. A VM present in UpdateReadiness but absent here = patched
+// out-of-band, not unpatched.
+
+patchinstallationresources
+| where type =~ 'microsoft.compute/virtualmachines/patchinstallationresults'
+// Recover the owning VM id from {vmId}/patchInstallationResults/{runId}. Installation
+// results are keyed per run (a GUID), not 'latest', so multiple rows per VM are normal.
+// Case-insensitive ((?i)) to match regardless of how ARG cases the id.
+| extend VmId           = tolower(extract(@'(?i)^(.+)/patchinstallationresults/', 1, id))
+| extend LastRun        = todatetime(coalesce(properties.lastModifiedDateTime, properties.startDateTime)),
+         InstallStatus  = tostring(properties.status),
+         InstalledCount = toint(properties.installedPatchCount),
+         FailedCount    = toint(properties.failedPatchCount),
+         PendingCount   = toint(properties.pendingPatchCount),
+         RebootStatus   = tostring(properties.rebootStatus)
+// Collapse the run history to the single most-recent run per VM.
+| summarize arg_max(LastRun, *) by VmId
+| join kind=inner (
+    Resources
+    | where type =~ 'microsoft.compute/virtualmachines'
+    | project VmId             = tolower(id),
+              Name             = name,
+              ResourceGroupName = resourceGroup,
+              Os               = tostring(properties.storageProfile.osDisk.osType),
+              Location         = location,
+              SubscriptionId   = subscriptionId
+) on VmId
+| project Name,
+          ResourceGroupName,
+          Os,
+          LastRun,
+          InstallStatus,
+          InstalledCount,
+          FailedCount,
+          PendingCount,
+          RebootStatus,
+          Location,
+          SubscriptionId,
+          Id = VmId
+| order by LastRun desc

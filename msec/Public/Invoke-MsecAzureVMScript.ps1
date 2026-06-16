@@ -53,12 +53,13 @@ function Invoke-MsecAzureVMScript {
     .PARAMETER TimeoutSeconds
         Max seconds to wait for any single VM's Run-Command to complete. Default
         300 (5 min) - generous enough for cold/slow VMs while still bounding the
-        worst case far below Az's own 45-minute internal timeout. Each call is
-        wrapped in a ThreadJob with Wait-Job -Timeout, so a stuck agent yields
-        one Failed/Timeout row instead of hanging the whole batch. Raise to 600
-        for very slow fleets, lower (e.g. 120) for tight aggressive runs. Set to
-        0 to disable the wrap entirely (useful for tests that mock
-        Invoke-AzVMRunCommand - Pester mocks don't propagate into ThreadJob
+        worst case far below Az's own 45-minute internal timeout. Each call runs
+        as the cmdlet's own cancellable background job (-AsJob) with Wait-Job
+        -Timeout, so a stuck agent yields one Failed/Timeout row - and the
+        cancellation actually frees the slot - instead of hanging the whole batch.
+        Raise to 600 for very slow fleets, lower (e.g. 120) for tight aggressive
+        runs. Set to 0 to disable the timeout entirely (useful for tests that mock
+        Invoke-AzVMRunCommand - Pester mocks don't propagate into background-job
         runspaces).
 
     .EXAMPLE
@@ -87,6 +88,10 @@ function Invoke-MsecAzureVMScript {
             $base = (Get-Module msec).ModuleBase
             if (-not $base) { return }
 
+            # NB: the canonical OS map (extension + CommandId) lives in
+            # Resolve-MsecAzureVMScriptDispatch. A completer scriptblock runs in the caller's
+            # session, not module scope, so it can't call that private helper - it only needs
+            # the file glob, kept in sync here by hand.
             $os = $fakeBoundParameters['Os']
             if ($os) {
                 # -Os is on the command line - filter to that OS's folder.
@@ -125,8 +130,10 @@ function Invoke-MsecAzureVMScript {
         [string] $Location,
 
         # Optional. When the piped row carries SubscriptionId (Search-MsecAzureResourceGraph
-        # projects it), each VM is dispatched against the Az context for THAT sub -
-        # which is what makes cross-subscription audits work in a single command.
+        # projects it), it GUARDS against acting on the wrong subscription: a VM whose
+        # SubscriptionId differs from the active Az context is failed gracefully instead of
+        # dispatched. Scope the query with Search-MsecAzureResourceGraph -SubscriptionId, or
+        # switch context, so targets match the active sub.
         [Parameter(ValueFromPipelineByPropertyName)]
         [string] $SubscriptionId,
 
@@ -142,23 +149,10 @@ function Invoke-MsecAzureVMScript {
             throw 'No Azure context. Run Connect-AzAccount before Invoke-MsecAzureVMScript.'
         }
 
-        # Resolve script path / commandId on first sight of each OS. -Os may be
-        # constant (from the command line) or vary row-by-row (pipeline-bound), so we
-        # cache rather than precompute. Missing scripts throw on first encounter.
-        $osCache = @{}
-        $resolveOs = {
-            param($targetOs)
-            if (-not $osCache.ContainsKey($targetOs)) {
-                $ext  = if ($targetOs -eq 'Linux') { '.sh' }            else { '.ps1' }
-                $cmd  = if ($targetOs -eq 'Linux') { 'RunShellScript' } else { 'RunPowerShellScript' }
-                $path = Join-Path $script:MsecModuleRoot "Scripts/VM/$targetOs/$ScriptName$ext"
-                if (-not (Test-Path -LiteralPath $path)) {
-                    throw "$targetOs script not found: $path"
-                }
-                $osCache[$targetOs] = @{ ScriptPath = $path; CommandId = $cmd }
-            }
-            $osCache[$targetOs]
-        }
+        # Script path + Run-Command id are resolved by Resolve-MsecAzureVMScriptDispatch
+        # (the single source of truth for the OS map) and memoized per OS here - -Os may be
+        # one command-line value or vary row-by-row when bound from the pipeline.
+        $dispatchByOs = @{}
 
         # The per-VM work lives in Private/Invoke-MsecAzureVMScriptCore.ps1. The sequential
         # path calls it directly. The parallel path can't (ForEach-Object -Parallel
@@ -173,7 +167,11 @@ function Invoke-MsecAzureVMScript {
 
     process {
         # $Os is per-row when pipeline-bound, constant when set on the command line.
-        $dispatch = & $resolveOs $Os
+        # Resolve once per OS, then reuse.
+        if (-not $dispatchByOs.ContainsKey($Os)) {
+            $dispatchByOs[$Os] = Resolve-MsecAzureVMScriptDispatch -Os $Os -ScriptName $ScriptName
+        }
+        $dispatch = $dispatchByOs[$Os]
 
         $vm = [pscustomobject]@{
             Name              = $Name
@@ -187,10 +185,10 @@ function Invoke-MsecAzureVMScript {
         }
 
         if ($ThrottleLimit -le 1) {
-            $subTag = if ($SubscriptionId) { " sub=$SubscriptionId" } else { '' }
-            Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os$subTag) via $($dispatch.CommandId)"
+            Write-Verbose "Running $ScriptName on $ResourceGroupName/$Name ($Os) via $($dispatch.CommandId)"
             Invoke-MsecAzureVMScriptCore -Vm $vm -TimeoutSeconds $TimeoutSeconds
-        } else {
+        }
+        else {
             $pending.Add($vm)
         }
     }
@@ -214,8 +212,8 @@ function Invoke-MsecAzureVMScript {
             # Re-create the module's private worker function inside this runspace
             # from the body we captured up in begin{}. This is the canonical PS 7+
             # idiom for sharing function code with ForEach-Object -Parallel. The
-            # worker resolves the per-sub Az context itself (Az autosaves all
-            # accessible contexts to disk so every runspace can read them).
+            # worker reads the active Az context (autosaved to disk, so every runspace
+            # sees it) to validate each VM's subscription against the active one.
             ${function:Invoke-MsecAzureVMScriptCore} = $using:coreFn
             $r = Invoke-MsecAzureVMScriptCore -Vm $_ -TimeoutSeconds $using:TimeoutSeconds
 

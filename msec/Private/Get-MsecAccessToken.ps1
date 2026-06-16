@@ -24,16 +24,26 @@ function Get-MsecAccessToken {
         return $cached.Token
     }
 
-    Write-Verbose "Acquiring access token for $Resource"
+    # AAD login authority for the session's cloud. Falls back to commercial when the
+    # session predates endpoint resolution (older Connect-Msec, or unit-test sessions).
+    $authority = if ($session.Endpoints -and $session.Endpoints.AadAuthority) {
+        $session.Endpoints.AadAuthority
+    }
+    else {
+        'https://login.microsoftonline.com'
+    }
+
+    Write-Verbose "Acquiring access token for $Resource via $authority"
     $assertion = New-MsecClientAssertion `
         -TenantId        $session.TenantId `
         -ClientId        $session.ClientId `
         -VaultName       $session.KeyVaultName `
         -KeyName         $session.KeyName `
-        -ThumbprintBytes $session.ThumbprintBytes
+        -ThumbprintBytes $session.ThumbprintBytes `
+        -Authority       $authority
 
     $response = Invoke-RestMethod -Method Post -ErrorAction Stop `
-        -Uri "https://login.microsoftonline.com/$($session.TenantId)/oauth2/v2.0/token" `
+        -Uri "$authority/$($session.TenantId)/oauth2/v2.0/token" `
         -ContentType 'application/x-www-form-urlencoded' `
         -Body @{
             client_id             = $session.ClientId

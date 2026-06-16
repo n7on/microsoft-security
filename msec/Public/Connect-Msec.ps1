@@ -65,18 +65,31 @@ function Connect-Msec {
     if (-not $TenantId) { $TenantId = $meta.TenantId }
     if (-not $TenantId) { $TenantId = $azCtx.Tenant.Id }
 
+    # Resolve the cloud's endpoints from the Az context (commercial, China, US Gov).
+    # Pins the whole session to one cloud; switching clouds means a fresh Connect-AzAccount
+    # + Connect-Msec, because a single Az session is one cloud at a time.
+    $endpoints = Get-MsecEnvironment
+
     $script:MsecSession = @{
         TenantId        = $TenantId
         ClientId        = $ClientId
         KeyVaultName    = $KeyVaultName
         KeyName         = $meta.KeyName
         ThumbprintBytes = $meta.ThumbprintBytes
+        Endpoints       = $endpoints
         Tokens          = @{}
     }
 
-    # Prime both resources so configuration errors surface here, not deep in a Get-Msec* call.
-    [void](Get-MsecAccessToken -Resource 'https://graph.microsoft.com')
-    [void](Get-MsecAccessToken -Resource 'https://api.securitycenter.microsoft.com')
+    # Prime tokens so configuration errors surface here, not deep in a Get-Msec* call.
+    # Graph exists in every cloud; Defender (securitycenter) is commercial-only, so prime
+    # it only where it has an endpoint (e.g. it is retired in Azure China).
+    [void](Get-MsecAccessToken -Resource $endpoints.GraphResource)
+    if ($endpoints.DefenderResource) {
+        [void](Get-MsecAccessToken -Resource $endpoints.DefenderResource)
+    }
+    else {
+        Write-Verbose "Defender (securitycenter) has no endpoint in $($endpoints.EnvironmentName); skipping Defender token. Defender functions will be unavailable."
+    }
 
-    Write-Verbose "Connected to tenant $TenantId as app $ClientId (cert: $($meta.Thumbprint))"
+    Write-Verbose "Connected to tenant $TenantId as app $ClientId in $($endpoints.EnvironmentName) (cert: $($meta.Thumbprint))"
 }

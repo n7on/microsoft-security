@@ -24,6 +24,9 @@ $script:MsecModuleRoot = $PSScriptRoot
 #     KeyVaultName    = '<name>'
 #     KeyName         = '<name>'           # same as the cert name when KV created them together
 #     ThumbprintBytes = [byte[]]           # SHA-1 thumbprint, used for the JWT x5t header
+#     Endpoints       = [pscustomobject]   # cloud endpoints from Get-MsecEnvironment
+#                                          # (AadAuthority, GraphResource, DefenderResource,
+#                                          #  KeyVaultResource/DnsSuffix, ArmResource)
 #     Tokens          = @{
 #         '<resource>' = @{ Token = '<jwt>'; ExpiresOn = [DateTimeOffset] }
 #     }

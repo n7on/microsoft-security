@@ -37,11 +37,22 @@ function Search-MsecAzureResourceGraph {
     .PARAMETER SubscriptionId
         Restrict to specific subscriptions. Omit to query every accessible subscription.
 
+    .PARAMETER CurrentSubscription
+        Scope the query to just the active Az context's subscription - shorthand for
+        -SubscriptionId (Get-AzContext).Subscription.Id. Mutually exclusive with
+        -SubscriptionId. Handy when you want results that line up with the single
+        subscription Invoke-MsecAzureVMScript will act on.
+
     .PARAMETER First
         Page size (1-1000). Default 1000.
 
     .EXAMPLE
         Search-MsecAzureResourceGraph -ResourceType VM
+
+    .EXAMPLE
+        # Just the subscription you're currently working in - lines up with what
+        # Invoke-MsecAzureVMScript will act on:
+        Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription
 
     .EXAMPLE
         Search-MsecAzureResourceGraph -ResourceType VM | Where-Object { $_.Os -eq 'Linux' -and $_.Running } |
@@ -99,6 +110,13 @@ function Search-MsecAzureResourceGraph {
         [Parameter()]
         [string[]] $SubscriptionId,
 
+        # Scope to just the active Az context's subscription - the easy alternative to
+        # passing -SubscriptionId (Get-AzContext).Subscription.Id by hand. Mutually
+        # exclusive with -SubscriptionId. Without either, every accessible subscription is
+        # queried (the estate-wide default the bundled reports rely on).
+        [Parameter()]
+        [switch] $CurrentSubscription,
+
         [Parameter()]
         [ValidateRange(1, 1000)]
         [int] $First = 1000
@@ -114,11 +132,25 @@ function Search-MsecAzureResourceGraph {
     }
     $query = Get-Content -LiteralPath $path -Raw
 
-    # Default to EVERY accessible subscription. Search-AzGraph's own default is just
-    # the current context's sub, which is wrong for audit scenarios - the whole point
-    # of using Resource Graph is to span the estate. Enumerate up front and pass the
-    # explicit list so the user sees what's being queried.
-    if (-not $SubscriptionId) {
+    if ($CurrentSubscription -and $SubscriptionId) {
+        throw 'Specify either -CurrentSubscription or -SubscriptionId, not both.'
+    }
+
+    # Resolve the subscription scope:
+    #   -SubscriptionId      -> exactly those subs
+    #   -CurrentSubscription -> just the active Az context's sub
+    #   (neither)            -> EVERY accessible sub. Search-AzGraph's own default is only
+    #                           the current context's sub, which is wrong for estate-wide
+    #                           audits, so we enumerate up front and pass the explicit list.
+    if ($CurrentSubscription) {
+        $currentSub = (Get-AzContext).Subscription.Id
+        if (-not $currentSub) {
+            throw 'The active Az context has no subscription. Run Connect-AzAccount or Set-AzContext -SubscriptionId <id>.'
+        }
+        $SubscriptionId = @($currentSub)
+        Write-Verbose "Scoping to current subscription: $currentSub"
+    }
+    elseif (-not $SubscriptionId) {
         $SubscriptionId = (Get-AzSubscription -ErrorAction Stop).Id
         Write-Verbose "Querying $($SubscriptionId.Count) accessible subscription(s): $($SubscriptionId -join ', ')"
     }

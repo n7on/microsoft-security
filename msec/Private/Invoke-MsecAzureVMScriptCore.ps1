@@ -14,11 +14,14 @@ function Invoke-MsecAzureVMScriptCore {
         passes the function BODY (a string) and lets each runspace redefine the
         function in its own session state.
 
-        Cross-subscription dispatch: if the $Vm object has a SubscriptionId property,
-        the function looks up the matching Az context (one per accessible sub, created
-        by Connect-AzAccount) and passes it via -DefaultProfile so Invoke-AzVMRunCommand
-        targets the right ARM endpoint. When SubscriptionId is blank (hand-built rows),
-        the current Az context is used implicitly.
+        Single-context model: Invoke-AzVMRunCommand always targets the CURRENT Az context's
+        subscription. The function does NOT switch context per VM - that implicit routing
+        required a saved context for every sub and failed obscurely when one was missing.
+        Instead, if the $Vm carries a SubscriptionId that differs from the active context,
+        the VM is failed gracefully (a Failed row explaining the mismatch and the remedy)
+        rather than dispatched to the wrong subscription. Scope the query with
+        Search-MsecAzureResourceGraph -SubscriptionId, or switch context, so targets match.
+        When SubscriptionId is blank or matches the active context, that context is used.
 
     .PARAMETER Vm
         A PSCustomObject with the dispatch metadata: Name, ResourceGroupName,
@@ -39,21 +42,14 @@ function Invoke-MsecAzureVMScriptCore {
         [int] $TimeoutSeconds = 0
     )
 
-    # Per-VM sub routing. Look up the context that matches this VM's subscription
-    # so Invoke-AzVMRunCommand reaches the right ARM endpoint - without this, every
-    # call hits the current context's subscription regardless of where the VM lives.
-    # Each parallel runspace can find this on its own because Az autosaves contexts
-    # to disk by default.
-    $defaultProfile = $null
+    # Single-context model: the run-command targets the CURRENT Az context's subscription.
+    # We deliberately do NOT switch context per VM - that implicit routing required a saved
+    # context for every sub and failed obscurely when one was missing. If a piped VM lives
+    # in a different subscription than the active context, fail it gracefully with a clear
+    # remedy instead of dispatching to the wrong sub or throwing a raw Azure error.
     if ($Vm.SubscriptionId) {
-        $defaultProfile = Get-AzContext -ListAvailable |
-            Where-Object { $_.Subscription -and $_.Subscription.Id -eq $Vm.SubscriptionId } |
-            Select-Object -First 1
-
-        if (-not $defaultProfile) {
-            # Caller has access to this sub via ARG (read) but no Az PS context for it
-            # (e.g. Connect-AzAccount narrowed to one sub). Return a row so the VM
-            # shows up in the report flagged, instead of disappearing silently.
+        $currentSub = (Get-AzContext -ErrorAction SilentlyContinue).Subscription.Id
+        if ($currentSub -and $Vm.SubscriptionId -ne $currentSub) {
             return [PSCustomObject]@{
                 VmName            = $Vm.Name
                 ResourceGroupName = $Vm.ResourceGroupName
@@ -62,7 +58,7 @@ function Invoke-MsecAzureVMScriptCore {
                 ScriptName        = $Vm.ScriptName
                 Status            = 'Failed'
                 Output            = $null
-                Error             = "No Az PowerShell context for subscription $($Vm.SubscriptionId). Run 'Connect-AzAccount -Subscription $($Vm.SubscriptionId)' (or Connect-AzAccount without -Subscription to enumerate all your subs)."
+                Error             = "VM is in subscription $($Vm.SubscriptionId) but the active Az context is $currentSub. Switch context with 'Set-AzContext -SubscriptionId $($Vm.SubscriptionId)', or scope your query with 'Search-MsecAzureResourceGraph -SubscriptionId $currentSub', so targets match the active subscription."
                 DurationSeconds   = 0
             }
         }
@@ -79,7 +75,6 @@ function Invoke-MsecAzureVMScriptCore {
             ScriptPath        = $Vm.ScriptPath
             ErrorAction       = 'Stop'
         }
-        if ($defaultProfile) { $cmd.DefaultProfile = $defaultProfile }
 
         if ($TimeoutSeconds -gt 0) {
             # Wrap the call in a ThreadJob so a wedged VM agent doesn't hang the
@@ -96,8 +91,7 @@ function Invoke-MsecAzureVMScriptCore {
             if ($completed) {
                 $resp = Receive-Job $job -ErrorAction Stop
                 Remove-Job $job
-            }
-            else {
+
                 Stop-Job $job
                 Remove-Job $job -Force
                 throw "VM did not respond within $TimeoutSeconds seconds (timeout)."

@@ -32,8 +32,14 @@ function Invoke-MsecKeyVaultSign {
         [Parameter()][string] $Algorithm = 'RS256'
     )
 
-    # User token for vault.azure.net (the user is the one with Crypto User on the vault).
-    $tokenInfo = Get-AzAccessToken -ResourceUrl 'https://vault.azure.net' -ErrorAction Stop
+    # Key Vault data-plane endpoint for the current cloud (vault.azure.cn in China). Derive
+    # from the Az context; fall back to commercial if environment resolution is unavailable.
+    $envInfo    = try { Get-MsecEnvironment } catch { $null }
+    $kvResource = if ($envInfo) { $envInfo.KeyVaultResource }  else { 'https://vault.azure.net' }
+    $kvSuffix   = if ($envInfo) { $envInfo.KeyVaultDnsSuffix } else { 'vault.azure.net' }
+
+    # User token for the vault (the user is the one with Crypto User on the vault).
+    $tokenInfo = Get-AzAccessToken -ResourceUrl $kvResource -ErrorAction Stop
     $kvToken = if ($tokenInfo.Token -is [securestring]) {
         $tokenInfo.Token | ConvertFrom-SecureString -AsPlainText
     }
@@ -46,9 +52,9 @@ function Invoke-MsecKeyVaultSign {
         value = ConvertTo-MsecBase64Url -InputObject $Digest
     } | ConvertTo-Json -Compress
 
-    Write-Verbose "POST https://$VaultName.vault.azure.net/keys/$KeyName/sign"
+    Write-Verbose "POST https://$VaultName.$kvSuffix/keys/$KeyName/sign"
     $response = Invoke-RestMethod -Method Post -ErrorAction Stop `
-        -Uri "https://$VaultName.vault.azure.net/keys/$KeyName/sign?api-version=7.4" `
+        -Uri "https://$VaultName.$kvSuffix/keys/$KeyName/sign?api-version=7.4" `
         -Headers @{ Authorization = "Bearer $kvToken" } `
         -ContentType 'application/json' `
         -Body $body

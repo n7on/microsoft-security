@@ -54,13 +54,14 @@ function Invoke-MsecAzureVMScript {
         Max seconds to wait for any single VM's Run-Command to complete. Default
         300 (5 min) - generous enough for cold/slow VMs while still bounding the
         worst case far below Az's own 45-minute internal timeout. Each call runs
-        as the cmdlet's own cancellable background job (-AsJob) with Wait-Job
-        -Timeout, so a stuck agent yields one Failed/Timeout row - and the
-        cancellation actually frees the slot - instead of hanging the whole batch.
-        Raise to 600 for very slow fleets, lower (e.g. 120) for tight aggressive
-        runs. Set to 0 to disable the timeout entirely (useful for tests that mock
-        Invoke-AzVMRunCommand - Pester mocks don't propagate into background-job
-        runspaces).
+        as the cmdlet's own background job (-AsJob) with Wait-Job -Timeout; on
+        timeout the job is abandoned rather than stopped synchronously (stopping can
+        block on a wedged VM whose call ignores cancellation), so a stuck agent
+        yields one Failed/Timeout row and the batch keeps moving instead of hanging
+        on it. Raise to 600 for very slow fleets, lower (e.g. 120) for tight
+        aggressive runs. Set to 0 to disable the timeout entirely (useful for tests
+        that mock Invoke-AzVMRunCommand - Pester mocks don't propagate into
+        background-job runspaces).
 
     .EXAMPLE
         # Mixed Linux + Windows, single call, parallel:

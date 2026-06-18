@@ -14,14 +14,9 @@ function Invoke-MsecAzureVMScriptCore {
         passes the function BODY (a string) and lets each runspace redefine the
         function in its own session state.
 
-        Single-context model: Invoke-AzVMRunCommand always targets the CURRENT Az context's
-        subscription. The function does NOT switch context per VM - that implicit routing
-        required a saved context for every sub and failed obscurely when one was missing.
-        Instead, if the $Vm carries a SubscriptionId that differs from the active context,
-        the VM is failed gracefully (a Failed row explaining the mismatch and the remedy)
-        rather than dispatched to the wrong subscription. Scope the query with
-        Search-MsecAzureResourceGraph -SubscriptionId, or switch context, so targets match.
-        When SubscriptionId is blank or matches the active context, that context is used.
+        It targets the CURRENT Az context's subscription and never switches context per VM;
+        a $Vm whose SubscriptionId differs from the active context is failed gracefully (see
+        the inline comment on the guard below).
 
     .PARAMETER Vm
         A PSCustomObject with the dispatch metadata: Name, ResourceGroupName,
@@ -30,9 +25,10 @@ function Invoke-MsecAzureVMScriptCore {
 
     .PARAMETER TimeoutSeconds
         Max seconds to wait for Invoke-AzVMRunCommand on this one VM. 0 (default)
-        means "no timeout" - the call blocks as long as Azure does. >0 wraps the
-        call in a ThreadJob with Wait-Job -Timeout, so a wedged VM agent yields a
-        single Failed/Timeout row instead of hanging the whole batch.
+        means "no timeout" - the call blocks as long as Azure does. >0 runs the call
+        as the cmdlet's own background job (-AsJob) with Wait-Job -Timeout; on timeout
+        the job is ABANDONED (not stopped synchronously - that can block on a wedged VM),
+        so the VM yields a single Failed/Timeout row and the batch keeps moving.
     #>
     [CmdletBinding()]
     param(
@@ -77,29 +73,30 @@ function Invoke-MsecAzureVMScriptCore {
         }
 
         if ($TimeoutSeconds -gt 0) {
-            # Wrap the call in a ThreadJob so a wedged VM agent doesn't hang the
-            # whole parallel batch. Invoke-AzVMRunCommand's own internal timeout is
-            # 45 minutes, which is forever from the operator's seat. If the job
-            # doesn't complete in our budget, we Stop-Job (signals the runspace to
-            # abort) and surface a Timeout row.
-            $job = Start-ThreadJob -ScriptBlock {
-                param($cmd)
-                Invoke-AzVMRunCommand @cmd
-            } -ArgumentList $cmd
+            # Bound a wedged VM so it can't stall the batch: run the call as the cmdlet's own
+            # background job (-AsJob) and wait only up to our budget.
+            $job = Invoke-AzVMRunCommand @cmd -AsJob
 
             $completed = Wait-Job $job -Timeout $TimeoutSeconds
             if ($completed) {
                 $resp = Receive-Job $job -ErrorAction Stop
                 Remove-Job $job
-
-                Stop-Job $job
-                Remove-Job $job -Force
+            }
+            else {
+                # Timed out. Crucially we do NOT Stop-Job / Remove-Job -Force here: both WAIT
+                # for the job to actually stop, and Azure's run-command cancellation often
+                # isn't prompt, so they would BLOCK until the stuck call returns (up to Az's
+                # 45-min internal timeout). Inside ForEach-Object -Parallel that stalls the
+                # whole batch on its slowest VM - the "hang on the last VM". So we ABANDON the
+                # job and return immediately; it finishes on its own and is reaped when the
+                # session/process ends. (Measured: abandon returns at the timeout; a blocking
+                # Stop/Remove waits out the full stuck duration.)
                 throw "VM did not respond within $TimeoutSeconds seconds (timeout)."
             }
         }
         else {
-            # Direct call - no per-VM timeout. This path is what Pester's mocks
-            # intercept (mocks don't propagate into ThreadJob runspaces), so all
+            # Direct synchronous call - no per-VM timeout. This is the path Pester's mocks
+            # intercept (mocks don't propagate into background-job runspaces), so all
             # existing tests use it via the TimeoutSeconds=0 default.
             $resp = Invoke-AzVMRunCommand @cmd
         }

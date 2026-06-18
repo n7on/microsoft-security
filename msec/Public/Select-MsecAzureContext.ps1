@@ -119,15 +119,21 @@ function Select-MsecAzureContext {
     # cleaner and avoids a redundant name lookup.
     $null = Select-AzContext -InputObject $target -ErrorAction Stop
 
+    # On a real saved context, .Environment is a PSAzureEnvironment OBJECT (and .Tenant.Id can
+    # be a guid), so compare/emit their STRING forms - otherwise object-vs-string is always
+    # "not equal" and the drift warning fires even when tenant and cloud actually match.
+    $ctxTenant = [string]$target.Tenant.Id
+    $ctxCloud = [string]$target.Environment
+
     # Coherence check against the msec app session (if connected). The session is bound to a
     # tenant + cloud at Connect-Msec time; a switch into a different tenant or cloud leaves
     # Graph/Defender calls using the OLD session.
     if ($script:MsecSession) {
-        $sessTenant = $script:MsecSession.TenantId
-        $sessCloud = $script:MsecSession.Endpoints.EnvironmentName
-        if ($target.Tenant.Id -ne $sessTenant -or $target.Environment -ne $sessCloud) {
+        $sessTenant = [string]$script:MsecSession.TenantId
+        $sessCloud = [string]$script:MsecSession.Endpoints.EnvironmentName
+        if ($ctxTenant -ne $sessTenant -or $ctxCloud -ne $sessCloud) {
             Write-Warning ("msec app session is bound to tenant $sessTenant / cloud $sessCloud, but the Az context is now " +
-                "tenant $($target.Tenant.Id) / cloud $($target.Environment). Graph/Defender functions still use the old session - " +
+                "tenant $ctxTenant / cloud $ctxCloud. Graph/Defender functions still use the old session - " +
                 'run Connect-Msec again to realign.')
         }
     }
@@ -135,8 +141,8 @@ function Select-MsecAzureContext {
     [pscustomobject]@{
         SubscriptionName = $target.Subscription.Name
         SubscriptionId   = $target.Subscription.Id
-        TenantId         = $target.Tenant.Id
-        Environment      = $target.Environment
+        TenantId         = $ctxTenant
+        Environment      = $ctxCloud
         Account          = $target.Account.Id
     }
 }

@@ -124,6 +124,30 @@ Describe 'Select-MsecAzureContext' {
         $warnings | Should -BeNullOrEmpty
     }
 
+    It 'does NOT warn when .Environment is an object equal to the session cloud (regression)' {
+        # A real saved context exposes .Environment as a PSAzureEnvironment OBJECT, not a
+        # string. Comparing the object directly to the session cloud string is always "not
+        # equal", which fired a false drift warning even when tenant + cloud matched.
+        $cloud = [pscustomobject]@{ Name = 'AzureCloud' }
+        $cloud | Add-Member -MemberType ScriptMethod -Name ToString -Value { 'AzureCloud' } -Force
+        $ctx = [pscustomobject]@{
+            Name = 'ctx-x'; Subscription = [pscustomobject]@{ Id = 'sub-x'; Name = 'prod' }
+            Tenant = [pscustomobject]@{ Id = 't1' }; Environment = $cloud
+            Account = [pscustomobject]@{ Id = 'admin@contoso.com' }
+        }
+
+        $warnings = InModuleScope msec -Parameters @{ Ctx = $ctx } {
+            param($Ctx)
+            Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { @($Ctx) }
+            Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
+            $script:MsecSession = @{ TenantId = 't1'; Endpoints = [pscustomobject]@{ EnvironmentName = 'AzureCloud' } }
+
+            Select-MsecAzureContext -Subscription 'prod' -WarningVariable w -WarningAction SilentlyContinue | Out-Null
+            $w
+        }
+        $warnings | Should -BeNullOrEmpty
+    }
+
     It 'throws when there are no saved contexts at all' {
         InModuleScope msec {
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { @() }

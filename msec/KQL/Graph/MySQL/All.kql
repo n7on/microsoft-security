@@ -1,0 +1,69 @@
+// One row per Azure Database for MySQL flexible server across every accessible
+// subscription, projected to its network-exposure posture.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType MySQL.
+// No filtering is applied here - filter the output in PowerShell, e.g. the servers actually
+// reachable from outside a vnet:
+//   Search-MsecAzureResourceGraph -ResourceType MySQL | Where-Object NetworkMode -eq 'Public'
+//
+// This is the SERVER view, and it is as far as Resource Graph can go. Firewall rules are a
+// child resource that ARG does not project AT ALL - neither firewallRules, configurations,
+// administrators nor databases appear in the Resources table (verified by querying each type
+// directly: every one returns zero rows). So there is deliberately no rule-by-rule companion
+// to this file the way NSG/SecurityRules.kql accompanies NSG/All.kql; that would require
+// per-server ARM calls, which this module's Resource Graph surface does not do.
+//
+// What you get instead is NetworkMode, which answers the question the rules are usually
+// asked for: 'Public' means the server is reachable on its public FQDN and gated only by
+// firewall rules, so those servers are the ones worth pulling rules for by hand
+// (Get-AzMySqlFlexibleServerFirewallRule, or the portal).
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph
+// only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.dbformysql/flexibleservers'
+| extend Net                 = properties.network,
+         DelegatedSubnetId   = tostring(properties.network.delegatedSubnetResourceId),
+         PrivateEndpointCount = coalesce(array_length(properties.privateEndpointConnections), 0)
+// How the server is reachable. Flexible Server picks its access model at creation time and
+// it cannot be changed afterwards:
+//   VNetIntegrated  - injected into a delegated subnet ("private access"). Firewall rules do
+//                     not apply in this mode at all; the subnet's NSG governs traffic.
+//   PrivateEndpoint - "public access" server with public access switched off, reached over a
+//                     private endpoint. Firewall rules may still exist but admit nothing.
+//   Public          - reachable on its public FQDN, gated ONLY by the firewall rules.
+//   Isolated        - no delegated subnet, no private endpoint, public access off. Nothing
+//                     can reach it; usually means a private endpoint was deleted.
+| extend NetworkMode = case(
+             isnotempty(DelegatedSubnetId),                             'VNetIntegrated',
+             PrivateEndpointCount > 0,                                  'PrivateEndpoint',
+             tostring(Net.publicNetworkAccess) =~ 'Enabled',            'Public',
+             'Isolated')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name                = name,
+          ResourceGroupName   = resourceGroup,
+          NetworkMode,
+          PublicNetworkAccess = tostring(Net.publicNetworkAccess),
+          PrivateEndpointCount,
+          // Qualified with the vnet - subnet names repeat across vnets.
+          DelegatedSubnet     = iff(isempty(DelegatedSubnetId), '',
+                                    strcat(extract(@'/virtualNetworks/([^/]+)', 1, DelegatedSubnetId), '/',
+                                           extract(@'/subnets/([^/]+)', 1, DelegatedSubnetId))),
+          State               = tostring(properties.state),
+          Version             = tostring(properties.version),
+          FullVersion         = tostring(properties.fullVersion),
+          HighAvailability    = tostring(properties.highAvailability.mode),
+          BackupRetentionDays = toint(properties.backup.backupRetentionDays),
+          GeoRedundantBackup  = tostring(properties.backup.geoRedundantBackup),
+          AdministratorLogin  = tostring(properties.administratorLogin),
+          Fqdn                = tostring(properties.fullyQualifiedDomainName),
+          Location            = location,
+          SubscriptionName,
+          SubscriptionId      = subscriptionId,
+          Id                  = id
+| order by SubscriptionName asc, NetworkMode asc, Name asc

@@ -1,0 +1,186 @@
+// One row per network security group rule, across every accessible subscription, together
+// with what the NSG is actually attached to. This is the Resource Graph replacement for the
+// old Get-ViedocAzNetworkGroupSecurityRules script - one query instead of a Set-AzContext /
+// Get-AzNetworkSecurityGroup / Get-AzNetworkInterface loop per subscription.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType NSG -Name SecurityRules.
+//
+// AppliedToType is one of:
+//   VM      - NSG on a NIC that belongs to a VM; AppliedToName is the VM, since that is the
+//             name anyone recognises. An NSG is never bound to a VM directly.
+//   NIC     - NSG on a NIC with no owner, i.e. left behind by a deleted VM. Private endpoint
+//             and private link service NICs cannot carry an NSG (theirs is enforced at the
+//             subnet), so they never appear here.
+//   Subnet  - NSG on a subnet; AppliedToName is vnet/subnet.
+//   VMSS    - NSG named in a scale set's VM model. See the union leg below for why this
+//             cannot be found through NICs.
+//   None    - bound to nothing, so the rule enforces nothing. Verified against all four
+//             resource types that can reference an NSG (NIC, subnet, VMSS, and the NSG's
+//             own back-references), so this is a genuine orphan rather than a blind spot.
+//
+// Differences from the script it replaces, all of them deliberate:
+//   * Subnet-attached NSGs are included. The old script walked $NSG.NetworkInterfaces only,
+//     so an NSG bound to a subnet - the more common pattern - produced no rows at all.
+//   * Scale-set NSGs are included, for the same reason.
+//   * Default (platform) rules are included and flagged with IsDefault, so DenyAllInBound
+//     and friends are visible. Hide them with: ... | Where-Object { -not $_.IsDefault }
+//   * The plural properties (sourceAddressPrefixes, destinationPortRanges, ...) and
+//     application security group references are rendered. The old script read only the
+//     singular properties and printed an empty cell for multi-value rules.
+//   * '*' renders as 'Any'. Everything else is passed through verbatim - ARG has no
+//     equivalent of the Get-ViedocAzIpTranslation / Get-ViedocAzPortTranslation lookups, so
+//     do any friendly-name mapping in PowerShell on the way out.
+//
+// No filtering here - filter in PowerShell. The one everybody wants, inbound allows
+// reachable from the internet:
+//   Search-MsecAzureResourceGraph -ResourceType NSG -Name SecurityRules |
+//       Where-Object { -not $_.IsDefault -and $_.Direction -eq 'Inbound' -and
+//                      $_.Access -eq 'Allow' -and $_.Source -match 'Any|Internet|0\.0\.0\.0/0' }
+//
+// NB: the grain is one row PER RULE PER ATTACHMENT - a rule on an NSG bound to four NICs
+// appears four times, once per AppliedToName, exactly as the old script emitted it. That is
+// what lets AppliedToType / AppliedToName be scalar and therefore groupable:
+//   ... | Where-Object AppliedToType -eq 'VM' | Group-Object AppliedToName
+// Collapse back to one row per rule with:
+//   ... | Group-Object NsgName, RuleName | ForEach-Object { $_.Group[0] }
+//
+// Search-MsecAzureResourceGraph pages once at up to 1000 rows (-First). Between the
+// per-attachment fan-out and the 6 default rules every NSG contributes, a large estate can
+// hit the cap. Narrow with -SubscriptionId (or -CurrentSubscription) if you do.
+//
+// NB: the two lookups below are inlined rather than hoisted into `let` statements. Resource
+// Graph only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/networksecuritygroups'
+| project NsgId             = id,
+          NsgName           = name,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          // Custom rules first, then the platform defaults. iff() rather than a bare
+          // reference because either array can be absent on a freshly created NSG.
+          Rules = array_concat(
+              iff(isnull(properties.securityRules),        dynamic([]), properties.securityRules),
+              iff(isnull(properties.defaultSecurityRules), dynamic([]), properties.defaultSecurityRules))
+| mv-expand Rule = Rules
+| extend P = Rule.properties
+// Each of the four address/port fields can appear in one of three forms: the singular
+// scalar, the plural array, or (addresses only) an application security group reference.
+// Azure populates exactly one of them per rule; case() picks whichever it is.
+| extend Source = case(
+              isnotempty(tostring(P.sourceAddressPrefix)),
+                  tostring(P.sourceAddressPrefix),
+              array_length(P.sourceAddressPrefixes) > 0,
+                  strcat_array(P.sourceAddressPrefixes, ', '),
+              array_length(P.sourceApplicationSecurityGroups) > 0,
+                  strcat('ASG: ', strcat_array(extract_all(@'/applicationSecurityGroups/([^/"]+)',
+                                                           tostring(P.sourceApplicationSecurityGroups)), ', ')),
+              ''),
+         Destination = case(
+              isnotempty(tostring(P.destinationAddressPrefix)),
+                  tostring(P.destinationAddressPrefix),
+              array_length(P.destinationAddressPrefixes) > 0,
+                  strcat_array(P.destinationAddressPrefixes, ', '),
+              array_length(P.destinationApplicationSecurityGroups) > 0,
+                  strcat('ASG: ', strcat_array(extract_all(@'/applicationSecurityGroups/([^/"]+)',
+                                                           tostring(P.destinationApplicationSecurityGroups)), ', ')),
+              ''),
+         SourcePort = case(
+              isnotempty(tostring(P.sourcePortRange)), tostring(P.sourcePortRange),
+              array_length(P.sourcePortRanges) > 0,    strcat_array(P.sourcePortRanges, ', '),
+              ''),
+         DestinationPort = case(
+              isnotempty(tostring(P.destinationPortRange)), tostring(P.destinationPortRange),
+              array_length(P.destinationPortRanges) > 0,    strcat_array(P.destinationPortRanges, ', '),
+              '')
+| extend Source          = iff(Source == '*',          'Any', Source),
+         Destination     = iff(Destination == '*',     'Any', Destination),
+         SourcePort      = iff(SourcePort == '*',      'Any', SourcePort),
+         DestinationPort = iff(DestinationPort == '*', 'Any', DestinationPort),
+         Protocol        = iff(tostring(P.protocol) == '*', 'Any', tostring(P.protocol)),
+         // Platform rules live under .../defaultSecurityRules/<name>, custom ones under
+         // .../securityRules/<name>. The id is the only reliable discriminator - a custom
+         // rule is free to reuse a name like 'AllowVnetInBound'.
+         IsDefault       = tostring(Rule.id) contains '/defaultSecurityRules/',
+         NsgIdLower      = tolower(NsgId)
+// What the NSG is bound to, one row per attachment. Two sources: NICs that reference the
+// NSG (resolved to the owning VM where the NIC has one, which is the name you actually want
+// to see), and the subnet ids the NSG already carries on itself. Deliberately NOT summarized
+// into a single label - the leftouter join below fans each rule out over its attachments so
+// that AppliedToType and AppliedToName stay scalar and filterable.
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.network/networkinterfaces'
+    | where isnotempty(tostring(properties.networkSecurityGroup.id))
+    | extend VmName = extract(@'([^/]+)$', 1, tostring(properties.virtualMachine.id))
+    | project NsgIdLower    = tolower(tostring(properties.networkSecurityGroup.id)),
+              // A NIC with no VM attached is still worth reporting, under its own name.
+              AppliedToType = iff(isnotempty(VmName), 'VM', 'NIC'),
+              AppliedToName = iff(isnotempty(VmName), VmName, name)
+    | union (
+        Resources
+        | where type =~ 'microsoft.network/networksecuritygroups'
+        | mv-expand Subnet = properties.subnets
+        | extend SubnetId = tostring(Subnet.id)
+        | where isnotempty(SubnetId)
+        | project NsgIdLower    = tolower(id),
+                  AppliedToType = 'Subnet',
+                  // Qualified with the vnet - subnet names like 'default' repeat everywhere.
+                  AppliedToName = strcat(extract(@'/virtualNetworks/([^/]+)', 1, SubnetId), '/',
+                                         extract(@'/subnets/([^/]+)', 1, SubnetId))
+      )
+    | union (
+        // A scale set names its NSG in the VM *model*, not on a NIC resource. Under Uniform
+        // orchestration the instance NICs are child resources
+        // (Microsoft.Compute/virtualMachineScaleSets/virtualMachines/networkInterfaces) which
+        // ARG does not surface in the networkinterfaces table at all, and the NSG's own
+        // properties.networkInterfaces stays empty - so without this leg a VMSS-only NSG looks
+        // completely orphaned when it is anything but.
+        //
+        // Flexible-mode instances do have real top-level NICs, so those also produce VM rows
+        // and a Flexible VMSS shows up twice, under both types. That is deliberate: the VMSS
+        // row is the one that survives a scale-to-zero, when there are no instance NICs to
+        // find and the VM rows disappear.
+        Resources
+        | where type =~ 'microsoft.compute/virtualmachinescalesets'
+        | mv-expand NicCfg = properties.virtualMachineProfile.networkProfile.networkInterfaceConfigurations
+        | extend NsgId = tostring(NicCfg.properties.networkSecurityGroup.id)
+        | where isnotempty(NsgId)
+        | project NsgIdLower    = tolower(NsgId),
+                  AppliedToType = 'VMSS',
+                  AppliedToName = name
+        // Several NIC configs on one scale set can name the same NSG - collapse them.
+        | distinct NsgIdLower, AppliedToType, AppliedToName
+      )
+  ) on NsgIdLower
+// ARG rows only carry subscriptionId; the human-readable name lives in resourcecontainers.
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project NsgName,
+          // Unmatched leftouter rows are NSGs bound to nothing at all - keep the rule
+          // visible rather than dropping it, which an inner join would do.
+          AppliedToType    = iff(isempty(AppliedToType), 'None', AppliedToType),
+          AppliedToName    = iff(isempty(AppliedToName), '-', AppliedToName),
+          RuleName         = tostring(Rule.name),
+          Direction        = tostring(P.direction),
+          Priority         = toint(P.priority),
+          Access           = tostring(P.access),
+          Protocol,
+          Source,
+          SourcePort,
+          Destination,
+          DestinationPort,
+          IsDefault,
+          Description      = tostring(P.description),
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          NsgId,
+          Id               = tostring(Rule.id)
+| order by SubscriptionName asc, NsgName asc, AppliedToType asc, AppliedToName asc,
+           Direction asc, Priority asc

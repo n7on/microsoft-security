@@ -1,0 +1,82 @@
+// One row per storage account across every accessible subscription - the posture view. Use
+// -Name NetworkRules for the rule-by-rule breakdown of the account firewall.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Storage.
+// No filtering is applied here - filter the output in PowerShell, e.g. the combination that
+// actually makes a public blob reachable from anywhere:
+//   Search-MsecAzureResourceGraph -ResourceType Storage |
+//       Where-Object { $_.NetworkExposure -eq 'OpenToAllNetworks' -and $_.BlobPublicAccessAllowed }
+//
+// SCOPE: this is the ACCOUNT view, and it is as far as Resource Graph reaches. Blob
+// containers are a child resource ARG does not project - blobServices, blobServices/
+// containers, fileServices and queueServices all return zero rows - so "which containers are
+// actually public" cannot be answered in KQL. BlobPublicAccessAllowed is the account-level
+// gate and a hard one: when it is false, no container underneath can be public whatever its
+// own setting says. So false is a real answer; true only means "possible", not "is".
+//
+// NB: three of these properties are frequently ABSENT rather than false, and absent means
+// PERMISSIVE for all three. Defaulting them the safe-looking way would under-report exposure,
+// so each is coalesced to its real Azure default below.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph
+// only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.storage/storageaccounts'
+| extend Acl = properties.networkAcls
+| extend DefaultAction       = tostring(Acl.defaultAction),
+         PublicNetworkAccess = tostring(properties.publicNetworkAccess),
+         IpRuleCount         = coalesce(array_length(Acl.ipRules), 0),
+         Ipv6RuleCount       = coalesce(array_length(Acl.ipv6Rules), 0),
+         VnetRuleCount       = coalesce(array_length(Acl.virtualNetworkRules), 0),
+         ResourceAccessRuleCount = coalesce(array_length(Acl.resourceAccessRules), 0),
+         PrivateEndpointCount    = coalesce(array_length(properties.privateEndpointConnections), 0)
+// Absent publicNetworkAccess means Enabled.
+| extend PublicNetworkAccess = iff(isempty(PublicNetworkAccess), 'Enabled', PublicNetworkAccess)
+| extend NetworkExposure = case(
+             PublicNetworkAccess =~ 'Disabled',                  'PrivateOnly',
+             // Network Security Perimeter governs access instead of the account firewall.
+             PublicNetworkAccess =~ 'SecuredByPerimeter',        'SecuredByPerimeter',
+             isempty(DefaultAction) or DefaultAction =~ 'Allow', 'OpenToAllNetworks',
+             'Restricted')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          NetworkExposure,
+          PublicNetworkAccess,
+          DefaultAction,
+          // 'AzureServices' / 'Logging' / 'Metrics', comma-separated; 'None' is strict.
+          Bypass            = tostring(Acl.bypass),
+          IpRuleCount,
+          Ipv6RuleCount,
+          VnetRuleCount,
+          ResourceAccessRuleCount,
+          PrivateEndpointCount,
+          // Absent = true on accounts predating the 2023 default flip. The account-level
+          // gate on anonymous container access; false means no container can be public.
+          BlobPublicAccessAllowed = coalesce(tobool(properties.allowBlobPublicAccess), true),
+          // Absent = true. When true, the two account keys grant full data-plane access and
+          // bypass Entra RBAC entirely.
+          SharedKeyAccessAllowed  = coalesce(tobool(properties.allowSharedKeyAccess), true),
+          // Absent = false: portal/CLI default to shared key rather than Entra auth.
+          DefaultToOAuth          = coalesce(tobool(properties.defaultToOAuthAuthentication), false),
+          HttpsOnly               = coalesce(tobool(properties.supportsHttpsTrafficOnly), false),
+          // Absent = TLS1_0, the historical default, not "unset".
+          MinimumTlsVersion       = iff(isempty(tostring(properties.minimumTlsVersion)),
+                                        'TLS1_0', tostring(properties.minimumTlsVersion)),
+          SftpEnabled             = coalesce(tobool(properties.isSftpEnabled), false),
+          LocalUserEnabled        = coalesce(tobool(properties.isLocalUserEnabled), false),
+          CrossTenantReplication  = coalesce(tobool(properties.allowCrossTenantReplication), false),
+          InfrastructureEncryption = coalesce(tobool(properties.encryption.requireInfrastructureEncryption), false),
+          Kind              = tostring(kind),
+          Sku               = tostring(sku.name),
+          AccessTier        = tostring(properties.accessTier),
+          Location          = location,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by SubscriptionName asc, NetworkExposure asc, Name asc

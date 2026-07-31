@@ -1,0 +1,74 @@
+// One row per key vault across every accessible subscription - the posture view. Use
+// -Name NetworkRules for the rule-by-rule breakdown of the vault firewall.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType KeyVault.
+// No filtering is applied here - filter the output in PowerShell, e.g. the vaults any
+// network can reach:
+//   Search-MsecAzureResourceGraph -ResourceType KeyVault |
+//       Where-Object NetworkExposure -eq 'OpenToAllNetworks'
+//
+// Unlike NSG (scope lives on other resource types) and MySQL flexible servers (rules are a
+// child resource ARG does not project), everything a key vault report needs is on the vault
+// object itself, so this and NetworkRules.kql are pure KQL with nothing to join.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph
+// only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.keyvault/vaults'
+| extend Acl = properties.networkAcls
+// A vault with no networkAcls block at all reports an EMPTY defaultAction, not 'Allow' -
+// and it behaves as Allow. Treating empty as "unknown" would hide exactly the vaults that
+// have never had a firewall configured, which are the ones worth finding.
+| extend DefaultAction        = tostring(Acl.defaultAction),
+         PublicNetworkAccess  = tostring(properties.publicNetworkAccess),
+         IpRuleCount          = coalesce(array_length(Acl.ipRules), 0),
+         VnetRuleCount        = coalesce(array_length(Acl.virtualNetworkRules), 0),
+         PrivateEndpointCount = coalesce(array_length(properties.privateEndpointConnections), 0),
+         AccessPolicyCount    = coalesce(array_length(properties.accessPolicies), 0)
+// publicNetworkAccess is frequently ABSENT rather than set, and absent means Enabled.
+| extend PublicNetworkAccess = iff(isempty(PublicNetworkAccess), 'Enabled', PublicNetworkAccess)
+| extend FirewallConfigured  = isnotempty(DefaultAction)
+// The headline: can something outside your allow-list reach this vault's data plane?
+//   PrivateOnly       - public endpoint switched off; only private endpoints reach it.
+//   OpenToAllNetworks - no firewall, or defaultAction Allow. Any network can connect
+//                       (still subject to RBAC / access policy, but the network gate is open).
+//   Restricted        - defaultAction Deny, so only the ip / vnet rules and Bypass get in.
+| extend NetworkExposure = case(
+             PublicNetworkAccess =~ 'Disabled',                     'PrivateOnly',
+             isempty(DefaultAction) or DefaultAction =~ 'Allow',    'OpenToAllNetworks',
+             'Restricted')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name                = name,
+          ResourceGroupName   = resourceGroup,
+          NetworkExposure,
+          PublicNetworkAccess,
+          DefaultAction,
+          FirewallConfigured,
+          // 'AzureServices' punches a hole through defaultAction Deny for trusted Microsoft
+          // services; 'None' is the strict setting.
+          Bypass              = tostring(Acl.bypass),
+          IpRuleCount,
+          VnetRuleCount,
+          PrivateEndpointCount,
+          // RBAC is the current model; AccessPolicy is the legacy per-principal one.
+          AuthModel           = iff(tobool(properties.enableRbacAuthorization), 'Rbac', 'AccessPolicy'),
+          AccessPolicyCount,
+          SoftDeleteEnabled   = tobool(properties.enableSoftDelete),
+          SoftDeleteRetentionDays = toint(properties.softDeleteRetentionInDays),
+          PurgeProtection     = coalesce(tobool(properties.enablePurgeProtection), false),
+          // Legacy "let this Azure service read my secrets" switches, off by default.
+          EnabledForDeployment         = coalesce(tobool(properties.enabledForDeployment), false),
+          EnabledForTemplateDeployment = coalesce(tobool(properties.enabledForTemplateDeployment), false),
+          EnabledForDiskEncryption     = coalesce(tobool(properties.enabledForDiskEncryption), false),
+          Sku                 = tostring(properties.sku.name),
+          VaultUri            = tostring(properties.vaultUri),
+          Location            = location,
+          SubscriptionName,
+          SubscriptionId      = subscriptionId,
+          Id                  = id
+| order by SubscriptionName asc, NetworkExposure asc, Name asc

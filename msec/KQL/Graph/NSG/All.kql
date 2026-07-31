@@ -1,0 +1,52 @@
+// One row per network security group across every accessible subscription - the inventory
+// view. Use -Name SecurityRules for the rule-by-rule breakdown.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType NSG.
+// No filtering is applied here - filter the output in PowerShell with Where-Object, e.g.
+// the NSGs that are attached to nothing and can probably go:
+//   Search-MsecAzureResourceGraph -ResourceType NSG | Where-Object { -not $_.Attached }
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph
+// only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/networksecuritygroups'
+// array_length() is null, not 0, when the property is missing on a bare NSG.
+| extend CustomRuleCount = coalesce(array_length(properties.securityRules), 0),
+         SubnetCount     = coalesce(array_length(properties.subnets), 0),
+         NicCount        = coalesce(array_length(properties.networkInterfaces), 0),
+         IdLower         = tolower(id)
+// A scale set names its NSG in the VM model. Under Uniform orchestration the instance NICs
+// never appear in the NSG's properties.networkInterfaces, so an NSG used only by a VMSS
+// reports SubnetCount = NicCount = 0 and would be called an orphan without this lookup.
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.compute/virtualmachinescalesets'
+    | mv-expand NicCfg = properties.virtualMachineProfile.networkProfile.networkInterfaceConfigurations
+    | extend NsgId = tostring(NicCfg.properties.networkSecurityGroup.id)
+    | where isnotempty(NsgId)
+    | project IdLower = tolower(NsgId), VmssId = id
+    // One scale set can name the same NSG from several NIC configs - count it once.
+    | distinct IdLower, VmssId
+    | summarize VmssCount = count() by IdLower
+  ) on IdLower
+| extend VmssCount = coalesce(VmssCount, 0)
+| extend Attached  = (SubnetCount + NicCount + VmssCount) > 0
+// ARG rows only carry subscriptionId; the human-readable name lives in resourcecontainers.
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          CustomRuleCount,
+          SubnetCount,
+          NicCount,
+          VmssCount,
+          Attached,
+          Location          = location,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by SubscriptionName asc, Name asc

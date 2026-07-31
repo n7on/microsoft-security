@@ -1,0 +1,134 @@
+// One row per storage account firewall rule across every accessible subscription - the
+// storage counterpart to KeyVault/NetworkRules.kql and NSG/SecurityRules.kql. All four kinds
+// of networkAcls entry are here, distinguished by RuleType.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Storage -Name NetworkRules.
+//
+// RuleType is one of:
+//   IPv4           - Rule is the CIDR or address from networkAcls.ipRules.
+//   IPv6           - same, from networkAcls.ipv6Rules.
+//   VirtualNetwork - Rule is vnet/subnet from networkAcls.virtualNetworkRules.
+//   ResourceAccess - a resource instance rule: a specific Azure resource (often wildcarded)
+//                    allowed in via its managed identity, from networkAcls.resourceAccessRules.
+//                    Rule is the part of the resource id after /providers/.
+//   None           - the account has no rules of any kind. Kept as a row rather than dropped,
+//                    because "no rules" means opposite things depending on DefaultAction:
+//                    with Deny the account is sealed, with Allow it is wide open.
+//
+// Effective is the column that matters. These are ALLOW-list entries, so a rule only does
+// anything when DefaultAction is Deny AND the public endpoint is on:
+//   * DefaultAction Allow -> everything is already permitted; the rules are decorative.
+//   * publicNetworkAccess Disabled/SecuredByPerimeter -> the account firewall is not the
+//     control in force.
+// Same trap as AppliedToType = 'None' on the NSG side - the rule is real, it just is not
+// enforcing. Filter on it before reporting an allow-list as a control.
+//
+// No filtering here - filter in PowerShell:
+//   # Accounts any network can reach, one row each:
+//   Search-MsecAzureResourceGraph -ResourceType Storage -Name NetworkRules |
+//       Where-Object NetworkExposure -eq 'OpenToAllNetworks' |
+//       Group-Object AccountName | ForEach-Object { $_.Group[0] }
+//
+//   # Allow-list entries actually enforcing something:
+//   ... | Where-Object Effective | Sort-Object RuleType, Rule
+//
+// NB: this is PER-RULE. Search-MsecAzureResourceGraph follows the skip token and returns
+// every page, warning rather than truncating if -MaxRows is reached.
+//
+// NB: the five legs below repeat the account projection instead of sharing it. Resource
+// Graph supports `let` for scalars only, not for tabular expressions, so there is nothing to
+// hoist the common part into.
+
+Resources
+| where type =~ 'microsoft.storage/storageaccounts'
+| mv-expand IpRule = properties.networkAcls.ipRules
+| where isnotempty(tostring(IpRule.value))
+| project AccountId = id, AccountName = name, ResourceGroupName = resourceGroup,
+          Location = location, SubscriptionId = subscriptionId, Properties = properties,
+          RuleType = 'IPv4',
+          Rule     = tostring(IpRule.value)
+| union (
+    Resources
+    | where type =~ 'microsoft.storage/storageaccounts'
+    | mv-expand Ipv6Rule = properties.networkAcls.ipv6Rules
+    | where isnotempty(tostring(Ipv6Rule.value))
+    | project AccountId = id, AccountName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'IPv6',
+              Rule     = tostring(Ipv6Rule.value)
+  )
+| union (
+    Resources
+    | where type =~ 'microsoft.storage/storageaccounts'
+    | mv-expand VnetRule = properties.networkAcls.virtualNetworkRules
+    | extend SubnetId = tostring(VnetRule.id)
+    | where isnotempty(SubnetId)
+    | project AccountId = id, AccountName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'VirtualNetwork',
+              // Qualified with the vnet - subnet names like 'apps' repeat everywhere. Casing
+              // of these ids is inconsistent between RPs, hence the case-insensitive extract.
+              Rule     = strcat(extract(@'(?i)/virtualnetworks/([^/]+)', 1, SubnetId), '/',
+                                extract(@'(?i)/subnets/([^/]+)', 1, SubnetId))
+  )
+| union (
+    Resources
+    | where type =~ 'microsoft.storage/storageaccounts'
+    | mv-expand ResRule = properties.networkAcls.resourceAccessRules
+    | extend ResourceId = tostring(ResRule.resourceId)
+    | where isnotempty(ResourceId)
+    | project AccountId = id, AccountName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'ResourceAccess',
+              // Everything after /providers/ - e.g. Microsoft.Synapse/workspaces/ws1. These
+              // ids are routinely wildcarded ('.../workspaces/*'), so keep them verbatim.
+              Rule     = coalesce(extract(@'(?i)/providers/(.+)$', 1, ResourceId), ResourceId)
+  )
+| union (
+    // Accounts with no rules of any kind. mv-expand drops rows whose array is empty or
+    // absent, so without this leg an account with no firewall would silently vanish - the
+    // exact account the report exists to surface.
+    Resources
+    | where type =~ 'microsoft.storage/storageaccounts'
+    | where coalesce(array_length(properties.networkAcls.ipRules), 0) == 0
+        and coalesce(array_length(properties.networkAcls.ipv6Rules), 0) == 0
+        and coalesce(array_length(properties.networkAcls.virtualNetworkRules), 0) == 0
+        and coalesce(array_length(properties.networkAcls.resourceAccessRules), 0) == 0
+    | project AccountId = id, AccountName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'None',
+              Rule     = '-'
+  )
+| extend DefaultAction       = tostring(Properties.networkAcls.defaultAction),
+         PublicNetworkAccess = tostring(Properties.publicNetworkAccess)
+// Absent publicNetworkAccess means Enabled.
+| extend PublicNetworkAccess = iff(isempty(PublicNetworkAccess), 'Enabled', PublicNetworkAccess)
+| extend NetworkExposure = case(
+             PublicNetworkAccess =~ 'Disabled',                  'PrivateOnly',
+             PublicNetworkAccess =~ 'SecuredByPerimeter',        'SecuredByPerimeter',
+             isempty(DefaultAction) or DefaultAction =~ 'Allow', 'OpenToAllNetworks',
+             'Restricted'),
+         Effective = (DefaultAction =~ 'Deny') and (PublicNetworkAccess =~ 'Enabled')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project AccountName,
+          RuleType,
+          Rule,
+          Effective,
+          NetworkExposure,
+          DefaultAction,
+          PublicNetworkAccess,
+          Bypass                  = tostring(Properties.networkAcls.bypass),
+          // Carried through because it is the pairing that matters: an open network plus
+          // anonymous blob access is what makes a container reachable from the internet.
+          BlobPublicAccessAllowed = coalesce(tobool(Properties.allowBlobPublicAccess), true),
+          SharedKeyAccessAllowed  = coalesce(tobool(Properties.allowSharedKeyAccess), true),
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          Id                      = AccountId
+| order by SubscriptionName asc, AccountName asc, RuleType asc, Rule asc

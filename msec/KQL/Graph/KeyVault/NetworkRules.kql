@@ -1,0 +1,105 @@
+// One row per key vault firewall rule across every accessible subscription - the key vault
+// counterpart to NSG/SecurityRules.kql. Both IP rules and virtual-network rules are here,
+// distinguished by RuleType.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType KeyVault -Name NetworkRules.
+//
+// RuleType is one of:
+//   IPv4           - Rule is the CIDR or address from networkAcls.ipRules.
+//   VirtualNetwork - Rule is vnet/subnet from networkAcls.virtualNetworkRules.
+//   None           - the vault has no rules at all. Kept as a row rather than dropped,
+//                    because "no rules" means two opposite things and DefaultAction is what
+//                    separates them: with Deny the vault is sealed, with Allow (or with no
+//                    networkAcls block, which reports an EMPTY DefaultAction and behaves as
+//                    Allow) it is wide open. Dropping these rows would hide every vault that
+//                    never had a firewall configured.
+//
+// Effective is the column that matters. A key vault firewall rule is an ALLOW-list entry, so
+// it only does anything when DefaultAction is Deny AND the public endpoint is on:
+//   * DefaultAction Allow -> everything is already permitted; the rules are decorative.
+//   * publicNetworkAccess Disabled -> no public traffic reaches the data plane at all.
+// Same trap as AppliedToType = 'None' on the NSG side: the rule is real, it just is not
+// enforcing anything. Filter on it before reporting an allow-list as a control.
+//
+// No filtering here - filter in PowerShell:
+//   # Vaults any network can reach, one row each:
+//   Search-MsecAzureResourceGraph -ResourceType KeyVault -Name NetworkRules |
+//       Where-Object NetworkExposure -eq 'OpenToAllNetworks' |
+//       Group-Object VaultName | ForEach-Object { $_.Group[0] }
+//
+//   # Allow-list entries that are actually enforcing, widest first:
+//   ... | Where-Object Effective | Sort-Object RuleType, Rule
+//
+// NB: this is PER-RULE and runs well over 1000 rows on a mid-sized tenant. That is fine -
+// Search-MsecAzureResourceGraph follows the skip token and returns every page. It warns
+// rather than truncates if -MaxRows is ever reached.
+//
+// NB: the three legs below repeat the vault projection instead of sharing it. Resource Graph
+// supports `let` for scalars only, not for tabular expressions, so there is nothing to hoist
+// the common part into.
+
+Resources
+| where type =~ 'microsoft.keyvault/vaults'
+| mv-expand IpRule = properties.networkAcls.ipRules
+| where isnotempty(tostring(IpRule.value))
+| project VaultId = id, VaultName = name, ResourceGroupName = resourceGroup,
+          Location = location, SubscriptionId = subscriptionId, Properties = properties,
+          RuleType = 'IPv4',
+          Rule     = tostring(IpRule.value)
+| union (
+    Resources
+    | where type =~ 'microsoft.keyvault/vaults'
+    | mv-expand VnetRule = properties.networkAcls.virtualNetworkRules
+    | extend SubnetId = tostring(VnetRule.id)
+    | where isnotempty(SubnetId)
+    | project VaultId = id, VaultName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'VirtualNetwork',
+              // Qualified with the vnet - subnet names like 'apps' repeat everywhere. The
+              // ids are stored lower-cased by the RP, hence the case-insensitive extract.
+              Rule     = strcat(extract(@'(?i)/virtualnetworks/([^/]+)', 1, SubnetId), '/',
+                                extract(@'(?i)/subnets/([^/]+)', 1, SubnetId))
+  )
+| union (
+    // Vaults with neither kind of rule. mv-expand drops rows whose array is empty or absent,
+    // so without this leg a vault with no firewall at all would silently vanish - the exact
+    // vault the report exists to surface.
+    Resources
+    | where type =~ 'microsoft.keyvault/vaults'
+    | where coalesce(array_length(properties.networkAcls.ipRules), 0) == 0
+        and coalesce(array_length(properties.networkAcls.virtualNetworkRules), 0) == 0
+    | project VaultId = id, VaultName = name, ResourceGroupName = resourceGroup,
+              Location = location, SubscriptionId = subscriptionId, Properties = properties,
+              RuleType = 'None',
+              Rule     = '-'
+  )
+| extend DefaultAction       = tostring(Properties.networkAcls.defaultAction),
+         PublicNetworkAccess = tostring(Properties.publicNetworkAccess)
+// Absent publicNetworkAccess means Enabled.
+| extend PublicNetworkAccess = iff(isempty(PublicNetworkAccess), 'Enabled', PublicNetworkAccess)
+| extend NetworkExposure = case(
+             PublicNetworkAccess =~ 'Disabled',                  'PrivateOnly',
+             isempty(DefaultAction) or DefaultAction =~ 'Allow', 'OpenToAllNetworks',
+             'Restricted'),
+         // An allow-list entry only bites when the default is Deny and the door is open.
+         Effective = (DefaultAction =~ 'Deny') and (PublicNetworkAccess =~ 'Enabled')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project VaultName,
+          RuleType,
+          Rule,
+          Effective,
+          NetworkExposure,
+          DefaultAction,
+          PublicNetworkAccess,
+          Bypass            = tostring(Properties.networkAcls.bypass),
+          AuthModel         = iff(tobool(Properties.enableRbacAuthorization), 'Rbac', 'AccessPolicy'),
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          Id                = VaultId
+| order by SubscriptionName asc, VaultName asc, RuleType asc, Rule asc

@@ -20,9 +20,15 @@ function Search-MsecAzureResourceGraph {
         Required: Az.ResourceGraph, an Az context, and Reader RBAC at the resources'
         scope (ARG honours RBAC and just omits resources you cannot see).
 
-        Pagination: single page only, up to 1000 rows (-First). Most tenants have well
-        under 1000 of any one resource type. If you do hit the cap, narrow with
-        -SubscriptionId.
+        Pagination is automatic: pages of -First rows (max 1000, ARG's own per-page
+        ceiling) are followed via the response skip token until the result set is
+        exhausted, so row counts above 1000 come back whole. Rule-per-row queries
+        blow past 1000 easily - KeyVault/NetworkRules alone is over 1100 on a
+        mid-sized tenant.
+
+        -MaxRows is a runaway guard, not a page size. If a query somehow exceeds it,
+        output STOPS there and a warning says so. It never truncates silently: an
+        under-reported security query looks exactly like a clean one.
 
     .PARAMETER ResourceType
         The resource-type folder under KQL/Graph/. Tab-completes from every folder that
@@ -44,7 +50,13 @@ function Search-MsecAzureResourceGraph {
         subscription Invoke-MsecAzureVMScript will act on.
 
     .PARAMETER First
-        Page size (1-1000). Default 1000.
+        Page size (1-1000). Default 1000, which is ARG's maximum per page. This is not a
+        result limit - pages are followed until the query is exhausted. Use -MaxRows for
+        a limit.
+
+    .PARAMETER MaxRows
+        Safety ceiling on total rows returned across all pages. Default 50000. Hitting it
+        emits a warning and stops; results are never truncated silently.
 
     .EXAMPLE
         Search-MsecAzureResourceGraph -ResourceType VM
@@ -119,7 +131,11 @@ function Search-MsecAzureResourceGraph {
 
         [Parameter()]
         [ValidateRange(1, 1000)]
-        [int] $First = 1000
+        [int] $First = 1000,
+
+        [Parameter()]
+        [ValidateRange(1, [int]::MaxValue)]
+        [int] $MaxRows = 50000
     )
 
     if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
@@ -155,30 +171,57 @@ function Search-MsecAzureResourceGraph {
         Write-Verbose "Querying $($SubscriptionId.Count) accessible subscription(s): $($SubscriptionId -join ', ')"
     }
 
-    Write-Verbose ("Search-AzGraph query (first $First rows):" + [Environment]::NewLine + $query)
+    Write-Verbose ("Search-AzGraph query (pages of $First rows, max $MaxRows):" + [Environment]::NewLine + $query)
     $azParams = @{ Query = $query; First = $First; ErrorAction = 'Stop' }
     if ($SubscriptionId) { $azParams['Subscription'] = $SubscriptionId }
 
-    # Search-AzGraph's output shape varies by Az.ResourceGraph version:
-    #   - Some versions emit the rows directly.
-    #   - Others emit a single wrapper object with .SkipToken + .Data (array of rows).
-    # Unwrap .Data when present.
-    $response = Search-AzGraph @azParams
-    $rows = if ($null -ne $response -and $response.PSObject.Properties['Data']) {
-        $response.Data
-    }
-    else {
-        $response
-    }
+    $emitted   = 0
+    $page      = 0
+    $skipToken = $null
 
-    # Materialize each row as a flat PSCustomObject so downstream Where-Object /
-    # Select-Object / tab completion see the projected columns as real note properties.
-    foreach ($r in @($rows)) {
-        if ($null -eq $r) { continue }
-        $obj = [ordered]@{}
-        foreach ($prop in $r.PSObject.Properties) {
-            $obj[$prop.Name] = $prop.Value
+    do {
+        if ($skipToken) { $azParams['SkipToken'] = $skipToken }
+        $response = Search-AzGraph @azParams
+        $page++
+
+        # Search-AzGraph's output shape varies by Az.ResourceGraph version:
+        #   - Some versions emit the rows directly.
+        #   - Others emit a single wrapper object with .SkipToken + .Data (array of rows).
+        # Unwrap .Data when present.
+        $rows = if ($null -ne $response -and $response.PSObject.Properties['Data']) {
+            $response.Data
         }
-        [pscustomobject]$obj
-    }
+        else {
+            $response
+        }
+
+        # Only the wrapper shape can paginate. When rows come back bare there is no token to
+        # follow, so this stays a single pass - which is also what test mocks returning a
+        # plain array produce, keeping them one-shot.
+        $skipToken = if ($null -ne $response -and $response.PSObject.Properties['SkipToken']) {
+            $response.SkipToken
+        }
+        else {
+            $null
+        }
+
+        # Materialize each row as a flat PSCustomObject so downstream Where-Object /
+        # Select-Object / tab completion see the projected columns as real note properties.
+        foreach ($r in @($rows)) {
+            if ($null -eq $r) { continue }
+            if ($emitted -ge $MaxRows) {
+                Write-Warning ("Stopped at -MaxRows ($MaxRows) with more results available. " +
+                    'Results are INCOMPLETE - raise -MaxRows, or narrow with -SubscriptionId.')
+                return
+            }
+            $obj = [ordered]@{}
+            foreach ($prop in $r.PSObject.Properties) {
+                $obj[$prop.Name] = $prop.Value
+            }
+            [pscustomobject]$obj
+            $emitted++
+        }
+    } while ($skipToken)
+
+    Write-Verbose "Returned $emitted row(s) across $page page(s)."
 }

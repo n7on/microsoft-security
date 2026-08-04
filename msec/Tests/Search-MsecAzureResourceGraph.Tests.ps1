@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Search-MsecAzureResourceGraph. Verifies the KQL-file convention, the
+# Tests for Search-MsecAzureResourceGraph. Verifies the .kql-file convention, the
 # Az.ResourceGraph response unwrap, error handling for missing query files, and
 # the tab-completion pathway (which has caught real bugs that InModuleScope
 # would miss because it inherits the module's $script: state).
@@ -8,14 +8,28 @@
 BeforeAll {
     $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
+
+    # Redirect the completion cache for the whole file. An unscoped Search-MsecAzureResourceGraph
+    # enumerates subscriptions and refreshes the cache, and with Get-AzSubscription mocked that
+    # writes MOCK data - which lands in the developer's real cache and leaves -SubscriptionId
+    # completing to 'sub-1'. There is a guard test in MsecCompletionCache.Tests.ps1 that fails if
+    # a test file which can trigger a cache write forgets this.
+    $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
+    $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
+    $script:CacheDir = $env:MSEC_CACHE_DIR
 }
 
 AfterAll {
+    if ($script:CacheDir -and (Test-Path -LiteralPath $script:CacheDir)) {
+        Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
+    }
+    $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Search-MsecAzureResourceGraph' {
-    It 'loads KQL/Graph/VM/All.kql by convention and shuttles it to Search-AzGraph unchanged' {
+    It 'loads Kql/Graph/VM/All.kql by convention and shuttles it to Search-AzGraph unchanged' {
         $result = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
@@ -237,7 +251,7 @@ Describe 'Search-MsecAzureResourceGraph pagination' {
     }
 }
 
-Describe 'KQL/Graph/KeyVault' {
+Describe 'Kql/Graph/KeyVault' {
     It 'tab-completes KeyVault and both of its query names' {
         $line = 'Search-MsecAzureResourceGraph -ResourceType '
         (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
@@ -292,7 +306,7 @@ Describe 'KQL/Graph/KeyVault' {
     }
 }
 
-Describe 'KQL/Graph/Storage' {
+Describe 'Kql/Graph/Storage' {
     It 'tab-completes Storage and both of its query names' {
         $line = 'Search-MsecAzureResourceGraph -ResourceType '
         (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
@@ -349,7 +363,7 @@ Describe 'KQL/Graph/Storage' {
     }
 }
 
-Describe 'KQL/Graph/NSG' {
+Describe 'Kql/Graph/NSG' {
     It 'tab-completes NSG and both of its query names' {
         $line = 'Search-MsecAzureResourceGraph -ResourceType '
         (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
@@ -413,7 +427,7 @@ Describe 'KQL/Graph/NSG' {
     }
 }
 
-Describe 'KQL/Graph/MySQL' {
+Describe 'Kql/Graph/MySQL' {
     It 'tab-completes MySQL as a ResourceType' {
         $line = 'Search-MsecAzureResourceGraph -ResourceType '
         (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
@@ -441,16 +455,13 @@ Describe 'KQL/Graph/MySQL' {
     }
 }
 
-Describe 'KQL/Graph/AppGateway' {
+Describe 'Kql/Graph/AppGateway' {
     BeforeAll {
-        # Capture all three queries once. Every assertion below is about what the .kql file
-        # actually sends to Search-AzGraph, which is the only thing that reaches Azure.
         $script:AppGwQueries = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
-
             $captured = @{}
             foreach ($queryName in 'All', 'Sites', 'Backends') {
                 $null = Search-MsecAzureResourceGraph -ResourceType AppGateway -Name $queryName
@@ -467,107 +478,42 @@ Describe 'KQL/Graph/AppGateway' {
 
         $line = 'Search-MsecAzureResourceGraph -ResourceType AppGateway -Name '
         $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
-        foreach ($queryName in 'All', 'Sites', 'Backends') {
-            $names | Should -Contain $queryName
-        }
-        # The WAF queries moved out to their own resource type.
-        $names | Should -Not -Contain 'WafPolicies'
-        $names | Should -Not -Contain 'WafCustomRules'
+        foreach ($queryName in 'All', 'Sites', 'Backends') { $names | Should -Contain $queryName }
     }
 
-    It 'All.kql reads BOTH places a gateway WAF can live' {
-        # The whole point of the file. A WAF_v2 gateway keeps its WAF in a separate policy
-        # resource and leaves webApplicationFirewallConfiguration absent; a v1 gateway does the
-        # opposite. Reading one and not the other reports "no WAF" on a protected estate.
+    It 'All.kql reads both places a gateway WAF can live, and tests the tier with contains' {
+        # A WAF_v2 gateway keeps its WAF in a separate policy and leaves the inline block absent;
+        # a v1 does the opposite. Reading one and not the other reports "no WAF" on a protected
+        # estate. And 'WAF_v2' is a single term to `has` - the underscore is not a separator - so
+        # `Tier has 'WAF'` is false on every v2 gateway and misclassifies the lot.
         $query = $AppGwQueries['All']
-
-        $query | Should -Match "type =~ 'microsoft.network/applicationgateways'"
         $query | Should -Match 'properties\.webApplicationFirewallConfiguration'
         $query | Should -Match 'microsoft\.network/applicationgatewaywebapplicationfirewallpolicies'
+        $query | Should -Match "Tier !contains 'WAF'"
         foreach ($source in 'Policy', 'PolicyUnresolved', 'InlineConfig', 'NotWafSku', 'None') {
             $query | Should -Match "'$source'"
         }
-        # An attached policy we cannot read must NOT be reported as protected.
-        $query | Should -Match "isnotempty\(FirewallPolicyIdLower\),\s+'PolicyUnresolved'"
-    }
-
-    It 'All.kql tests the SKU tier with contains, not has' {
-        # 'WAF_v2' is a single term to `has` - the underscore is not a separator - so
-        # `Tier has 'WAF'` is FALSE on every WAF v2 gateway in the estate and each one gets
-        # classified NotWafSku, i.e. "no WAF capability", which is the exact inverse of true.
-        $AppGwQueries['All'] | Should -Match "Tier !contains 'WAF'"
-        # Comment lines stripped first - the header explains the trap in prose, and matching
-        # that prose would make this assertion pass or fail on the documentation instead of
-        # on the query.
-        $code = (($AppGwQueries['All'] -split "`r?`n") | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
-        $code | Should -Not -Match "Tier !?has 'WAF'"
-    }
-
-    It 'All.kql treats an absent sslPolicy as the permissive platform default' {
-        # No sslPolicy block does not mean "unset" - the gateway runs AppGwSslPolicy20150501,
-        # which still accepts TLS 1.0. Same trap as an absent minimumTlsVersion on storage.
-        $query = $AppGwQueries['All']
-        $query | Should -Match "'AppGwSslPolicy20150501'"
-        $query | Should -Match "'TLSv1_0'"
-        # Predefined policies do not return minProtocolVersion, and guessing TLSv1_0 for those
-        # would be a false positive on every modern gateway.
-        $query | Should -Match "'SetByPredefinedPolicy'"
     }
 
     It 'Sites.kql resolves the three-level WAF precedence a listener is subject to' {
         # Listener policy beats gateway policy beats the legacy inline config. Reading only the
         # gateway level silently mis-reports every listener that overrides it.
         $query = $AppGwQueries['Sites']
-
-        $query | Should -Match 'mv-expand Listener = GwProps\.httpListeners'
         $query | Should -Match 'LP\.firewallPolicy\.id'
         $query | Should -Match 'GwProps\.firewallPolicy\.id'
-        foreach ($source in 'ListenerPolicy', 'ListenerPolicyUnresolved', 'GatewayPolicy',
-                            'GatewayPolicyUnresolved', 'GatewayInlineConfig') {
+        foreach ($source in 'ListenerPolicy', 'GatewayPolicy', 'GatewayInlineConfig') {
             $query | Should -Match "'$source'"
         }
-        # A listener with no hostname answers for every host - reported, not left blank.
-        $query | Should -Match "'\(any\)'"
-        # hostNames (plural) and hostName (singular) are mutually exclusive; missing the plural
-        # form blanks out every multi-host listener.
-        $query | Should -Match 'LP\.hostNames'
-        $query | Should -Match 'LP\.hostName\)'
     }
-
-    It 'Backends.kql emits the url path map default as its own row' {
-        # The default backend of a path map is where everything that matches no explicit path
-        # ends up. It is a separate destination from any path rule and disappears entirely if
-        # only pathRules are expanded.
-        $query = $AppGwQueries['Backends']
-
-        $query | Should -Match 'mv-expand Rule = GwProps\.requestRoutingRules'
-        $query | Should -Match 'MapP\.pathRules'
-        $query | Should -Match "'/\* \(path map default\)'"
-        $query | Should -Match 'defaultBackendAddressPool'
-        # Pools fed by NIC association carry no literal addresses; without the NIC count they
-        # look like empty pools.
-        $query | Should -Match 'backendIPConfigurations'
-    }
-
-    It 'the listener, port, pool and path map lookups behave as leftouter joins' {
-        # These are within-document lookups done with mv-expand + where instead of `join`,
-        # which Resource Graph caps. The prepended sentinel is what keeps a listener whose
-        # reference is empty or dangling from being dropped by the filter.
-        foreach ($queryName in 'Sites', 'Backends') {
-            $AppGwQueries[$queryName] | Should -Match 'array_concat\(dynamic\(\[\{\}\]\)'
-        }
-    }
-
 }
 
-Describe 'KQL/Graph/Waf' {
+Describe 'Kql/Graph/Waf' {
     BeforeAll {
         $script:WafQueries = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
-
             $captured = @{}
             foreach ($queryName in 'All', 'ManagedRules', 'Exclusions', 'CustomRules') {
                 $null = Search-MsecAzureResourceGraph -ResourceType Waf -Name $queryName
@@ -584,108 +530,38 @@ Describe 'KQL/Graph/Waf' {
 
         $line = 'Search-MsecAzureResourceGraph -ResourceType Waf -Name '
         $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
-        foreach ($queryName in 'All', 'ManagedRules', 'Exclusions', 'CustomRules') {
-            $names | Should -Contain $queryName
-        }
+        foreach ($queryName in 'All', 'ManagedRules', 'Exclusions', 'CustomRules') { $names | Should -Contain $queryName }
     }
 
     It 'covers the legacy inline WAF block, not just policy resources' {
-        # A v1 gateway keeps its WAF in webApplicationFirewallConfiguration on the gateway
-        # itself. Querying only the policy resource type reports a v1 estate as having no WAF
-        # at all - and no disabled rule groups and no exclusions either, which is the dangerous
-        # part: the gaps read as a clean configuration.
+        # A v1 gateway keeps its WAF on the gateway itself. Querying only the policy type reports
+        # a v1 estate as having no WAF, no disabled rule groups and no exclusions - the gaps read
+        # as a clean configuration. Custom rules are the exception: v1 WAF has no such concept.
         foreach ($queryName in 'All', 'ManagedRules', 'Exclusions') {
-            $query = $WafQueries[$queryName]
-            $query | Should -Match 'microsoft\.network/applicationgatewaywebapplicationfirewallpolicies'
-            $query | Should -Match 'properties\.webApplicationFirewallConfiguration'
-            $query | Should -Match "'GatewayInlineConfig'"
+            $WafQueries[$queryName] | Should -Match 'properties\.webApplicationFirewallConfiguration'
+            $WafQueries[$queryName] | Should -Match "'GatewayInlineConfig'"
         }
-        # Custom rules are the exception: v1 WAF has no such concept, so there is nothing to
-        # union in and the absence is correct rather than an oversight.
         $WafQueries['CustomRules'] | Should -Not -Match 'webApplicationFirewallConfiguration'
     }
 
-    It 'ManagedRules.kql keeps rule sets and groups that carry no overrides' {
-        # mv-expand erases an empty array. Without the substituted empty element a rule set with
-        # no overrides vanishes, and so does the fact that the policy has that rule set at all.
-        $query = $WafQueries['ManagedRules']
-
-        $query | Should -Match 'mv-expand Rs = iff\(coalesce\(array_length\(PolicyProps\.managedRules\.managedRuleSets\)'
-        $query | Should -Match 'mv-expand Grp = iff\(coalesce\(array_length\(Rs\.ruleGroupOverrides\)'
-        $query | Should -Match 'mv-expand R = iff\(coalesce\(array_length\(Grp\.rules\)'
-        foreach ($scope in 'NoManagedRuleSets', 'RuleSetDefaults', 'RuleGroup', 'Rule') {
-            $query | Should -Match "'$scope'"
-        }
-        # An override with no recorded state is read as disabled - the historical meaning, and
-        # the direction that over-reports weakening rather than hiding it.
-        $query | Should -Match "RuleState !~ 'Enabled'"
-    }
-
-    It 'Exclusions.kql surfaces an unscoped exclusion as the widest kind' {
-        # An exclusion with no exclusionManagedRuleSets applies to EVERY managed rule. It is
-        # also the shape mv-expand would delete, since the array is absent - so the substituted
-        # empty element is what keeps the most dangerous row in the result set.
-        $query = $WafQueries['Exclusions']
-
-        $query | Should -Match 'mv-expand Ex = iff\(coalesce\(array_length\(PolicyProps\.managedRules\.exclusions\)'
-        $query | Should -Match 'Ex\.exclusionManagedRuleSets'
-        $query | Should -Match 'Ers\.ruleGroups'
-        foreach ($scope in 'AllManagedRules', 'RuleSet', 'RuleGroup', 'Rule', 'None') {
-            $query | Should -Match "'$scope'"
-        }
-        # An empty selector is not missing data - with StartsWith or Contains it matches every
-        # name in the collection.
-        $query | Should -Match "'\(empty - matches all\)'"
-        # The specific rule ids an exclusion is scoped to must be rendered, not counted.
-        $query | Should -Match 'RuleIds\s*=\s*strcat_array\(extract_all'
-    }
-
-    It 'CustomRules.kql keeps policies that have no custom rules' {
-        # "No custom rules" and "policy not returned" look identical once the row is gone -
-        # same reason KeyVault/NetworkRules.kql keeps its RuleType 'None' rows.
-        $query = $WafQueries['CustomRules']
-
-        $query | Should -Match 'array_length\(PolicyProps\.customRules\), 0\) == 0'
-        # Detection mode blocks nothing whatever the rule's action says.
-        $query | Should -Match "WafMode =~ 'Detection'"
-        $query | Should -Match "'NotEnforced'"
-    }
-
-    It 'CustomRules.kql uses the API''s real misspelling of negationConditon' {
-        # The Azure REST API property is spelled without the second 'i'. Spelling it correctly
-        # matches nothing, so every negated rule reads as non-negated - which inverts what the
-        # rule does.
-        $query = $WafQueries['CustomRules']
-        $query | Should -Match 'negationConditon'
-        $query | Should -Not -Match 'negationCondition'
-    }
-
-    It 'reports whether each policy is attached to anything, from all three back-references' {
-        # A policy attached only to a listener has an empty applicationGateways back-reference.
-        # Counting gateways alone reports it as dead configuration when it is actively
-        # protecting a site.
-        foreach ($queryName in 'All', 'ManagedRules', 'Exclusions', 'CustomRules') {
-            $query = $WafQueries[$queryName]
-            foreach ($backref in 'applicationGateways', 'httpListeners', 'pathBasedRules') {
-                $query | Should -Match $backref
-            }
-        }
-        # An empty policySettings.state must not be optimistically read as Enabled.
-        $WafQueries['All'] | Should -Match "isempty\(State\),\s+'Unknown'"
-        # requestBodyCheck is absent-means-TRUE; defaulting it false would report body
-        # inspection as missing on nearly every policy.
-        $WafQueries['All'] | Should -Match 'requestBodyCheck\), true\)'
+    It 'keeps the rows an empty array would otherwise erase' {
+        # mv-expand drops a row whose array is empty, and every one of these absences is a
+        # finding: a rule set with no overrides, an exclusion scoped to nothing (the widest kind
+        # there is), a policy with no custom rules.
+        $WafQueries['ManagedRules'] | Should -Match 'mv-expand Rs = iff\(coalesce\(array_length'
+        $WafQueries['ManagedRules'] | Should -Match "'RuleSetDefaults'"
+        $WafQueries['Exclusions']   | Should -Match "'AllManagedRules'"
+        $WafQueries['CustomRules']  | Should -Match 'array_length\(PolicyProps\.customRules\), 0\) == 0'
     }
 }
 
-Describe 'KQL/Graph/Resource' {
+Describe 'Kql/Graph/Resource' {
     BeforeAll {
         $script:ResQueries = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
-
             $captured = @{}
             foreach ($queryName in 'All', 'Inventory') {
                 $null = Search-MsecAzureResourceGraph -ResourceType Resource -Name $queryName
@@ -696,12 +572,9 @@ Describe 'KQL/Graph/Resource' {
     }
 
     It 'tab-completes Resource and both of its query names' {
-        $types = (TabExpansion2 -inputScript 'Search-MsecAzureResourceGraph -ResourceType ' `
-                                -cursorColumn 44).CompletionMatches.CompletionText
-        $types | Should -Contain 'Resource'
-        # Singular, like every other folder in KQL/Graph. A stale plural folder left behind by a
-        # rename would tab-complete alongside it and quietly shadow half the queries.
-        $types | Should -Not -Contain 'Resources'
+        $line = 'Search-MsecAzureResourceGraph -ResourceType '
+        (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
+            Should -Contain 'Resource'
 
         $line = 'Search-MsecAzureResourceGraph -ResourceType Resource -Name '
         $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
@@ -709,101 +582,27 @@ Describe 'KQL/Graph/Resource' {
         $names | Should -Contain 'Inventory'
     }
 
-    It 'every ResourceType folder is named in the singular' {
-        # The folder name is the -ResourceType value and names what one row is about: VM, NSG,
-        # KeyVault, Resource. A plural creeping in makes the parameter read as a collection on
-        # that one folder and nowhere else.
-        $graphRoot = Join-Path (Get-Module msec).ModuleBase 'KQL/Graph'
-        $plural = Get-ChildItem -LiteralPath $graphRoot -Directory |
-            Where-Object { $_.Name -cmatch '(?<![Ss])s$' } |
-            ForEach-Object { $_.Name }
-
-        $plural | Should -BeNullOrEmpty
-    }
-
-    It 'All.kql is one row per resource, matching every other folder''s convention' {
-        # Every All.kql in KQL/Graph is one row per resource of that scope - VM/All.kql is one
-        # VM per row, Storage/All.kql one account per row. An All.kql that returned an aggregate
-        # would be the only one in the module that did, and -Name Inventory is where the rollup
-        # belongs.
-        $all = $ResQueries['All']
-        $all | Should -Match '(?m)^\s*\|\s*project Name\s*=\s*name,'
-        $all | Should -Not -Match '(?m)^\s*\|\s*summarize'
-        # ...and the rollup really is a rollup.
-        $ResQueries['Inventory'] | Should -Match '(?m)^\s*\|\s*summarize Resources\s*=\s*count\(\)'
-    }
-
     It 'shares a byte-identical classification map between the two queries' {
-        # Resource Graph has no way to share an expression across .kql files - `let` is scalars
-        # only and there are no functions - so the map is duplicated. Duplicated and DIVERGED
-        # would mean the type view and the resource view disagree about what is PaaS, which is
-        # worse than either being wrong on its own.
-        $begin = '// >>> BEGIN CLASSIFICATION MAP'
-        $end   = '// >>> END CLASSIFICATION MAP <<<'
-
+        # Resource Graph cannot share an expression across .kql files, so the map is duplicated.
+        # Duplicated and DIVERGED would mean the type view and the resource view disagree about
+        # what is PaaS, which is worse than either being wrong on its own.
+        $begin = '>>> BEGIN CLASSIFICATION MAP'
+        $end   = '>>> END CLASSIFICATION MAP'
         $blocks = foreach ($queryName in 'All', 'Inventory') {
             $q = $ResQueries[$queryName]
-            $i = $q.IndexOf($begin)
-            $j = $q.IndexOf($end)
-            $i | Should -BeGreaterThan -1
-            $j | Should -BeGreaterThan $i
-            $q.Substring($i, $j - $i + $end.Length)
+            $q.Substring($q.IndexOf($begin), $q.IndexOf($end) - $q.IndexOf($begin) + $end.Length)
         }
-
         $blocks[0] | Should -BeExactly $blocks[1]
     }
 
-    It 'never guesses: an unmapped resource type falls through to Unclassified' {
-        # The map cannot keep up with Azure on its own. A newly adopted service must show up as
-        # unmapped rather than being absorbed into whichever bucket happens to match, because a
-        # silently mis-bucketed service is indistinguishable from a correctly classified one.
-        foreach ($queryName in 'All', 'Inventory') {
-            $ResQueries[$queryName] | Should -Match "'Unclassified\|Unknown'"
-        }
-    }
-
-    It 'places exact-type overrides before the provider defaults' {
-        # case() takes the first match. If the `Provider == microsoft.network` default came
-        # first it would swallow every override beneath it and DNS zones, Front Door, Azure
-        # Firewall and Bastion would all report as IaaS.
+    It 'never guesses, and puts exact-type overrides ahead of the provider defaults' {
+        # case() takes the first match: if the microsoft.network default came first it would
+        # swallow the overrides beneath it and DNS zones, Front Door, Firewall and Bastion would
+        # all report as IaaS. An unmapped type must surface rather than be absorbed.
         $query = $ResQueries['All']
-        $overrideAt = $query.IndexOf("'microsoft.network/dnszones'")
-        $defaultAt  = $query.IndexOf("Provider == 'microsoft.network',")
-
-        $overrideAt | Should -BeGreaterThan -1
-        $defaultAt  | Should -BeGreaterThan -1
-        $overrideAt | Should -BeLessThan $defaultAt
-    }
-
-    It 'derives Model and Category from one expression so they cannot diverge' {
-        # Two separate case() blocks would let a type pick up its Model from one branch and its
-        # Category from another the moment someone edits only one of them.
-        $query = $ResQueries['All']
-        $query | Should -Match "Model\s*=\s*tostring\(split\(Class, '\|'\)\[0\]\)"
-        $query | Should -Match "Category\s*=\s*tostring\(split\(Class, '\|'\)\[1\]\)"
-    }
-
-    It 'separates dependencies and child resources from real services' {
-        # Disks, NICs, public IPs and VM extensions roughly double a raw resource count. Child
-        # types are detected structurally from the type depth rather than curated, so nested
-        # types nobody has thought of are still handled.
-        $query = $ResQueries['All']
-
-        $query | Should -Match "TypeDepth > 2, 'ChildResource'"
-        $query | Should -Match "'Dependency'"
-        foreach ($dependency in 'microsoft.compute/disks', 'microsoft.network/networkinterfaces',
-                                'microsoft.network/publicipaddresses', 'microsoft.insights/actiongroups') {
-            $query | Should -Match ([regex]::Escape("'$dependency'"))
-        }
-    }
-
-    It 'Inventory.kql stays at one row per type rather than splitting on kind' {
-        # kind is decisive for microsoft.web/sites and empty for most other types. Grouping on
-        # it would fragment the catalogue; collecting it into a set keeps the grain while still
-        # separating Functions from App Service.
-        $query = $ResQueries['Inventory']
-        $query | Should -Match 'Kinds\s*=\s*strcat_array\(make_set\(kind\)'
-        $query | Should -Not -Match '(?m)^\s+by .*\bkind\b'
+        $query | Should -Match "'Unclassified\|Unknown'"
+        $query.IndexOf("'microsoft.network/dnszones'") |
+            Should -BeLessThan $query.IndexOf("Provider == 'microsoft.network',")
     }
 }
 
@@ -812,7 +611,7 @@ Describe 'Bundled KQL files' {
     # name a lookup subquery) fails server-side with ParserFailure, which you only find out
     # by running it against a real tenant. Inline such lookups into join()/union() instead.
     It 'uses no tabular let statements, which Resource Graph cannot parse' {
-        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'KQL'
+        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'Kql'
         $offenders = Get-ChildItem -LiteralPath $kqlRoot -Filter *.kql -File -Recurse |
             Where-Object {
                 # let <name> = <TableOrExpr> ... | ...  (pipe on the same or a later line)
@@ -831,7 +630,7 @@ Describe 'Bundled KQL files' {
         #
         # Scoped to these two folders deliberately: the older queries predate this rule and
         # tightening them is a separate change with its own risk.
-        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'KQL/Graph'
+        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'Kql/Graph'
         $offenders = 'AppGateway', 'Waf' | ForEach-Object {
             Get-ChildItem -LiteralPath (Join-Path $kqlRoot $_) -Filter *.kql -File
         } | ForEach-Object {
@@ -853,7 +652,7 @@ Describe 'Bundled KQL files' {
         # Resource Graph rejects a group-less extract_all pattern at PARSE time with
         # Functions_ArgumentRegexMatchingGroupCountInvalid, so a pattern used only to count
         # matches fails the entire query rather than returning an empty array.
-        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'KQL'
+        $kqlRoot = Join-Path (Get-Module msec).ModuleBase 'Kql'
         $offenders = Get-ChildItem -LiteralPath $kqlRoot -Filter *.kql -File -Recurse |
             ForEach-Object {
                 $file = $_

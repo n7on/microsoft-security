@@ -13,11 +13,15 @@
     # Az.KeyVault: fetch the certificate (public + private key) used for client-credentials auth.
     # No Microsoft.Graph.*, no MSAL.PS: token acquisition is a JWT client assertion signed locally
     # by the cert, and all API calls go through Invoke-RestMethod.
+    # Az.OperationalInsights: Search-MsecLogAnalytics runs the bundled Kql/Law queries. It also
+    #   leans on Az.ResourceGraph to resolve a workspace NAME to its customerId across every
+    #   accessible subscription, which is why that dependency is not Resource-Graph-only.
     RequiredModules   = @(
         'Az.Accounts',
         'Az.KeyVault',
         'Az.Compute',
-        'Az.ResourceGraph'
+        'Az.ResourceGraph',
+        'Az.OperationalInsights'
     )
 
     FunctionsToExport = @(
@@ -37,6 +41,7 @@
         'Get-MsecEntraConditionalAccessSignInLog',
         'Get-MsecEntraConditionalAccessStats',
         'Search-MsecAzureResourceGraph',
+        'Search-MsecLogAnalytics',
         'Invoke-MsecAzureVMScript',
         'Select-MsecAzureContext',
         'Get-MsecAdoServiceConnection',

@@ -58,7 +58,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                         url = 'https://management.azure.com/'; description = 'Prod sub'
                         isShared = $false; isReady = $true
                         authorization = [pscustomobject]@{ scheme = 'ServicePrincipal' }
-                        createdBy = [pscustomobject]@{ displayName = 'anton' }
+                        createdBy = [pscustomobject]@{ displayName = 'admin' }
                         serviceEndpointProjectReferences = @(
                             [pscustomobject]@{ projectReference = [pscustomobject]@{ name = 'Proj-A' } }
                         )
@@ -69,7 +69,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                         url = 'https://docker.io'; description = 'Shared docker'
                         isShared = $true; isReady = $true
                         authorization = [pscustomobject]@{ scheme = 'UsernamePassword' }
-                        createdBy = [pscustomobject]@{ displayName = 'anton' }
+                        createdBy = [pscustomobject]@{ displayName = 'admin' }
                         # Shared to BOTH projects
                         serviceEndpointProjectReferences = @(
                             [pscustomobject]@{ projectReference = [pscustomobject]@{ name = 'Proj-A' } }
@@ -88,7 +88,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                         url = 'https://docker.io'; description = 'Shared docker'
                         isShared = $true; isReady = $true
                         authorization = [pscustomobject]@{ scheme = 'UsernamePassword' }
-                        createdBy = [pscustomobject]@{ displayName = 'anton' }
+                        createdBy = [pscustomobject]@{ displayName = 'admin' }
                         serviceEndpointProjectReferences = @(
                             [pscustomobject]@{ projectReference = [pscustomobject]@{ name = 'Proj-A' } }
                             [pscustomobject]@{ projectReference = [pscustomobject]@{ name = 'Proj-B' } }
@@ -99,7 +99,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                         url = 'https://github.com'; description = $null
                         isShared = $false; isReady = $true
                         authorization = [pscustomobject]@{ scheme = 'OAuth' }
-                        createdBy = [pscustomobject]@{ displayName = 'anton' }
+                        createdBy = [pscustomobject]@{ displayName = 'admin' }
                         serviceEndpointProjectReferences = @(
                             [pscustomobject]@{ projectReference = [pscustomobject]@{ name = 'Proj-B' } }
                         )

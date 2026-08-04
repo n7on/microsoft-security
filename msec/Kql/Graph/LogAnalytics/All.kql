@@ -1,0 +1,54 @@
+// One row per Log Analytics workspace across every accessible subscription.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType LogAnalytics.
+//
+// This is also how Search-MsecLogAnalytics resolves -WorkspaceName to the customerId the query
+// API actually takes, and what its tab completion reads from the cache. That is the whole point
+// of it being an ordinary bundled query rather than a bespoke helper: one way to ask Azure a
+// question, one cache, one thing to test.
+//
+//   # The workspaces worth pointing an investigation at:
+//   Search-MsecAzureResourceGraph -ResourceType LogAnalytics |
+//       Where-Object RetentionDays -ge 90 | Sort-Object SubscriptionName, Name
+//
+//   # Where the data actually is, by region - a sharded estate answers "which one" by region:
+//   ... | Group-Object Location | Sort-Object Count -Descending
+//
+// CustomerId is the workspace GUID that Invoke-AzOperationalInsightsQuery addresses. It is an
+// identifier, not a credential - the shared keys that would let someone WRITE to a workspace
+// are not projected by Resource Graph at all, and are not here.
+//
+// RetentionDays is the interactive retention. Data older than this is either archived under a
+// separate (longer) total-retention setting or gone; Resource Graph projects neither the
+// archive setting nor the actual oldest row, so a query that reaches further back than this
+// returns less than you asked for without saying so.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.operationalinsights/workspaces'
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Location          = location,
+          Sku               = tostring(properties.sku.name),
+          RetentionDays     = toint(properties.retentionInDays),
+          // Absent publicNetworkAccessForQuery means Enabled. A workspace can be reachable for
+          // ingestion but sealed for query, or the reverse, and neither is visible in the portal
+          // overview.
+          PublicQueryAccess     = iff(isempty(tostring(properties.publicNetworkAccessForQuery)),
+                                      'Enabled', tostring(properties.publicNetworkAccessForQuery)),
+          PublicIngestionAccess = iff(isempty(tostring(properties.publicNetworkAccessForIngestion)),
+                                      'Enabled', tostring(properties.publicNetworkAccessForIngestion)),
+          // The GUID Invoke-AzOperationalInsightsQuery addresses. See the note above.
+          CustomerId        = tostring(properties.customerId),
+          ProvisioningState = tostring(properties.provisioningState),
+          Id                = id
+| order by SubscriptionName asc, Name asc

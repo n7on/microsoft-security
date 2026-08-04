@@ -44,8 +44,8 @@ Describe 'Get-MsecIntuneDevice' {
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/deviceManagement/managedDevices' } -MockWith {
                 [pscustomobject]@{ value = @(
                     [pscustomobject]@{
-                        id = 'd-1'; deviceName = 'lap-anton'
-                        userPrincipalName = 'anton@viedoc.com'; userDisplayName = 'Anton'
+                        id = 'd-1'; deviceName = 'lap-01'
+                        userPrincipalName = 'admin@contoso.com'; userDisplayName = 'Admin'
                         operatingSystem = 'Windows'; osVersion = '10.0.26100.5074'
                         model = 'XPS 13'; manufacturer = 'Dell'
                         complianceState = 'compliant'
@@ -59,8 +59,8 @@ Describe 'Get-MsecIntuneDevice' {
                         serialNumber = 'SN-001'
                     }
                     [pscustomobject]@{
-                        id = 'd-2'; deviceName = 'phone-anton'
-                        userPrincipalName = 'anton@viedoc.com'; userDisplayName = 'Anton'
+                        id = 'd-2'; deviceName = 'phone-01'
+                        userPrincipalName = 'admin@contoso.com'; userDisplayName = 'Admin'
                         operatingSystem = 'iOS'; osVersion = '18.5'
                         model = 'iPhone 16 Pro'; manufacturer = 'Apple'
                         # In-grace device: grace expiration is a REAL future date, not the sentinel.
@@ -83,7 +83,7 @@ Describe 'Get-MsecIntuneDevice' {
 
         # Row 1: Windows laptop, fully compliant, sentinel grace.
         $win = $rows | Where-Object Id -eq 'd-1'
-        $win.DeviceName        | Should -Be 'lap-anton'
+        $win.DeviceName        | Should -Be 'lap-01'
         $win.Os                | Should -Be 'Windows'
         $win.ComplianceState   | Should -Be 'compliant'
         $win.Manufacturer      | Should -Be 'Dell'

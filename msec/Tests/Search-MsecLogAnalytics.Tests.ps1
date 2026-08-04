@@ -1,0 +1,194 @@
+#Requires -Module Pester
+#
+# Tests for Search-MsecLogAnalytics: the Kql/Law file convention, workspace resolution through
+# Resource Graph and its two failure modes, and the invariants the bundled Law queries rely on.
+
+BeforeAll {
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    Import-Module $modulePath -Force -ErrorAction Stop
+
+    # Redirect the completion cache for the whole file. Every test here resolves a workspace,
+    # which refreshes the cache - with Search-AzGraph mocked that would write MOCK data into the
+    # developer's real cache.
+    $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
+    $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
+    $script:CacheDir  = $env:MSEC_CACHE_DIR
+    $script:CachePath = Join-Path $env:MSEC_CACHE_DIR 'graph-loganalytics-all.json'
+}
+
+AfterAll {
+    if ($script:CacheDir -and (Test-Path -LiteralPath $script:CacheDir)) {
+        Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
+    }
+    $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
+    Remove-Module msec -Force -ErrorAction SilentlyContinue
+}
+
+Describe 'Search-MsecLogAnalytics' {
+    BeforeEach {
+        # Workspace resolution goes through Search-MsecAzureResourceGraph -UseCache, so a previous
+        # test's mocked workspace list would be served to the next one from disk.
+        if (Test-Path -LiteralPath $script:CachePath) { Remove-Item -LiteralPath $script:CachePath -Force }
+    }
+
+    It 'loads the .kql by convention, resolves the workspace name, and passes -Days as a timespan' {
+        $result = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            Mock Search-AzGraph -MockWith {
+                @([pscustomobject]@{ Name = 'ws-1'; ResourceGroupName = 'rg-a'
+                                     SubscriptionId = 'sub-1'; CustomerId = 'cid-1'; Location = 'westeurope' })
+            }
+            $script:CapturedQuery = $null
+            $script:CapturedId    = $null
+            $script:CapturedSpan  = $null
+            Mock Invoke-AzOperationalInsightsQuery -MockWith {
+                $script:CapturedQuery = $Query
+                $script:CapturedId    = $WorkspaceId
+                $script:CapturedSpan  = $Timespan
+                [pscustomobject]@{ Results = @([pscustomobject]@{ RuleId = '920230' }) }
+            }
+
+            $rows = Search-MsecLogAnalytics -Subject Waf -WorkspaceName ws-1 -Days 3
+            [pscustomobject]@{ Rows = $rows; Query = $script:CapturedQuery
+                               WorkspaceId = $script:CapturedId; Timespan = $script:CapturedSpan }
+        }
+
+        # The workspace NAME is resolved to its customerId - that GUID is what the API takes -
+        # and the window is a server-side timespan, not a clause appended to the query.
+        $result.WorkspaceId | Should -Be 'cid-1'
+        $result.Timespan    | Should -Be ([TimeSpan]::FromDays(3))
+        $result.Query       | Should -Match 'ApplicationGatewayFirewallLog'
+        $result.Rows[0].Workspace | Should -Be 'ws-1'
+    }
+
+    It 'lists the available workspaces when the name does not resolve' {
+        # "Workspace not found" on its own sends you to the portal. With dozens of workspaces the
+        # candidate list is the entire value of the error.
+        InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            Mock Search-AzGraph -MockWith {
+                @([pscustomobject]@{ Name = 'contoso-monitoring-log'; ResourceGroupName = 'rg-a'
+                                     SubscriptionId = 'sub-1'; CustomerId = 'cid-1' },
+                  [pscustomobject]@{ Name = 'contoso-sentinel-log'; ResourceGroupName = 'rg-b'
+                                     SubscriptionId = 'sub-1'; CustomerId = 'cid-2' })
+            }
+            Mock Invoke-AzOperationalInsightsQuery -MockWith { [pscustomobject]@{ Results = @() } }
+
+            { Search-MsecLogAnalytics -Subject Waf -WorkspaceName typo-log } |
+                Should -Throw -ExpectedMessage '*Available: contoso-monitoring-log, contoso-sentinel-log*'
+        }
+    }
+
+    It 'refuses to guess when a workspace name is ambiguous' {
+        # Two workspaces of the same name in different resource groups is normal in a sharded
+        # estate. Picking one silently would query the wrong data and look completely fine.
+        InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            Mock Search-AzGraph -MockWith {
+                @([pscustomobject]@{ Name = 'dup-log'; ResourceGroupName = 'rg-a'
+                                     SubscriptionId = 'sub-1'; CustomerId = 'cid-1' },
+                  [pscustomobject]@{ Name = 'dup-log'; ResourceGroupName = 'rg-b'
+                                     SubscriptionId = 'sub-2'; CustomerId = 'cid-2' })
+            }
+            Mock Invoke-AzOperationalInsightsQuery -MockWith { [pscustomobject]@{ Results = @() } }
+
+            { Search-MsecLogAnalytics -Subject Waf -WorkspaceName dup-log } | Should -Throw -ExpectedMessage '*ambiguous*'
+            { Search-MsecLogAnalytics -Subject Waf -WorkspaceName dup-log -ResourceGroupName rg-b } | Should -Not -Throw
+        }
+    }
+
+    It 'tab-completes -Subject and -Name from the Kql/Law tree' {
+        $line = 'Search-MsecLogAnalytics -Subject '
+        (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
+            Should -Contain 'Waf'
+
+        $line = 'Search-MsecLogAnalytics -Subject Waf -Name '
+        $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+        $names | Should -Contain 'All'
+        $names | Should -Contain 'TopRules'
+    }
+}
+
+Describe '-WorkspaceName completion' {
+    It 'completes from the cached workspace query' {
+        Set-Content -LiteralPath $script:CachePath -Encoding utf8 -Value (@{
+            UpdatedUtc = '2026-01-01T00:00:00Z'
+            Items      = @(
+                @{ Name = 'contoso-sentinel-log';   ResourceGroupName = 'rg-sec'; Location = 'westeurope' }
+                @{ Name = 'contoso-monitoring-log'; ResourceGroupName = 'rg-mon'; Location = 'francecentral' }
+            )
+        } | ConvertTo-Json -Depth 4)
+
+        $line = 'Search-MsecLogAnalytics -Subject Waf -WorkspaceName contoso-m'
+        $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+        $names | Should -Contain 'contoso-monitoring-log'
+        $names | Should -Not -Contain 'contoso-sentinel-log'
+    }
+
+    It 'refreshes the cache even when the workspace name does not resolve' {
+        # The first attempt at a half-remembered name is exactly when you most need completion to
+        # start working. Enumerating BEFORE matching is what makes the retry tab-completable.
+        $cached = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            Mock Search-AzGraph -MockWith {
+                @([pscustomobject]@{ Name = 'newly-discovered-log'; ResourceGroupName = 'rg-x'
+                                     SubscriptionId = 'sub-1'; CustomerId = 'cid-9' })
+            }
+            Mock Invoke-AzOperationalInsightsQuery -MockWith { [pscustomobject]@{ Results = @() } }
+
+            try { Search-MsecLogAnalytics -Subject Waf -WorkspaceName nope } catch { }
+            Read-MsecCache -Name 'graph-loganalytics-all'
+        }
+
+        $cached.Name | Should -Contain 'newly-discovered-log'
+    }
+}
+
+Describe 'Kql/Law bundled queries' {
+    BeforeAll {
+        $script:LawRoot = Join-Path (Get-Module msec).ModuleBase 'Kql/Law'
+    }
+
+    It 'carries no time filter - the window belongs to -Days' {
+        # -Days is passed to the API as a server-side timespan. A window baked into a file is
+        # invisible at the call site and silently intersects with the one the caller asked for.
+        $offenders = Get-ChildItem -LiteralPath $script:LawRoot -Filter *.kql -File -Recurse | ForEach-Object {
+            $code = ((Get-Content -LiteralPath $_.FullName) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+            if ($code -match 'TimeGenerated\s*[<>]' -or $code -match '\bago\s*\(') { $_.Name }
+        }
+        $offenders | Should -BeNullOrEmpty
+    }
+
+    It 'reads both App Gateway log modes and the GUID-suffixed transaction id' {
+        # A per-gateway diagnostic setting decides whether firewall logs land in AzureDiagnostics
+        # or AGWFirewallLogs; reading one means a setting change silently empties the report.
+        # And AzureDiagnostics suffixes dynamic columns by TYPE - transactionId is a guid, so _g.
+        # Reading _s returns nothing without erroring, which made dcount(TransactionId) report
+        # exactly 1 on every row: a per-request count that was silently always one.
+        foreach ($name in 'All', 'TopRules') {
+            $q = Get-Content -LiteralPath (Join-Path $script:LawRoot "Waf/$name.kql") -Raw
+            $q | Should -Match 'union isfuzzy=true'
+            $q | Should -Match 'AGWFirewallLogs'
+            $q | Should -Match "Category == 'ApplicationGatewayFirewallLog'"
+            $q | Should -Match "column_ifexists\('transactionId_g'"
+            $q | Should -Not -Match "column_ifexists\('transactionId_s'"
+        }
+    }
+
+    It 'shares a byte-identical normalization block between the two Waf queries' {
+        # Duplicated because Log Analytics cannot share a fragment across files. Duplicated and
+        # DIVERGED would mean Action and RuleId mean different things in the two views.
+        $begin = '>>> BEGIN WAF LOG NORMALIZATION'
+        $end   = '>>> END WAF LOG NORMALIZATION'
+        $blocks = foreach ($name in 'All', 'TopRules') {
+            $q = (Get-Content -LiteralPath (Join-Path $script:LawRoot "Waf/$name.kql") -Raw) -replace "`r`n", "`n"
+            $q.Substring($q.IndexOf($begin), $q.IndexOf($end) - $q.IndexOf($begin) + $end.Length)
+        }
+        $blocks[0] | Should -BeExactly $blocks[1]
+    }
+}

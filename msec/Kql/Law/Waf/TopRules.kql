@@ -1,0 +1,122 @@
+// One row per WAF rule per action per gateway - the summarized view of what the WAF is actually
+// doing, aggregated server-side so it survives a wide -Days window.
+//
+// Loaded by Search-MsecLogAnalytics -Subject Waf -Name TopRules -WorkspaceName <ws>.
+// Its companion, -Name All, is the same data at one row per log entry.
+//
+// This is the file that pairs with Kql/Graph/Waf/ManagedRules.kql. That one says which managed
+// rules are switched off; this one says which rules carry load:
+//   $disabled = Search-MsecAzureResourceGraph -ResourceType Waf -Name ManagedRules |
+//                   Where-Object { $_.Disabled -and $_.Enforcing }
+//   $fired    = Search-MsecLogAnalytics -Subject Waf -Name TopRules `
+//                   -WorkspaceName prod-sentinel-log -Days 30
+//
+//   # Rules that were switched off but are still firing - the override is scoped to a policy
+//   # that does not cover every listener:
+//   $fired | Where-Object RuleId -in $disabled.RuleId
+//
+//   # Rules doing nothing but generating noise - lots of Matched, never a Block:
+//   $fired | Group-Object RuleId | Where-Object { $_.Group.Action -notcontains 'Blocked' }
+//
+// READ THE ACTION CAVEAT IN Waf/All.kql BEFORE USING Hits. Under anomaly scoring one blocked
+// request writes one 'Matched' row per contributing rule plus a single 'Blocked' row, so Hits
+// for Action == 'Matched' counts RULE CONTRIBUTIONS and Hits for Action == 'Blocked' counts
+// BLOCKED REQUESTS. They are not comparable numbers and summing them means nothing. Requests is
+// the honest per-request figure: a distinct count of transaction ids.
+//
+// Every value arrives from the API as a string, so cast before sorting numerically:
+//   ... | Sort-Object { [int]$_.Hits } -Descending
+//
+// NO TIME FILTER IN THIS FILE - Search-MsecLogAnalytics passes -Days to the API as a server-side
+// timespan. See Waf/All.kql.
+//
+// NB: the normalization block between the BEGIN/END markers is duplicated verbatim from
+// Waf/All.kql. Log Analytics has no way to share a fragment across two .kql files. A test
+// asserts the two blocks are byte-identical, so edit both or the test fails.
+
+// >>> BEGIN WAF LOG NORMALIZATION - keep byte-identical across Law/Waf/All.kql and Law/Waf/TopRules.kql <<<
+union isfuzzy=true
+    (
+        // Legacy mode. AzureDiagnostics is a shared table - the Category filter is what keeps
+        // Key Vault audit events and every other resource type's diagnostics out of the result.
+        AzureDiagnostics
+        | where Category == 'ApplicationGatewayFirewallLog'
+        | project TimeGenerated,
+                  Action         = column_ifexists('action_s', ''),
+                  RuleId         = column_ifexists('ruleId_s', ''),
+                  RuleGroup      = column_ifexists('ruleGroup_s', ''),
+                  RuleSetType    = column_ifexists('ruleSetType_s', ''),
+                  RuleSetVersion = column_ifexists('ruleSetVersion_s', ''),
+                  Hostname       = column_ifexists('hostname_s', ''),
+                  RequestUri     = column_ifexists('requestUri_s', ''),
+                  ClientIp       = column_ifexists('clientIp_s', ''),
+                  Message        = column_ifexists('Message', ''),
+                  Details        = column_ifexists('details_message_s', ''),
+                  MatchedData    = column_ifexists('details_data_s', ''),
+                  // GUID-typed, so the AzureDiagnostics suffix is _g and NOT _s. Reading
+                  // transactionId_s returns nothing but does not error, which makes
+                  // dcount(TransactionId) come back as 1 on every row - a per-request count
+                  // that is silently always one. The default must be a guid too: if the two
+                  // union legs disagree on type, Kusto emits TransactionId and TransactionId_1
+                  // as separate columns rather than failing.
+                  TransactionId  = tostring(column_ifexists('transactionId_g', guid(null))),
+                  PolicyId       = column_ifexists('policyId_s', ''),
+                  PolicyScope    = column_ifexists('policyScope_s', ''),
+                  PolicyScopeName = column_ifexists('policyScopeName_s', ''),
+                  ResourceIdLower = tolower(_ResourceId),
+                  Source         = 'AzureDiagnostics'
+    ),
+    (
+        // Resource-specific mode. Same fields, already typed and named, no _s suffixes.
+        AGWFirewallLogs
+        | project TimeGenerated,
+                  Action         = column_ifexists('Action', ''),
+                  RuleId         = tostring(column_ifexists('RuleId', '')),
+                  RuleGroup      = column_ifexists('RuleGroup', ''),
+                  RuleSetType    = column_ifexists('RuleSetType', ''),
+                  RuleSetVersion = column_ifexists('RuleSetVersion', ''),
+                  Hostname       = column_ifexists('Hostname', ''),
+                  RequestUri     = column_ifexists('RequestUri', ''),
+                  ClientIp       = column_ifexists('ClientIp', ''),
+                  Message        = column_ifexists('Message', ''),
+                  Details        = column_ifexists('DetailsMessage', ''),
+                  MatchedData    = column_ifexists('DetailsData', ''),
+                  TransactionId  = tostring(column_ifexists('TransactionId', '')),
+                  PolicyId       = column_ifexists('PolicyId', ''),
+                  PolicyScope    = column_ifexists('PolicyScope', ''),
+                  PolicyScopeName = column_ifexists('PolicyScopeName', ''),
+                  ResourceIdLower = tolower(column_ifexists('_ResourceId', '')),
+                  Source         = 'AGWFirewallLogs'
+    )
+// The gateway name is only present inside the resource id in both modes.
+| extend Gateway = extract(@'(?i)/applicationgateways/([^/]+)$', 1, ResourceIdLower)
+// PolicyScope says whether the rule that fired came from the gateway-wide policy or from a
+// per-listener or per-path override - the same precedence Kql/Graph/Waf resolves statically.
+| extend PolicyScope = iff(isempty(PolicyScope), 'Global', PolicyScope)
+// >>> END WAF LOG NORMALIZATION <<<
+| summarize Hits      = count(),
+            // Distinct HTTP requests, as opposed to rule contributions. The number to quote.
+            Requests  = dcount(TransactionId),
+            Sites     = dcount(Hostname),
+            Clients   = dcount(ClientIp),
+            FirstSeen = min(TimeGenerated),
+            LastSeen  = max(TimeGenerated),
+            SampleUri = take_any(RequestUri),
+            SampleDetails = take_any(Details)
+    by Gateway, Action, RuleId, RuleGroup, RuleSetType, RuleSetVersion, PolicyScope
+| project Gateway,
+          Action,
+          RuleId,
+          RuleGroup,
+          Hits,
+          Requests,
+          Sites,
+          Clients,
+          FirstSeen,
+          LastSeen,
+          SampleUri,
+          SampleDetails,
+          RuleSetType,
+          RuleSetVersion,
+          PolicyScope
+| order by Hits desc

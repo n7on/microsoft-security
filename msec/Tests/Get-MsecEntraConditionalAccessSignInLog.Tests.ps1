@@ -49,8 +49,8 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
                     [pscustomobject]@{
                         id                = 'evt-1'
                         createdDateTime   = '2026-06-07T09:14:00Z'
-                        userPrincipalName = 'anton@viedoc.com'
-                        userDisplayName   = 'Anton'
+                        userPrincipalName = 'admin@contoso.com'
+                        userDisplayName   = 'Admin'
                         userId            = 'user-guid'
                         appDisplayName    = 'Microsoft Graph PowerShell'
                         appId             = 'app-guid'
@@ -103,7 +103,7 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
         # Event 1: clean success, all nested fields surfaced
         $e1 = $captured.Rows | Where-Object Id -eq 'evt-1'
         $e1.CreatedDateTime         | Should -BeOfType [datetime]
-        $e1.UserPrincipalName       | Should -Be 'anton@viedoc.com'
+        $e1.UserPrincipalName       | Should -Be 'admin@contoso.com'
         $e1.City                    | Should -Be 'Stockholm'
         $e1.Country                 | Should -Be 'SE'
         $e1.DeviceOs                | Should -Be 'Windows10'

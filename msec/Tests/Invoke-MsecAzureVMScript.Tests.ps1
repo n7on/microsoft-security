@@ -41,7 +41,9 @@ Describe 'Invoke-MsecAzureVMScript' {
         }
 
         $results.Cmd          | Should -Be 'RunShellScript'
-        $results.Path         | Should -Match '/Scripts/VM/Linux/os-info\.sh$'
+        # [\\/] because Join-Path uses the platform separator: a '/'-only pattern passes on
+        # Linux and fails on Windows, which is where this module is mostly run.
+        $results.Path         | Should -Match '[\\/]Scripts[\\/]VM[\\/]Linux[\\/]os-info\.sh$'
         $results.Out.VmName   | Should -Be 'lin-1'
         $results.Out.Os       | Should -Be 'Linux'
         $results.Out.Location | Should -Be 'westeu'
@@ -72,7 +74,7 @@ Describe 'Invoke-MsecAzureVMScript' {
         }
 
         $results.Cmd        | Should -Be 'RunPowerShellScript'
-        $results.Path       | Should -Match '/Scripts/VM/Windows/os-info\.ps1$'
+        $results.Path       | Should -Match '[\\/]Scripts[\\/]VM[\\/]Windows[\\/]os-info\.ps1$'
         $results.Out.VmName | Should -Be 'win-1'
         $results.Out.Os     | Should -Be 'Windows'
         $results.Out.Status | Should -Be 'Succeeded'

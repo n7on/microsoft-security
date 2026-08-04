@@ -42,7 +42,7 @@ function Select-MsecAzureContext {
 
     .EXAMPLE
         # Same subscription name signed in under two accounts - pick the user:
-        Select-MsecAzureContext -Subscription PROD -User anton@partner.onmschina.cn
+        Select-MsecAzureContext -Subscription PROD -User admin@partner.onmschina.cn
 
     .OUTPUTS
         PSCustomObject: SubscriptionName, SubscriptionId, TenantId, Environment, Account.

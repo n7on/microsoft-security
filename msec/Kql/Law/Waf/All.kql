@@ -1,0 +1,126 @@
+// One row per Application Gateway WAF firewall-log entry in the target workspace - what the WAF
+// actually did, as opposed to what it is configured to do.
+//
+// Loaded by Search-MsecLogAnalytics -Subject Waf -WorkspaceName <ws>.
+// Its companion, -Name TopRules, summarizes these same rows server-side.
+//
+// THE PAIR. Kql/Graph/Waf/* reads the WAF POLICY - which managed rules are disabled, which
+// exclusions exist, what the custom rules say. This reads the LOG. Together they answer the
+// question neither can alone:
+//   $disabled = Search-MsecAzureResourceGraph -ResourceType Waf -Name ManagedRules |
+//                   Where-Object Disabled
+//   $fired    = Search-MsecLogAnalytics -Subject Waf -Name TopRules -WorkspaceName prod-sentinel-log -Days 30
+//   # rules switched off that were carrying real load before someone switched them off:
+//   $fired | Where-Object RuleId -in $disabled.RuleId
+//
+// ACTION DOES NOT MEAN WHAT IT LOOKS LIKE. Under anomaly scoring - OWASP 3.x and DRS 2.x, which
+// is everything modern - a single blocked request writes MANY rows: one 'Matched' per rule that
+// contributed to the anomaly score, then one 'Blocked' when the score crosses the threshold.
+// So:
+//   * Counting Action == 'Blocked' counts BLOCKED REQUESTS.
+//   * Counting Action == 'Matched' counts RULE CONTRIBUTIONS, which is a much larger number and
+//     is NOT a count of anything that was stopped.
+//   * A rule with thousands of 'Matched' and no 'Blocked' is a rule generating noise, not a
+//     rule protecting anything.
+// Group by TransactionId to get back to per-request grain - every row from one HTTP request
+// shares one transaction id.
+//
+// BOTH LOG MODES. Application Gateway writes its firewall log either to AzureDiagnostics (the
+// legacy diagnostic setting mode) or to AGWFirewallLogs (resource-specific mode), and which one
+// depends on a per-gateway diagnostic setting that anybody can flip. Both are read here and
+// normalized to one schema, with Source recording which mode a row came from. `isfuzzy=true` is
+// what makes that safe: a workspace where one of the two tables has never existed still returns
+// the other, instead of failing the whole query on an unresolved table name.
+//
+// NO TIME FILTER IN THIS FILE, deliberately. Search-MsecLogAnalytics passes -Days to the API as
+// a server-side timespan against the TimeGenerated index. A window baked in here would be
+// invisible at the call site and could not be widened without editing the file.
+//
+// VOLUME. Firewall logs run to tens of thousands of rows a day on a busy gateway and the query
+// API caps a response at 500,000 rows with no continuation token. Use a short -Days at this
+// grain, or use -Name TopRules, which summarizes before the data leaves Azure.
+//
+// NB: the normalization block between the BEGIN/END markers is duplicated verbatim in
+// Waf/TopRules.kql. Log Analytics has no way to share a fragment across two .kql files. A test
+// asserts the two blocks are byte-identical, so edit both or the test fails.
+
+// >>> BEGIN WAF LOG NORMALIZATION - keep byte-identical across Law/Waf/All.kql and Law/Waf/TopRules.kql <<<
+union isfuzzy=true
+    (
+        // Legacy mode. AzureDiagnostics is a shared table - the Category filter is what keeps
+        // Key Vault audit events and every other resource type's diagnostics out of the result.
+        AzureDiagnostics
+        | where Category == 'ApplicationGatewayFirewallLog'
+        | project TimeGenerated,
+                  Action         = column_ifexists('action_s', ''),
+                  RuleId         = column_ifexists('ruleId_s', ''),
+                  RuleGroup      = column_ifexists('ruleGroup_s', ''),
+                  RuleSetType    = column_ifexists('ruleSetType_s', ''),
+                  RuleSetVersion = column_ifexists('ruleSetVersion_s', ''),
+                  Hostname       = column_ifexists('hostname_s', ''),
+                  RequestUri     = column_ifexists('requestUri_s', ''),
+                  ClientIp       = column_ifexists('clientIp_s', ''),
+                  Message        = column_ifexists('Message', ''),
+                  Details        = column_ifexists('details_message_s', ''),
+                  MatchedData    = column_ifexists('details_data_s', ''),
+                  // GUID-typed, so the AzureDiagnostics suffix is _g and NOT _s. Reading
+                  // transactionId_s returns nothing but does not error, which makes
+                  // dcount(TransactionId) come back as 1 on every row - a per-request count
+                  // that is silently always one. The default must be a guid too: if the two
+                  // union legs disagree on type, Kusto emits TransactionId and TransactionId_1
+                  // as separate columns rather than failing.
+                  TransactionId  = tostring(column_ifexists('transactionId_g', guid(null))),
+                  PolicyId       = column_ifexists('policyId_s', ''),
+                  PolicyScope    = column_ifexists('policyScope_s', ''),
+                  PolicyScopeName = column_ifexists('policyScopeName_s', ''),
+                  ResourceIdLower = tolower(_ResourceId),
+                  Source         = 'AzureDiagnostics'
+    ),
+    (
+        // Resource-specific mode. Same fields, already typed and named, no _s suffixes.
+        AGWFirewallLogs
+        | project TimeGenerated,
+                  Action         = column_ifexists('Action', ''),
+                  RuleId         = tostring(column_ifexists('RuleId', '')),
+                  RuleGroup      = column_ifexists('RuleGroup', ''),
+                  RuleSetType    = column_ifexists('RuleSetType', ''),
+                  RuleSetVersion = column_ifexists('RuleSetVersion', ''),
+                  Hostname       = column_ifexists('Hostname', ''),
+                  RequestUri     = column_ifexists('RequestUri', ''),
+                  ClientIp       = column_ifexists('ClientIp', ''),
+                  Message        = column_ifexists('Message', ''),
+                  Details        = column_ifexists('DetailsMessage', ''),
+                  MatchedData    = column_ifexists('DetailsData', ''),
+                  TransactionId  = tostring(column_ifexists('TransactionId', '')),
+                  PolicyId       = column_ifexists('PolicyId', ''),
+                  PolicyScope    = column_ifexists('PolicyScope', ''),
+                  PolicyScopeName = column_ifexists('PolicyScopeName', ''),
+                  ResourceIdLower = tolower(column_ifexists('_ResourceId', '')),
+                  Source         = 'AGWFirewallLogs'
+    )
+// The gateway name is only present inside the resource id in both modes.
+| extend Gateway = extract(@'(?i)/applicationgateways/([^/]+)$', 1, ResourceIdLower)
+// PolicyScope says whether the rule that fired came from the gateway-wide policy or from a
+// per-listener or per-path override - the same precedence Kql/Graph/Waf resolves statically.
+| extend PolicyScope = iff(isempty(PolicyScope), 'Global', PolicyScope)
+// >>> END WAF LOG NORMALIZATION <<<
+| project TimeGenerated,
+          Gateway,
+          Action,
+          RuleId,
+          RuleGroup,
+          Hostname,
+          RequestUri,
+          ClientIp,
+          // The rule's own description of what it matched, and the request fragment that did it.
+          Details,
+          MatchedData,
+          Message,
+          RuleSetType,
+          RuleSetVersion,
+          PolicyScope,
+          PolicyScopeName,
+          // Every row from one HTTP request shares this. Group by it to get per-request grain.
+          TransactionId,
+          Source
+| order by TimeGenerated desc

@@ -678,6 +678,135 @@ Describe 'KQL/Graph/Waf' {
     }
 }
 
+Describe 'KQL/Graph/Resource' {
+    BeforeAll {
+        $script:ResQueries = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            $script:CapturedQuery = $null
+            Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
+
+            $captured = @{}
+            foreach ($queryName in 'All', 'Inventory') {
+                $null = Search-MsecAzureResourceGraph -ResourceType Resource -Name $queryName
+                $captured[$queryName] = $script:CapturedQuery
+            }
+            $captured
+        }
+    }
+
+    It 'tab-completes Resource and both of its query names' {
+        $types = (TabExpansion2 -inputScript 'Search-MsecAzureResourceGraph -ResourceType ' `
+                                -cursorColumn 44).CompletionMatches.CompletionText
+        $types | Should -Contain 'Resource'
+        # Singular, like every other folder in KQL/Graph. A stale plural folder left behind by a
+        # rename would tab-complete alongside it and quietly shadow half the queries.
+        $types | Should -Not -Contain 'Resources'
+
+        $line = 'Search-MsecAzureResourceGraph -ResourceType Resource -Name '
+        $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+        $names | Should -Contain 'All'
+        $names | Should -Contain 'Inventory'
+    }
+
+    It 'every ResourceType folder is named in the singular' {
+        # The folder name is the -ResourceType value and names what one row is about: VM, NSG,
+        # KeyVault, Resource. A plural creeping in makes the parameter read as a collection on
+        # that one folder and nowhere else.
+        $graphRoot = Join-Path (Get-Module msec).ModuleBase 'KQL/Graph'
+        $plural = Get-ChildItem -LiteralPath $graphRoot -Directory |
+            Where-Object { $_.Name -cmatch '(?<![Ss])s$' } |
+            ForEach-Object { $_.Name }
+
+        $plural | Should -BeNullOrEmpty
+    }
+
+    It 'All.kql is one row per resource, matching every other folder''s convention' {
+        # Every All.kql in KQL/Graph is one row per resource of that scope - VM/All.kql is one
+        # VM per row, Storage/All.kql one account per row. An All.kql that returned an aggregate
+        # would be the only one in the module that did, and -Name Inventory is where the rollup
+        # belongs.
+        $all = $ResQueries['All']
+        $all | Should -Match '(?m)^\s*\|\s*project Name\s*=\s*name,'
+        $all | Should -Not -Match '(?m)^\s*\|\s*summarize'
+        # ...and the rollup really is a rollup.
+        $ResQueries['Inventory'] | Should -Match '(?m)^\s*\|\s*summarize Resources\s*=\s*count\(\)'
+    }
+
+    It 'shares a byte-identical classification map between the two queries' {
+        # Resource Graph has no way to share an expression across .kql files - `let` is scalars
+        # only and there are no functions - so the map is duplicated. Duplicated and DIVERGED
+        # would mean the type view and the resource view disagree about what is PaaS, which is
+        # worse than either being wrong on its own.
+        $begin = '// >>> BEGIN CLASSIFICATION MAP'
+        $end   = '// >>> END CLASSIFICATION MAP <<<'
+
+        $blocks = foreach ($queryName in 'All', 'Inventory') {
+            $q = $ResQueries[$queryName]
+            $i = $q.IndexOf($begin)
+            $j = $q.IndexOf($end)
+            $i | Should -BeGreaterThan -1
+            $j | Should -BeGreaterThan $i
+            $q.Substring($i, $j - $i + $end.Length)
+        }
+
+        $blocks[0] | Should -BeExactly $blocks[1]
+    }
+
+    It 'never guesses: an unmapped resource type falls through to Unclassified' {
+        # The map cannot keep up with Azure on its own. A newly adopted service must show up as
+        # unmapped rather than being absorbed into whichever bucket happens to match, because a
+        # silently mis-bucketed service is indistinguishable from a correctly classified one.
+        foreach ($queryName in 'All', 'Inventory') {
+            $ResQueries[$queryName] | Should -Match "'Unclassified\|Unknown'"
+        }
+    }
+
+    It 'places exact-type overrides before the provider defaults' {
+        # case() takes the first match. If the `Provider == microsoft.network` default came
+        # first it would swallow every override beneath it and DNS zones, Front Door, Azure
+        # Firewall and Bastion would all report as IaaS.
+        $query = $ResQueries['All']
+        $overrideAt = $query.IndexOf("'microsoft.network/dnszones'")
+        $defaultAt  = $query.IndexOf("Provider == 'microsoft.network',")
+
+        $overrideAt | Should -BeGreaterThan -1
+        $defaultAt  | Should -BeGreaterThan -1
+        $overrideAt | Should -BeLessThan $defaultAt
+    }
+
+    It 'derives Model and Category from one expression so they cannot diverge' {
+        # Two separate case() blocks would let a type pick up its Model from one branch and its
+        # Category from another the moment someone edits only one of them.
+        $query = $ResQueries['All']
+        $query | Should -Match "Model\s*=\s*tostring\(split\(Class, '\|'\)\[0\]\)"
+        $query | Should -Match "Category\s*=\s*tostring\(split\(Class, '\|'\)\[1\]\)"
+    }
+
+    It 'separates dependencies and child resources from real services' {
+        # Disks, NICs, public IPs and VM extensions roughly double a raw resource count. Child
+        # types are detected structurally from the type depth rather than curated, so nested
+        # types nobody has thought of are still handled.
+        $query = $ResQueries['All']
+
+        $query | Should -Match "TypeDepth > 2, 'ChildResource'"
+        $query | Should -Match "'Dependency'"
+        foreach ($dependency in 'microsoft.compute/disks', 'microsoft.network/networkinterfaces',
+                                'microsoft.network/publicipaddresses', 'microsoft.insights/actiongroups') {
+            $query | Should -Match ([regex]::Escape("'$dependency'"))
+        }
+    }
+
+    It 'Inventory.kql stays at one row per type rather than splitting on kind' {
+        # kind is decisive for microsoft.web/sites and empty for most other types. Grouping on
+        # it would fragment the catalogue; collecting it into a set keeps the grain while still
+        # separating Functions from App Service.
+        $query = $ResQueries['Inventory']
+        $query | Should -Match 'Kinds\s*=\s*strcat_array\(make_set\(kind\)'
+        $query | Should -Not -Match '(?m)^\s+by .*\bkind\b'
+    }
+}
+
 Describe 'Bundled KQL files' {
     # Resource Graph accepts `let` for scalars only - a tabular `let` (the natural way to
     # name a lookup subquery) fails server-side with ParserFailure, which you only find out

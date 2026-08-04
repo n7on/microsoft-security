@@ -1,0 +1,226 @@
+// One row per Azure resource TYPE across every accessible subscription - the answer to "which
+// Azure services do we actually use". The rollup of Resource/All.kql, which is the same
+// classification at one row per resource.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Resource -Name Inventory.
+//
+// Azure has no IaaS/PaaS field. Nothing in Resource Graph, in the resource provider metadata or
+// in the ARM schema says which model a resource type belongs to, so the Model column below is a
+// CURATED JUDGEMENT, not a lookup. It is a hand-maintained map, it will be wrong at the edges,
+// and it is meant to be argued with and edited. What it must never do is guess: a type that is
+// not in the map comes back 'Unclassified' rather than being quietly bucketed. Find them with:
+//   Search-MsecAzureResourceGraph -ResourceType Resource -Name Inventory |
+//       Where-Object Model -eq 'Unclassified'
+// Run that after adopting any new Azure service and add the type to the map below.
+//
+// THREE columns rather than one, because a single IaaS/PaaS split hides more than it shows:
+//
+//   Model     IaaS         you operate the guest OS or the network primitive
+//             PaaS         Azure operates the runtime; you operate the configuration
+//             Hybrid       Arc-managed or on-premises machines projected into Azure
+//             Management   observability, automation, migration and billing plumbing - real
+//                          resources, but not workload. Typically a THIRD of a mature estate.
+//             Identity     identity infrastructure
+//             Marketplace  third-party SaaS bought through Azure and billed on your invoice
+//             Unclassified not in the map. See above.
+//
+//   Category  Compute, Network, Storage, Data, Web, Containers, Integration, Security, AI,
+//             Analytics, Observability, Backup, Automation, Migration, Billing, Identity,
+//             ThirdParty, Unknown.
+//
+//   Role      Service       a thing you chose to run
+//             Dependency    exists only to serve a parent resource - disks, NICs, public IPs,
+//                           VM extensions, action groups. Counting these as "services we use"
+//                           roughly doubles every number and tells you nothing.
+//             ChildResource a nested ARM type (databases under a server, slots under a site).
+//                           Detected structurally from the type's depth, not curated.
+//
+// So the shape most people actually want is:
+//   Search-MsecAzureResourceGraph -ResourceType Resource -Name Inventory |
+//       Where-Object { $_.Model -in 'IaaS', 'PaaS', 'Hybrid' -and $_.Role -eq 'Service' }
+//
+//   # Collapse to the plain two-bucket answer:
+//   ... | Group-Object Model | Select-Object Name, Count
+//
+//   # Which subscriptions use a given service:
+//   ... | Where-Object Type -eq 'microsoft.dbformysql/flexibleservers' |
+//       Select-Object -ExpandProperty SubscriptionNames
+//
+// SCOPE - what is NOT here, none of it inferable from an empty result:
+//   * Only ARM resources in subscriptions you hold Reader on. Resource Graph honours RBAC and
+//     silently omits the rest, so a service used by a team whose subscription you cannot read
+//     is invisible. Compare the Subscriptions count against (Get-AzSubscription).Count.
+//   * Nothing outside ARM: Entra ID, Microsoft 365, Defender, Azure DevOps, Power Platform.
+//   * Classic (ASM) resources, which Resource Graph does not project.
+//
+// NB: the classification block between the BEGIN/END markers is duplicated verbatim in
+// Resource/All.kql. Resource Graph supports `let` for scalars only - there is no way to share
+// an expression between two .kql files, and no way to define a function. A test asserts the two
+// blocks are byte-identical, so edit both or the test fails.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`, for the same reason.
+Resources
+// >>> BEGIN CLASSIFICATION MAP - keep byte-identical across Resource/All.kql and Resource/Inventory.kql <<<
+| extend TypeLower = tolower(type),
+         Provider  = tolower(tostring(split(type, '/')[0])),
+         TypeDepth = array_length(split(type, '/'))
+// One case() emitting 'Model|Category' as a single string, split into two columns below. Keeping
+// them in one expression means a type can never end up with a Model from one branch and a
+// Category from another.
+//
+// ORDER MATTERS. Exact-type overrides must precede the provider defaults, because case() takes
+// the first match and a provider default would otherwise swallow the exception.
+| extend Class = case(
+      // ---- exact-type overrides: types whose provider default is wrong for them ----
+      // Managed services that happen to live in the Microsoft.Network namespace. These are not
+      // network primitives you operate - Azure runs them and you configure them.
+      TypeLower == 'microsoft.network/dnszones',                'PaaS|Network',
+      TypeLower == 'microsoft.network/privatednszones',         'PaaS|Network',
+      TypeLower == 'microsoft.network/privatednszones/virtualnetworklinks', 'PaaS|Network',
+      TypeLower == 'microsoft.network/applicationgateways',     'PaaS|Network',
+      TypeLower == 'microsoft.network/frontdoors',              'PaaS|Network',
+      TypeLower == 'microsoft.network/trafficmanagerprofiles',  'PaaS|Network',
+      TypeLower == 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies', 'PaaS|Security',
+      TypeLower == 'microsoft.network/frontdoorwebapplicationfirewallpolicies',          'PaaS|Security',
+      TypeLower == 'microsoft.network/azurefirewalls',          'PaaS|Security',
+      TypeLower == 'microsoft.network/bastionhosts',            'PaaS|Security',
+      // Auto-created by the platform, one per region, whether or not anyone asked for it.
+      TypeLower == 'microsoft.network/networkwatchers',         'Management|Observability',
+      // Managed domain controllers: a PaaS service delivering an IaaS-shaped thing.
+      TypeLower == 'microsoft.aad/domainservices',              'Identity|Identity',
+      // A build pipeline that produces VM images - tooling, not workload.
+      TypeLower == 'microsoft.virtualmachineimages/imagetemplates', 'Management|Automation',
+      TypeLower == 'microsoft.dashboard/grafana',               'Management|Observability',
+      TypeLower == 'microsoft.recoveryservices/vaults',         'PaaS|Backup',
+      // ---- provider defaults ----
+      Provider == 'microsoft.compute',              'IaaS|Compute',
+      Provider == 'microsoft.network',              'IaaS|Network',
+      Provider == 'microsoft.classiccompute',       'IaaS|Compute',
+      Provider == 'microsoft.classicnetwork',       'IaaS|Network',
+      // Arc and off-Azure machines. You own the guest OS and Azure only projects it, which is
+      // neither IaaS nor PaaS and is exactly the distinction a two-bucket model destroys.
+      Provider == 'microsoft.hybridcompute',        'Hybrid|Compute',
+      Provider == 'microsoft.azurearcdata',         'Hybrid|Data',
+      Provider == 'microsoft.kubernetes',           'Hybrid|Containers',
+      Provider == 'microsoft.storage',              'PaaS|Storage',
+      Provider == 'microsoft.netapp',               'PaaS|Storage',
+      Provider == 'microsoft.web',                  'PaaS|Web',
+      Provider == 'microsoft.app',                  'PaaS|Containers',
+      Provider == 'microsoft.containerservice',     'PaaS|Containers',
+      Provider == 'microsoft.containerregistry',    'PaaS|Containers',
+      Provider == 'microsoft.containerinstance',    'PaaS|Containers',
+      Provider == 'microsoft.keyvault',             'PaaS|Security',
+      Provider == 'microsoft.sql',                  'PaaS|Data',
+      Provider == 'microsoft.dbformysql',           'PaaS|Data',
+      Provider == 'microsoft.dbforpostgresql',      'PaaS|Data',
+      Provider == 'microsoft.dbformariadb',         'PaaS|Data',
+      Provider == 'microsoft.documentdb',           'PaaS|Data',
+      Provider == 'microsoft.cache',                'PaaS|Data',
+      Provider == 'microsoft.search',               'PaaS|Data',
+      Provider == 'microsoft.servicebus',           'PaaS|Integration',
+      Provider == 'microsoft.eventgrid',            'PaaS|Integration',
+      Provider == 'microsoft.eventhub',             'PaaS|Integration',
+      Provider == 'microsoft.relay',                'PaaS|Integration',
+      Provider == 'microsoft.notificationhubs',     'PaaS|Integration',
+      Provider == 'microsoft.signalrservice',       'PaaS|Integration',
+      Provider == 'microsoft.logic',                'PaaS|Integration',
+      Provider == 'microsoft.datafactory',          'PaaS|Integration',
+      Provider == 'microsoft.apimanagement',        'PaaS|Integration',
+      Provider == 'microsoft.appconfiguration',     'PaaS|Integration',
+      Provider == 'microsoft.communication',        'PaaS|Integration',
+      Provider == 'microsoft.cdn',                  'PaaS|Network',
+      Provider == 'microsoft.batch',                'PaaS|Compute',
+      Provider == 'microsoft.cognitiveservices',    'PaaS|AI',
+      Provider == 'microsoft.machinelearningservices', 'PaaS|AI',
+      Provider == 'microsoft.synapse',              'PaaS|Analytics',
+      Provider == 'microsoft.databricks',           'PaaS|Analytics',
+      Provider == 'microsoft.streamanalytics',      'PaaS|Analytics',
+      Provider == 'microsoft.purview',              'PaaS|Analytics',
+      Provider == 'microsoft.datalakestore',        'PaaS|Analytics',
+      Provider == 'microsoft.dataprotection',       'PaaS|Backup',
+      // Management plane. Real resources that cost money and carry configuration, but they are
+      // not the workload - and on a mature estate they outnumber it.
+      Provider == 'microsoft.insights',             'Management|Observability',
+      Provider == 'microsoft.alertsmanagement',     'Management|Observability',
+      Provider == 'microsoft.operationalinsights',  'Management|Observability',
+      Provider == 'microsoft.operationsmanagement', 'Management|Observability',
+      Provider == 'microsoft.portal',               'Management|Observability',
+      Provider == 'microsoft.resourcegraph',        'Management|Observability',
+      Provider == 'microsoft.automation',           'Management|Automation',
+      Provider == 'microsoft.maintenance',          'Management|Automation',
+      Provider == 'microsoft.migrate',              'Management|Migration',
+      Provider == 'microsoft.offazure',             'Management|Migration',
+      Provider == 'microsoft.datamigration',        'Management|Migration',
+      Provider == 'microsoft.billingbenefits',      'Management|Billing',
+      Provider == 'microsoft.costmanagement',       'Management|Billing',
+      Provider == 'microsoft.capacity',             'Management|Billing',
+      Provider == 'microsoft.security',             'Management|Security',
+      Provider == 'microsoft.securityinsights',     'Management|Security',
+      Provider == 'microsoft.authorization',        'Management|Governance',
+      Provider == 'microsoft.policyinsights',       'Management|Governance',
+      Provider == 'microsoft.managedidentity',      'Identity|Security',
+      Provider == 'microsoft.aad',                  'Identity|Identity',
+      // Third-party software bought through the Marketplace. On your Azure invoice, but not
+      // operated by Microsoft and not operated by you either.
+      Provider == 'microsoft.saas',                 'Marketplace|ThirdParty',
+      // Never guessed. A new service lands here and stays visible until someone maps it.
+      'Unclassified|Unknown')
+| extend Model    = tostring(split(Class, '|')[0]),
+         Category = tostring(split(Class, '|')[1])
+| extend Role = case(
+      // Structural, not curated: anything nested under a parent type. 'microsoft.sql/servers/
+      // databases' has depth 3, 'microsoft.sql/servers' has depth 2.
+      TypeDepth > 2, 'ChildResource',
+      // Curated. These are created because something else needs them, and they are the reason
+      // a raw resource count is roughly double the number of services actually in use.
+      TypeLower in (
+          'microsoft.compute/disks',
+          'microsoft.compute/snapshots',
+          'microsoft.compute/restorepointcollections',
+          'microsoft.compute/diskencryptionsets',
+          'microsoft.compute/sshpublickeys',
+          'microsoft.compute/availabilitysets',
+          'microsoft.compute/proximityplacementgroups',
+          'microsoft.network/networkinterfaces',
+          'microsoft.network/publicipaddresses',
+          'microsoft.network/privateendpoints',
+          'microsoft.network/networkprofiles',
+          'microsoft.network/networkwatchers',
+          'microsoft.network/routetables',
+          'microsoft.network/ipgroups',
+          'microsoft.web/certificates',
+          'microsoft.web/connections',
+          'microsoft.operationsmanagement/solutions',
+          'microsoft.insights/actiongroups',
+          'microsoft.insights/autoscalesettings',
+          'microsoft.insights/webtests',
+          'microsoft.insights/datacollectionendpoints',
+          'microsoft.insights/datacollectionrules'
+      ), 'Dependency',
+      'Service')
+// >>> END CLASSIFICATION MAP <<<
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| summarize Resources         = count(),
+            Subscriptions     = dcount(subscriptionId),
+            SubscriptionNames = strcat_array(make_set(SubscriptionName), ', '),
+            Locations         = strcat_array(make_set(location), ', '),
+            // `kind` is empty on most types and decisive on a few: microsoft.web/sites is App
+            // Service, Functions and static sites all at once, and only kind tells them apart.
+            // Rendered as a set rather than grouped on, so the grain stays one row per type.
+            Kinds             = strcat_array(make_set(kind), ', ')
+    by Model, Category, Role, Type = type, Provider
+| project Model,
+          Category,
+          Role,
+          Type,
+          Resources,
+          Subscriptions,
+          Kinds,
+          Locations,
+          SubscriptionNames,
+          Provider
+| order by Model asc, Category asc, Resources desc, Type asc

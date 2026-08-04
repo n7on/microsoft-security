@@ -1,0 +1,148 @@
+// One row per WAF exclusion across every accessible subscription, resolved down to the rules
+// each exclusion is scoped to. Unlike the managed rule catalogue, exclusions are stored IN FULL
+// on the policy - so this file is complete. Every exclusion in the estate is here.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Waf -Name Exclusions.
+//
+// An exclusion tells the WAF to ignore part of the request - a named header, a cookie, a query
+// argument, or a whole collection of them - when evaluating managed rules. It is the single
+// most effective way to blind a WAF, and the width of that blindness is entirely down to how
+// tightly it was scoped. Scope is that width, widest first:
+//   AllManagedRules - no exclusionManagedRuleSets. The excluded part of the request is invisible
+//                     to EVERY managed rule in the policy. This is the default shape when an
+//                     exclusion is added without scoping it, and it is almost never what anyone
+//                     intended - they were silencing one noisy rule.
+//   RuleSet         - scoped to a rule set, but no rule groups named. Every rule in that set.
+//   RuleGroup       - scoped to a named rule group. Every rule in that group.
+//   Rule            - scoped to specific rule ids, listed in RuleIds. The tight, correct shape.
+//   None            - the policy has no exclusions at all. Kept as a row rather than dropped,
+//                     the same reason KeyVault/NetworkRules.kql keeps its 'None' rows: a policy
+//                     with no exclusions and a policy that was never queried look identical
+//                     once the row is gone.
+//
+//   # The blunt ones, in force right now:
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name Exclusions |
+//       Where-Object { $_.Scope -eq 'AllManagedRules' -and $_.Enforcing }
+//
+//   # What is being excluded, grouped by the thing excluded rather than by policy:
+//   ... | Where-Object Scope -ne 'None' | Group-Object MatchVariable, Selector
+//
+// MatchVariable + Operator + Selector is the exclusion itself and reads as a sentence:
+// "RequestHeaderNames Equals User-Agent" excludes the User-Agent header. A
+// RequestArgNames / StartsWith / '' pair excludes EVERY query argument - an empty selector
+// with StartsWith or Contains matches everything, so check Selector before assuming an
+// exclusion is narrow just because it names a match variable.
+//
+// Source separates the two shapes a WAF takes; both are here so no gateway is missed:
+//   Policy              - managedRules.exclusions on a WAF policy resource, with full scoping.
+//   GatewayInlineConfig - exclusions on a legacy inline WAF block. That schema has NO scoping
+//                         fields at all, so those exclusions are always AllManagedRules. Not a
+//                         limitation of this query - the legacy block cannot express anything
+//                         narrower.
+//
+// NB: RuleIds is rendered with extract_all rather than a fourth level of mv-expand, so a
+// Rule-scoped exclusion covering several rules stays one row with a comma-separated list. That
+// keeps Scope meaningful per row; expanding it would need a fifth mv-expand.
+//
+// NB: `iff(array_length(...) == 0, dynamic([{}]), ...)` substitutes a single empty element for
+// an empty or absent array. Without it mv-expand erases exactly the rows that matter - an
+// unscoped exclusion has no exclusionManagedRuleSets, and it is the widest one there is.
+//
+// NB: `limit 2000` on every mv-expand; the Resource Graph default is 128.
+//
+// NB: the union leg and the subscription lookup are inlined rather than hoisted into `let`.
+// Resource Graph only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+| extend PolicyProps = properties
+| mv-expand Ex = iff(coalesce(array_length(PolicyProps.managedRules.exclusions), 0) == 0,
+                     dynamic([{}]), PolicyProps.managedRules.exclusions) limit 2000
+| mv-expand Ers = iff(coalesce(array_length(Ex.exclusionManagedRuleSets), 0) == 0,
+                      dynamic([{}]), Ex.exclusionManagedRuleSets) limit 2000
+| mv-expand Grp = iff(coalesce(array_length(Ers.ruleGroups), 0) == 0,
+                      dynamic([{}]), Ers.ruleGroups) limit 2000
+| project Source         = 'Policy',
+          WafName        = name,
+          MatchVariable  = tostring(Ex.matchVariable),
+          Operator       = tostring(Ex.selectorMatchOperator),
+          Selector       = tostring(Ex.selector),
+          RuleSetType    = tostring(Ers.ruleSetType),
+          RuleSetVersion = tostring(Ers.ruleSetVersion),
+          RuleGroupName  = tostring(Grp.ruleGroupName),
+          RuleIds        = strcat_array(extract_all(@'(?i)"ruleId"\s*:\s*"?([^",}]+)"?',
+                                                    tostring(Grp.rules)), ', '),
+          WafState       = tostring(PolicyProps.policySettings.state),
+          WafMode        = tostring(PolicyProps.policySettings.mode),
+          Attached       = (coalesce(array_length(PolicyProps.applicationGateways), 0)
+                          + coalesce(array_length(PolicyProps.httpListeners), 0)
+                          + coalesce(array_length(PolicyProps.pathBasedRules), 0)) > 0,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          WafId             = id
+| union (
+    // Legacy inline WAF exclusions. Three fields, no scoping - every one of these is estate-wide
+    // across the managed rule set, and none of them would appear at all without this leg.
+    Resources
+    | where type =~ 'microsoft.network/applicationgateways'
+    | extend Waf = properties.webApplicationFirewallConfiguration
+    | where isnotnull(Waf)
+    | mv-expand Ex = iff(coalesce(array_length(Waf.exclusions), 0) == 0,
+                         dynamic([{}]), Waf.exclusions) limit 2000
+    | project Source         = 'GatewayInlineConfig',
+              WafName        = name,
+              MatchVariable  = tostring(Ex.matchVariable),
+              Operator       = tostring(Ex.selectorMatchOperator),
+              Selector       = tostring(Ex.selector),
+              // The legacy schema has no scoping fields whatsoever.
+              RuleSetType    = '',
+              RuleSetVersion = '',
+              RuleGroupName  = '',
+              RuleIds        = '',
+              WafState       = iff(coalesce(tobool(Waf.enabled), false), 'Enabled', 'Disabled'),
+              WafMode        = tostring(Waf.firewallMode),
+              Attached       = true,
+              ResourceGroupName = resourceGroup,
+              Location          = location,
+              SubscriptionId    = subscriptionId,
+              WafId             = id
+  )
+| extend HasExclusion = isnotempty(MatchVariable)
+| extend Scope = case(
+             not(HasExclusion),          'None',
+             isnotempty(RuleIds),        'Rule',
+             isnotempty(RuleGroupName),  'RuleGroup',
+             isnotempty(RuleSetType),    'RuleSet',
+             'AllManagedRules')
+         // An exclusion only blinds anything if its WAF is switched on and attached to something.
+| extend Enforcing = HasExclusion and (WafState =~ 'Enabled') and Attached
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project WafName,
+          Scope,
+          Enforcing,
+          MatchVariable = iff(isempty(MatchVariable), '-', MatchVariable),
+          Operator      = iff(isempty(Operator), '-', Operator),
+          // An EMPTY selector is not missing data - with StartsWith or Contains it matches every
+          // name in the collection, which is the widest form the field can take.
+          Selector      = case(not(HasExclusion),      '-',
+                               isempty(Selector),      '(empty - matches all)',
+                               Selector),
+          RuleSetType    = iff(isempty(RuleSetType), '-', RuleSetType),
+          RuleSetVersion = iff(isempty(RuleSetVersion), '-', RuleSetVersion),
+          RuleGroupName  = iff(isempty(RuleGroupName), '-', RuleGroupName),
+          RuleIds        = iff(isempty(RuleIds), '-', RuleIds),
+          Source,
+          WafState = iff(isempty(WafState), 'Unknown', WafState),
+          WafMode  = iff(isempty(WafMode),  'Unknown', WafMode),
+          WafAttached = Attached,
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          WafId
+| order by SubscriptionName asc, WafName asc, Scope asc, MatchVariable asc, Selector asc

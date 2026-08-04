@@ -1,0 +1,160 @@
+// One row per HTTP listener across every Application Gateway in every accessible subscription -
+// the "what does this gateway publish" view. A listener is the closest thing an Application
+// Gateway has to a site: a hostname, a protocol, a port and a certificate on a frontend IP.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Sites.
+//
+// This is the FRONT of the gateway. What each site routes to is -Name Backends, keyed on
+// GatewayName + ListenerName:
+//   $sites    = Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Sites
+//   $backends = Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Backends
+//   $backends | Group-Object GatewayName, ListenerName
+// The split is not stylistic. Resource Graph allows 3 mv-expand per query and resolving a
+// listener to its port, its frontend IP, its routing rule, its url path map and its backend
+// pool needs more than that, so the fan-out is spent on the frontend here and on the routing
+// path there. Merging these two files back into one will fail server-side.
+//
+// HostNames renders '(any)' for a listener with no hostname configured. That is a real and
+// deliberate configuration - a Basic listener matches every host that reaches the frontend IP -
+// but it is also what an accidentally over-broad listener looks like, so it is called out
+// rather than left blank:
+//   ... | Where-Object { $_.HostNames -eq '(any)' -and $_.FrontendType -eq 'Public' }
+//
+// WafSource resolves the three-level precedence Azure applies to a listener. Reading only the
+// gateway's firewallPolicy misses per-listener overrides, and reading only the inline config
+// misses every modern WAF_v2:
+//   ListenerPolicy      - the listener carries its own firewallPolicy, which wins outright.
+//   GatewayPolicy       - inherited from the gateway's firewallPolicy.
+//   *PolicyUnresolved   - a policy is referenced but not visible in the result set (missing
+//                         Reader on its subscription, or a dangling reference). WafEnabled is
+//                         reported FALSE - over-stating risk, the only safe way to fail.
+//   GatewayInlineConfig - the legacy webApplicationFirewallConfiguration block.
+//   NotWafSku / None    - see AppGateway/All.kql, which documents both.
+//
+// SCOPE: L7 listeners (properties.httpListeners) only. A v2 gateway can also carry TLS/TCP
+// proxy listeners in properties.listeners, which are a different schema and are NOT here -
+// All.kql reports Layer4ListenerCount so a gateway that has them is at least visible.
+//
+// NB: the frontend port and frontend IP configuration are resolved by expanding the gateway's
+// own arrays and filtering to the referenced id - a join inside a single document, without
+// spending one of the 3 `join`/`union` operations Resource Graph allows. Both arrays are tiny,
+// so the intermediate cross product is too. The sentinel empty object prepended to each array
+// is what makes the match behave like a leftouter: a listener whose reference does not resolve
+// keeps its row instead of vanishing.
+//
+// NB: `limit 2000` on every mv-expand. Resource Graph's default mv-expand RowLimit is 128, and
+// an Application Gateway v2 supports up to 200 listeners - without the explicit limit the
+// listeners past the 128th are dropped silently, which is the failure mode this module exists
+// to avoid.
+//
+// NB: the lookups are inlined rather than hoisted into `let`. Resource Graph only supports
+// `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgateways'
+| project GwId              = id,
+          GatewayName       = name,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          Tier              = tostring(properties.sku.tier),
+          OperationalState  = tostring(properties.operationalState),
+          GwProps           = properties
+| mv-expand Listener = GwProps.httpListeners limit 2000
+| extend LP = Listener.properties
+| extend ListenerName        = tostring(Listener.name),
+         FrontendPortIdLower = tolower(tostring(LP.frontendPort.id)),
+         FrontendIpIdLower   = tolower(tostring(LP.frontendIPConfiguration.id))
+// Resolve the frontend port. PortFound is what distinguishes "this listener names a port that
+// exists" from "the reference is empty or dangling"; in the latter case only the sentinel
+// matches and the row survives with an empty port.
+| extend PortFound = tolower(tostring(GwProps.frontendPorts)) contains FrontendPortIdLower
+| mv-expand Port = array_concat(dynamic([{}]),
+                                iff(isnull(GwProps.frontendPorts), dynamic([]), GwProps.frontendPorts)) limit 2000
+| where (PortFound and tolower(tostring(Port.id)) == FrontendPortIdLower)
+     or (not(PortFound) and isempty(tostring(Port.id)))
+// Same pattern for the frontend IP configuration, which is what says public or private.
+| extend FeFound = tolower(tostring(GwProps.frontendIPConfigurations)) contains FrontendIpIdLower
+| mv-expand Fe = array_concat(dynamic([{}]),
+                              iff(isnull(GwProps.frontendIPConfigurations), dynamic([]), GwProps.frontendIPConfigurations)) limit 2000
+| where (FeFound and tolower(tostring(Fe.id)) == FrontendIpIdLower)
+     or (not(FeFound) and isempty(tostring(Fe.id)))
+| extend ListenerPolicyIdLower = tolower(tostring(LP.firewallPolicy.id)),
+         GatewayPolicyIdLower  = tolower(tostring(GwProps.firewallPolicy.id))
+// The listener's own policy wins over the gateway's. One column to join on, one column
+// recording which level it came from.
+| extend WafPolicyIdLower = iff(isnotempty(ListenerPolicyIdLower), ListenerPolicyIdLower, GatewayPolicyIdLower),
+         WafScope         = case(isnotempty(ListenerPolicyIdLower), 'Listener',
+                                 isnotempty(GatewayPolicyIdLower),  'Gateway',
+                                 '-')
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+    | project WafPolicyIdLower = tolower(id),
+              WafPolicyName    = name,
+              PolicyState      = tostring(properties.policySettings.state),
+              PolicyMode       = tostring(properties.policySettings.mode)
+  ) on WafPolicyIdLower
+| extend InlineWaf = GwProps.webApplicationFirewallConfiguration
+| extend WafSource = case(
+             WafScope == 'Listener' and isnotempty(WafPolicyName), 'ListenerPolicy',
+             WafScope == 'Listener',                               'ListenerPolicyUnresolved',
+             WafScope == 'Gateway'  and isnotempty(WafPolicyName), 'GatewayPolicy',
+             WafScope == 'Gateway',                                'GatewayPolicyUnresolved',
+             isnotnull(InlineWaf),                                 'GatewayInlineConfig',
+             // `contains`, not `has` - the underscore in 'WAF_v2' is not a term separator.
+             Tier !contains 'WAF',                                 'NotWafSku',
+             'None')
+| extend WafEnabled = case(
+             WafSource in ('ListenerPolicy', 'GatewayPolicy'), PolicyState =~ 'Enabled',
+             WafSource == 'GatewayInlineConfig',               coalesce(tobool(InlineWaf.enabled), false),
+             false),
+         WafMode = case(
+             WafSource in ('ListenerPolicy', 'GatewayPolicy'), PolicyMode,
+             WafSource == 'GatewayInlineConfig',               tostring(InlineWaf.firewallMode),
+             '-')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project GatewayName,
+          // hostNames (plural, supports wildcards, up to 5) and hostName (singular) are
+          // mutually exclusive and Azure populates exactly one. Neither means the listener
+          // answers for every host arriving on this frontend and port.
+          HostNames = case(
+              coalesce(array_length(LP.hostNames), 0) > 0, strcat_array(LP.hostNames, ', '),
+              isnotempty(tostring(LP.hostName)),           tostring(LP.hostName),
+              '(any)'),
+          Protocol      = tostring(LP.protocol),
+          Port          = toint(Port.properties.port),
+          FrontendType  = iff(isnotempty(tostring(Fe.properties.publicIPAddress.id)), 'Public', 'Private'),
+          // Private frontends carry the address inline; public ones only carry a reference, so
+          // the resource name is what there is at this grain. All.kql resolves the gateway's
+          // public IP to its actual address.
+          FrontendIp    = iff(isnotempty(tostring(Fe.properties.privateIPAddress)),
+                              tostring(Fe.properties.privateIPAddress),
+                              extract(@'(?i)/publicIPAddresses/([^/"]+)', 1, tostring(Fe.properties.publicIPAddress.id))),
+          WafSource,
+          WafEnabled,
+          WafMode,
+          WafScope,
+          WafPolicyName,
+          ListenerName,
+          // Certificate name only. Resource Graph does not project expiry, issuer or subject
+          // for gateway certificates - publicCertData is the raw blob and nothing decodes it
+          // server-side - so cert lifetime has to come from Key Vault or the gateway itself.
+          SslCertName    = extract(@'(?i)/sslCertificates/([^/"]+)', 1, tostring(LP.sslCertificate.id)),
+          SslProfileName = extract(@'(?i)/sslProfiles/([^/"]+)', 1, tostring(LP.sslProfile.id)),
+          // Required when several HTTPS listeners share one frontend IP and port; without it
+          // only the first certificate is ever served.
+          RequireSni     = coalesce(tobool(LP.requireServerNameIndication), false),
+          Tier,
+          OperationalState,
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          GatewayId = GwId,
+          Id        = tostring(Listener.id)
+| order by SubscriptionName asc, GatewayName asc, HostNames asc, Port asc

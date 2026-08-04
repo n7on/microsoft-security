@@ -1,0 +1,158 @@
+// One row per routing path across every Application Gateway in every accessible subscription -
+// what each listener actually sends traffic to. The grain is one row per request routing rule,
+// and for a path-based rule one row per url path map entry PLUS one for the map's default.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Backends.
+//
+// This is the BACK of the gateway; -Name Sites is the front. Join them on GatewayName +
+// ListenerName to get hostname-to-backend in one table:
+//   $sites = Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Sites
+//   Search-MsecAzureResourceGraph -ResourceType AppGateway -Name Backends | ForEach-Object {
+//       $s = $sites | Where-Object { $_.GatewayName -eq $_.GatewayName -and $_.ListenerName -eq $_.ListenerName }
+//       ...
+//   }
+// The hostname is deliberately NOT repeated here: resolving it would need a fifth mv-expand
+// and Resource Graph's documented cap is three (see the NB below).
+//
+// PathPattern is one of:
+//   /*                     - a Basic rule. Everything on the listener goes to this backend.
+//   /* (path map default)  - the defaultBackendAddressPool of a PathBasedRouting rule's url
+//                            path map: where anything not matching an explicit path lands.
+//                            Emitted as its own row because it is a real, separately
+//                            configurable destination that is easy to forget about.
+//   <paths>                - the paths of one path rule, comma separated.
+//
+// BackendAddresses is empty for a pool fed by NIC association rather than by literal address -
+// a scale set or a VM attached to the pool through its network interface. BackendNicCount is
+// non-zero in that case. An empty pool with a zero NIC count is a genuinely empty pool, and a
+// routing rule pointing at one is a 502 waiting to happen:
+//   ... | Where-Object { -not $_.BackendAddresses -and $_.BackendNicCount -eq 0 -and -not $_.RedirectTo }
+//
+// SCOPE, and the reasons for each gap:
+//   * L7 only. properties.routingRules / backendSettingsCollection (the v2 TLS/TCP proxy) are
+//     a separate schema and are not here; All.kql's Layer4ListenerCount flags gateways using
+//     them.
+//   * BackendSettingsName is a name, not the settings themselves. Their port and protocol -
+//     including whether the gateway reaches the backend over cleartext - would need another
+//     mv-expand. All.kql reports CleartextBackendSettings per gateway so the signal is not
+//     lost, and the per-setting detail is one ARM call away:
+//       (Get-AzApplicationGateway -Name <gw> -ResourceGroupName <rg>).BackendHttpSettingsCollection
+//   * RedirectTo is the redirect configuration's name; its target and status code need the
+//     same ARM call.
+//
+// NB: FOUR mv-expand operators. Resource Graph documents a limit of three per query, but the
+// limit is raised on this tenant - Storage/NetworkRules.kql has shipped four for as long as it
+// has existed. If this query ever comes back with a limit error rather than rows, the fix is a
+// support request to raise the tenant limit, or dropping the Map/PathRule pair and losing all
+// path-based routing detail with them. Do not "fix" it by deleting a leg quietly.
+//
+// NB: `limit 2000` on every mv-expand. The Resource Graph default is 128 and an Application
+// Gateway v2 allows up to 400 request routing rules, so without it the rules past the 128th
+// disappear without a word.
+//
+// NB: the sentinel empty object prepended to each expanded array is what makes these
+// within-document lookups behave like a leftouter join - a rule with no url path map, no
+// backend pool, or a dangling reference keeps its row instead of being dropped. For the path
+// rules the sentinel does double duty and IS the map-default row.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgateways'
+| project GwId              = id,
+          GatewayName       = name,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          Tier              = tostring(properties.sku.tier),
+          OperationalState  = tostring(properties.operationalState),
+          GwProps           = properties
+| mv-expand Rule = GwProps.requestRoutingRules limit 2000
+| extend RuleP = Rule.properties
+| extend MapIdLower = tolower(tostring(RuleP.urlPathMap.id))
+// Resolve the url path map the rule points at, if any. An empty MapIdLower makes `contains`
+// trivially true, so a Basic rule matches the sentinel and comes through as a single row.
+| extend MapFound = tolower(tostring(GwProps.urlPathMaps)) contains MapIdLower
+| mv-expand Map = array_concat(dynamic([{}]),
+                               iff(isnull(GwProps.urlPathMaps), dynamic([]), GwProps.urlPathMaps)) limit 2000
+| where (MapFound and tolower(tostring(Map.id)) == MapIdLower)
+     or (not(MapFound) and isempty(tostring(Map.id)))
+| extend MapP = Map.properties
+// One row per path rule, plus the sentinel - which for a path-based rule represents the map's
+// default backend, and for a Basic rule is simply the rule's own single row. No filter here:
+// every row this produces is wanted.
+| mv-expand PathRule = array_concat(dynamic([{}]),
+                                    iff(isnull(MapP.pathRules), dynamic([]), MapP.pathRules)) limit 2000
+| extend PathRuleP = PathRule.properties
+| extend IsPathRule = isnotempty(tostring(PathRule.name))
+// Three-way precedence for every destination reference: the path rule's own, else the map's
+// default, else the basic rule's. case() rather than coalesce() because these are strings and
+// an absent dynamic property stringifies to '' - which coalesce treats as a value and returns.
+| extend PoolIdLower = tolower(case(
+             IsPathRule,             tostring(PathRuleP.backendAddressPool.id),
+             isnotempty(MapIdLower), tostring(MapP.defaultBackendAddressPool.id),
+             tostring(RuleP.backendAddressPool.id))),
+         SettingsIdLower = tolower(case(
+             IsPathRule,             tostring(PathRuleP.backendHttpSettings.id),
+             isnotempty(MapIdLower), tostring(MapP.defaultBackendHttpSettings.id),
+             tostring(RuleP.backendHttpSettings.id))),
+         RedirectIdLower = tolower(case(
+             IsPathRule,             tostring(PathRuleP.redirectConfiguration.id),
+             isnotempty(MapIdLower), tostring(MapP.defaultRedirectConfiguration.id),
+             tostring(RuleP.redirectConfiguration.id))),
+         RewriteIdLower = tolower(case(
+             IsPathRule,             tostring(PathRuleP.rewriteRuleSet.id),
+             isnotempty(MapIdLower), tostring(MapP.defaultRewriteRuleSet.id),
+             tostring(RuleP.rewriteRuleSet.id)))
+// Resolve the backend pool to its actual addresses.
+| extend PoolFound = tolower(tostring(GwProps.backendAddressPools)) contains PoolIdLower
+| mv-expand Pool = array_concat(dynamic([{}]),
+                                iff(isnull(GwProps.backendAddressPools), dynamic([]), GwProps.backendAddressPools)) limit 2000
+| where (PoolFound and tolower(tostring(Pool.id)) == PoolIdLower)
+     or (not(PoolFound) and isempty(tostring(Pool.id)))
+| extend BackendPoolName = extract(@'(?i)/backendAddressPools/([^/"]+)', 1, PoolIdLower),
+         RedirectTo      = extract(@'(?i)/redirectConfigurations/([^/"]+)', 1, RedirectIdLower)
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project GatewayName,
+          // The listener this path hangs off. Its hostname, protocol, port and effective WAF
+          // are in -Name Sites, keyed on GatewayName + ListenerName.
+          ListenerName = extract(@'(?i)/httpListeners/([^/"]+)', 1, tostring(RuleP.httpListener.id)),
+          PathPattern  = case(
+              IsPathRule,             iff(isnull(PathRuleP.paths), '', strcat_array(PathRuleP.paths, ', ')),
+              isnotempty(MapIdLower), '/* (path map default)',
+              '/*'),
+          // One column answering "and then what happens": a redirect short-circuits the
+          // request and never reaches a backend, so it is reported ahead of the pool.
+          RoutesTo = case(
+              isnotempty(RedirectTo),       strcat('Redirect: ', RedirectTo),
+              isnotempty(BackendPoolName),  strcat('Pool: ', BackendPoolName),
+              '(nothing)'),
+          BackendPoolName,
+          // fqdn and ipAddress are alternative forms of the same thing and a pool can mix them.
+          BackendAddresses = strcat_array(extract_all(@'(?i)"(?:fqdn|ipAddress)"\s*:\s*"([^"]+)"',
+                                                      tostring(Pool.properties.backendAddresses)), ', '),
+          // Members attached through their NIC - scale sets, and VMs joined to the pool from
+          // the network interface side. These never appear in BackendAddresses.
+          BackendNicCount     = coalesce(array_length(Pool.properties.backendIPConfigurations), 0),
+          RedirectTo,
+          BackendSettingsName = extract(@'(?i)/backendHttpSettingsCollection/([^/"]+)', 1, SettingsIdLower),
+          RewriteRuleSetName  = extract(@'(?i)/rewriteRuleSets/([^/"]+)', 1, RewriteIdLower),
+          RuleName            = tostring(Rule.name),
+          RuleType            = tostring(RuleP.ruleType),
+          // Mandatory and unique on v2, absent on v1 where evaluation order is undefined.
+          Priority            = toint(RuleP.priority),
+          UrlPathMapName      = extract(@'(?i)/urlPathMaps/([^/"]+)', 1, MapIdLower),
+          Tier,
+          OperationalState,
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          GatewayId = GwId,
+          Id        = tostring(Rule.id)
+| order by SubscriptionName asc, GatewayName asc, ListenerName asc, PathPattern asc

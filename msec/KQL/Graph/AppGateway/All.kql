@@ -1,0 +1,211 @@
+// One row per Application Gateway across every accessible subscription - the posture view.
+// Companions in this folder:
+//   -Name Sites          one row per HTTP listener (the "sites" the gateway publishes)
+//   -Name Backends       one row per routing path (listener -> path -> backend pool)
+// The WAF side lives under its own resource type, because a WAF policy is a resource in its own
+// right and can be attached to several gateways - or to none:
+//   Search-MsecAzureResourceGraph -ResourceType Waf                 one row per WAF
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name ManagedRules
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name Exclusions
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name CustomRules
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType AppGateway.
+// No filtering is applied here - filter the output in PowerShell, e.g. gateways on the public
+// internet with no WAF actually enforcing:
+//   Search-MsecAzureResourceGraph -ResourceType AppGateway |
+//       Where-Object { $_.Exposure -ne 'PrivateOnly' -and -not $_.WafEnabled }
+//
+// WAF IS NOT ONE FIELD. This is the trap the whole query is built around. A gateway's WAF can
+// come from either of two mutually exclusive places, and reading only one of them reports
+// "no WAF" on gateways that are fully protected:
+//   * properties.webApplicationFirewallConfiguration - the LEGACY inline block. WAF v1, and
+//     v2 gateways that were never migrated to a policy.
+//   * properties.firewallPolicy.id - a reference to a separate
+//     Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies resource. This is
+//     what every WAF_v2 gateway created through the portal since ~2020 uses, and it is the
+//     only form that supports per-listener overrides.
+// When both are present the POLICY wins, which is the precedence WafSource implements.
+//
+// WafSource is one of:
+//   Policy            - a WAF policy is attached and we resolved it. WafEnabled/WafMode come
+//                       from its policySettings.
+//   PolicyUnresolved  - a policy id is attached but the policy resource is NOT in the result
+//                       set. Almost always missing Reader RBAC on the policy's subscription
+//                       (policies are frequently kept in a separate hub subscription), or the
+//                       policy was deleted out from under the gateway. WafEnabled is reported
+//                       FALSE here: we cannot see the policy, so we refuse to call it
+//                       protected. That over-states risk rather than under-stating it, which
+//                       is the only safe direction for this column to fail in.
+//   InlineConfig      - no policy; the legacy webApplicationFirewallConfiguration block.
+//   NotWafSku         - no WAF of either kind AND the SKU tier is not a WAF tier, so there is
+//                       nothing to enable. This is a Standard/Standard_v2 gateway - the
+//                       finding is "this gateway has no WAF capability at all", not
+//                       "someone forgot to switch it on".
+//   None              - a WAF-tier gateway with no WAF configured either way. The real bug.
+//
+// NB: the WAF policy lookup is a cross-subscription join. Search-MsecAzureResourceGraph passes
+// EVERY accessible subscription to Search-AzGraph by default, so a gateway in one subscription
+// resolves against a policy in another. Scope the cmdlet with -SubscriptionId or
+// -CurrentSubscription and that stops being true - expect PolicyUnresolved rows.
+//
+// NB: several counts below are derived with extract_all() over the JSON text of a property
+// array rather than mv-expand. That is deliberate: Resource Graph caps mv-expand at 3 per
+// query, and this file spends its budget on nothing so that Sites/Backends can spend theirs on
+// real fan-out. The same trick is used for application security groups in NSG/SecurityRules.kql.
+//
+// NB: the lookups are inlined rather than hoisted into `let`. Resource Graph only supports
+// `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgateways'
+| extend Props = properties
+| extend ListenersText       = tostring(Props.httpListeners),
+         FrontendsText       = tostring(Props.frontendIPConfigurations),
+         BackendSettingsText = tostring(Props.backendHttpSettingsCollection),
+         GwIpText            = tostring(Props.gatewayIPConfigurations),
+         SslPolicyText       = tostring(Props.sslPolicy),
+         Tier                = tostring(Props.sku.tier),
+         InlineWaf           = Props.webApplicationFirewallConfiguration,
+         FirewallPolicyIdLower = tolower(tostring(Props.firewallPolicy.id))
+// The single public frontend, resolved to its actual address. A v2 gateway permits at most one
+// public and one private frontend IP configuration, so a single extract is exact rather than a
+// sample. The id is quoted in the JSON, which is what anchors the match.
+| extend PipIdLower = tolower(extract(@'(?i)"(/subscriptions/[^"]*/publicIPAddresses/[^/"]+)"', 1, FrontendsText))
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+    | extend ManagedRulesText = tostring(properties.managedRules.managedRuleSets)
+    | project FirewallPolicyIdLower = tolower(id),
+              WafPolicyName   = name,
+              PolicyState     = tostring(properties.policySettings.state),
+              PolicyMode      = tostring(properties.policySettings.mode),
+              // Positionally aligned pair of columns: the Nth entry of ManagedRuleSets has the
+              // Nth entry of ManagedRuleSetVersions. Pairing them into one string would need an
+              // mv-expand, and this file has none to spare - Waf/ManagedRules.kql renders the
+              // pairs properly, one row per rule set.
+              ManagedRuleSets        = strcat_array(extract_all(@'(?i)"ruleSetType"\s*:\s*"([^"]+)"', ManagedRulesText), ', '),
+              ManagedRuleSetVersions = strcat_array(extract_all(@'(?i)"ruleSetVersion"\s*:\s*"([^"]+)"', ManagedRulesText), ', '),
+              PolicyCustomRuleCount  = coalesce(array_length(properties.customRules), 0),
+              PolicyExclusionCount   = coalesce(array_length(properties.managedRules.exclusions), 0)
+  ) on FirewallPolicyIdLower
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.network/publicipaddresses'
+    | project PipIdLower = tolower(id),
+              PublicIp     = tostring(properties.ipAddress),
+              PublicIpFqdn = tostring(properties.dnsSettings.fqdn)
+  ) on PipIdLower
+| extend WafSource = case(
+             isnotempty(FirewallPolicyIdLower) and isnotempty(WafPolicyName), 'Policy',
+             isnotempty(FirewallPolicyIdLower),                               'PolicyUnresolved',
+             isnotnull(InlineWaf),                                            'InlineConfig',
+             // `contains` and not `has`: 'WAF_v2' is a single token to `has` because the
+             // underscore is not a term separator, so `Tier has 'WAF'` is FALSE on a WAF_v2
+             // gateway and every WAF v2 in the estate would be reported as a Standard SKU.
+             Tier !contains 'WAF',                                            'NotWafSku',
+             'None')
+| extend WafEnabled = case(
+             WafSource == 'Policy',       PolicyState =~ 'Enabled',
+             WafSource == 'InlineConfig', coalesce(tobool(InlineWaf.enabled), false),
+             false),
+         WafMode = case(
+             WafSource == 'Policy',       PolicyMode,
+             WafSource == 'InlineConfig', tostring(InlineWaf.firewallMode),
+             '-')
+| extend PrivateIps    = strcat_array(extract_all(@'"privateIPAddress"\s*:\s*"([^"]+)"', FrontendsText), ', '),
+         HasPublicFrontend = isnotempty(PipIdLower)
+| extend Exposure = case(
+             HasPublicFrontend and isnotempty(PrivateIps), 'PublicAndPrivate',
+             HasPublicFrontend,                            'Public',
+             isnotempty(PrivateIps),                       'PrivateOnly',
+             // No frontend IP configuration at all - a gateway mid-creation or mid-deletion.
+             'Unknown')
+| extend VnetName   = extract(@'(?i)/virtualNetworks/([^/"]+)', 1, GwIpText),
+         SubnetName = extract(@'(?i)/subnets/([^/"]+)', 1, GwIpText)
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          Tier,
+          WafSource,
+          WafEnabled,
+          WafMode,
+          WafPolicyName,
+          ManagedRuleSets,
+          ManagedRuleSetVersions,
+          PolicyCustomRuleCount,
+          PolicyExclusionCount,
+          // Listeners carrying their OWN firewallPolicy, which overrides the gateway's for
+          // that listener only. Non-zero means WafPolicyName above is not the whole story -
+          // use -Name Sites, which resolves the effective policy per listener.
+          // NB: every extract_all() below wraps its pattern in a capture group even where only
+          // the match COUNT is wanted. Resource Graph rejects a group-less pattern outright
+          // with Functions_ArgumentRegexMatchingGroupCountInvalid - it is a query-level parse
+          // error, not an empty result, so the whole file fails.
+          ListenerWafOverrides = coalesce(array_length(extract_all(@'(?i)"(firewallPolicy)"', ListenersText)), 0),
+          Exposure,
+          PublicIp,
+          PublicIpFqdn,
+          PrivateIps,
+          Subnet            = iff(isempty(VnetName), '', strcat(VnetName, '/', SubnetName)),
+          ListenerCount     = coalesce(array_length(Props.httpListeners), 0),
+          // Listeners serving cleartext. Usually an HTTP-to-HTTPS redirect, which is fine -
+          // check RedirectTo in -Name Backends before calling it a finding. The closing quote
+          // in the pattern is what keeps "Https" from matching.
+          HttpListenerCount = coalesce(array_length(extract_all(@'(?i)"protocol"\s*:\s*"(Http)"', ListenersText)), 0),
+          // v2 TLS/TCP proxy listeners (properties.listeners), a separate array from the L7
+          // httpListeners. Counted only so they are not invisible: -Name Sites and -Name
+          // Backends both cover the L7 side ONLY, so a non-zero count here means the gateway
+          // carries traffic those two queries do not describe.
+          Layer4ListenerCount = coalesce(array_length(Props.listeners), 0),
+          BackendPoolCount    = coalesce(array_length(Props.backendAddressPools), 0),
+          // Backend HTTP settings that talk to the backend over cleartext. The gateway can be
+          // HTTPS on the front and plain HTTP on the back, and nothing in the portal overview
+          // says so.
+          CleartextBackendSettings = coalesce(array_length(extract_all(@'(?i)"protocol"\s*:\s*"(Http)"', BackendSettingsText)), 0),
+          RoutingRuleCount    = coalesce(array_length(Props.requestRoutingRules), 0),
+          UrlPathMapCount     = coalesce(array_length(Props.urlPathMaps), 0),
+          SslCertCount        = coalesce(array_length(Props.sslCertificates), 0),
+          // Certificates sourced from Key Vault rather than uploaded to the gateway. Requires
+          // a managed identity, hence the Identity column below.
+          KeyVaultCertCount   = coalesce(array_length(extract_all(@'(?i)"(keyVaultSecretId)"', tostring(Props.sslCertificates))), 0),
+          // Absent sslPolicy is NOT "unset" - the platform applies AppGwSslPolicy20150501,
+          // which still permits TLS 1.0 and 1.1. Same class of trap as an absent
+          // minimumTlsVersion on a storage account.
+          SslPolicyType = case(isempty(SslPolicyText) or SslPolicyText == '{}', 'PlatformDefault',
+                               isnotempty(tostring(Props.sslPolicy.policyType)), tostring(Props.sslPolicy.policyType),
+                               'Custom'),
+          SslPolicyName = case(isempty(SslPolicyText) or SslPolicyText == '{}', 'AppGwSslPolicy20150501',
+                               isnotempty(tostring(Props.sslPolicy.policyName)), tostring(Props.sslPolicy.policyName),
+                               '-'),
+          // Predefined policies do not return minProtocolVersion - the floor is implied by the
+          // policy name (AppGwSslPolicy20220101 is TLS 1.2, 20150501 is TLS 1.0). Reporting
+          // TLSv1_0 for those would be a false positive on every modern gateway, so they are
+          // labelled instead of guessed.
+          MinTlsVersion = case(isnotempty(tostring(Props.sslPolicy.minProtocolVersion)), tostring(Props.sslPolicy.minProtocolVersion),
+                               isempty(SslPolicyText) or SslPolicyText == '{}',          'TLSv1_0',
+                               'SetByPredefinedPolicy'),
+          EnableHttp2   = coalesce(tobool(Props.enableHttp2), false),
+          // When true the gateway refuses to fall back to the legacy inline WAF config, so the
+          // policy is the only thing in play. False on a policy-attached gateway means the
+          // inline block can still apply to listeners the policy does not cover.
+          ForceFirewallPolicyAssociation = coalesce(tobool(Props.forceFirewallPolicyAssociation), false),
+          SkuName          = tostring(Props.sku.name),
+          Capacity         = toint(Props.sku.capacity),
+          AutoscaleMin     = toint(Props.autoscaleConfiguration.minCapacity),
+          AutoscaleMax     = toint(Props.autoscaleConfiguration.maxCapacity),
+          Zones            = iff(isnull(zones), '', strcat_array(zones, ', ')),
+          Identity         = tostring(identity.type),
+          // Stopped gateways keep their whole configuration and bill nothing. A 'Stopped'
+          // gateway with an open listener is not currently reachable - do not report it as
+          // live exposure, and do not delete the finding either.
+          OperationalState  = tostring(Props.operationalState),
+          ProvisioningState = tostring(Props.provisioningState),
+          Location          = location,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by SubscriptionName asc, WafSource asc, Name asc

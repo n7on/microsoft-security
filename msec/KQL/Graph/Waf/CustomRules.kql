@@ -1,0 +1,130 @@
+// One row per WAF custom rule across every accessible subscription - the WAF counterpart to
+// NSG/SecurityRules.kql. Custom rules are evaluated BEFORE the managed rule sets and in priority
+// order, so an early Allow rule silently exempts its traffic from the entire OWASP/DRS core rule
+// set. That is the finding this file exists to make visible.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Waf -Name CustomRules.
+//
+// Only WAF POLICIES have custom rules - the legacy inline WAF block on a v1 gateway does not
+// support them at all. So unlike -Name ManagedRules and -Name Exclusions there is no
+// GatewayInlineConfig leg here, and its absence is a property of v1 WAF rather than a gap in
+// this query. -Name All lists both kinds and reports CustomRuleCount 0 on the inline ones.
+//
+// RuleName is '-' on a policy that has no custom rules. Those rows are kept rather than dropped,
+// for the same reason KeyVault/NetworkRules.kql keeps its RuleType 'None' rows: a policy with no
+// custom rules and a policy that was never returned look identical once the row is gone, and
+// only one of them is fine.
+//
+// EffectiveAction is the column that matters, because a rule's Action is aspirational:
+//   NotEnforced             - the rule is disabled, or its policy is disabled, or the policy is
+//                             attached to nothing. The rule does nothing at all.
+//   Logged (...)            - the policy is in Detection mode. NOTHING is blocked regardless of
+//                             what the rule says; it is written to the log and passed through.
+//   Allow / Block / Log / JSChallenge
+//                           - enforced, and this is what happens.
+//
+//   # Rules that genuinely bypass the managed rule sets:
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name CustomRules |
+//       Where-Object EffectiveAction -eq 'Allow' | Sort-Object WafName, Priority
+//
+//   # Anything matching on IP - allow-lists that outlive the reason they were added:
+//   ... | Where-Object { $_.MatchVariables -match 'RemoteAddr' -and $_.Action -eq 'Allow' }
+//
+// Match conditions are rendered as flattened, positionally aligned columns (MatchVariables,
+// Operators, Selectors, MatchValues) plus MatchConditionCount. A rule can hold several
+// conditions, each with several variables and many values, and expanding that properly would
+// cost two more mv-expand operators against Resource Graph's cap of three. The raw JSON is in
+// MatchConditionsJson when the flattened form is not enough - it is the authoritative version:
+//   $_.MatchConditionsJson | ConvertFrom-Json
+//
+// NB: Negated reads properties.customRules[].matchConditions[].negationConditon - misspelled,
+// with the 'i' missing. That is the real property name in the Azure REST API, not a typo here.
+// Spelling it correctly returns nothing and every negated rule reads as non-negated, which
+// inverts what the rule does.
+//
+// NB: an absent state on a custom rule means Enabled - that is the documented API default, so
+// the fallback below is the true value rather than an optimistic one.
+//
+// NB: `iff(array_length(...) == 0, dynamic([{}]), ...)` substitutes a single empty element for
+// an empty or absent customRules array, which is what keeps a managed-rules-only policy in the
+// results. mv-expand on its own would drop it.
+//
+// NB: every extract_all() wraps its pattern in a capture group. Resource Graph rejects a
+// group-less pattern at parse time with Functions_ArgumentRegexMatchingGroupCountInvalid.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+| extend PolicyProps = properties
+| mv-expand Rule = iff(coalesce(array_length(PolicyProps.customRules), 0) == 0,
+                       dynamic([{}]), PolicyProps.customRules) limit 2000
+| extend RP = Rule.properties
+| extend McText   = tostring(RP.matchConditions),
+         WafState = tostring(PolicyProps.policySettings.state),
+         WafMode  = tostring(PolicyProps.policySettings.mode),
+         Attached = (coalesce(array_length(PolicyProps.applicationGateways), 0)
+                   + coalesce(array_length(PolicyProps.httpListeners), 0)
+                   + coalesce(array_length(PolicyProps.pathBasedRules), 0)) > 0,
+         HasRule  = isnotempty(tostring(Rule.name))
+| extend RuleState = case(not(HasRule),                '-',
+                          isempty(tostring(RP.state)), 'Enabled',
+                          tostring(RP.state)),
+         Action    = case(not(HasRule), '-', tostring(RP.action))
+| extend Enforcing = HasRule and (RuleState =~ 'Enabled') and (WafState =~ 'Enabled') and Attached
+| extend EffectiveAction = case(
+             not(HasRule),           '-',
+             not(Enforcing),         'NotEnforced',
+             WafMode =~ 'Detection', strcat('Logged (rule says ', Action, ')'),
+             Action)
+// NB: joined on the raw `subscriptionId` column, not on a renamed one. Unlike the other files
+// in this folder there is no union leg here, so the ARG-native lowercase column is still the one
+// present on the left - joining on 'SubscriptionId' fails outright with "Failed to resolve join
+// attribute on the left side".
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project WafName  = name,
+          RuleName = iff(HasRule, tostring(Rule.name), '-'),
+          // Lower numbers evaluate first and the first match wins, so priority is not cosmetic:
+          // it decides whether an Allow rule shields traffic from a Block rule further down.
+          Priority = toint(RP.priority),
+          EffectiveAction,
+          Action,
+          RuleState,
+          Enforcing,
+          RuleType = case(not(HasRule), '-', tostring(RP.ruleType)),
+          // One entry per match variable across all of the rule's conditions, in document
+          // order. Cross-reference with Operators and MatchValues positionally.
+          MatchVariables = strcat_array(extract_all(@'(?i)"variableName"\s*:\s*"([^"]+)"', McText), ', '),
+          Operators      = strcat_array(extract_all(@'(?i)"operator"\s*:\s*"([^"]+)"', McText), ', '),
+          // Present when the variable is a specific header, cookie or query argument rather
+          // than the whole collection.
+          Selectors      = strcat_array(extract_all(@'(?i)"selector"\s*:\s*"([^"]+)"', McText), ', '),
+          // Conditions separated by ' | ', values within a condition by ', '.
+          MatchValues    = strcat_array(extract_all(@'(?i)"matchValues"\s*:\s*\[([^\]]*)\]', McText), ' | '),
+          Transforms     = strcat_array(extract_all(@'(?i)"transforms"\s*:\s*\[([^\]]*)\]', McText), ' | '),
+          // See the NB above: the API property really is spelled 'negationConditon'.
+          Negated             = McText contains '"negationConditon":true',
+          MatchConditionCount = coalesce(array_length(RP.matchConditions), 0),
+          // RateLimitRule only; null on a MatchRule.
+          RateLimitThreshold  = toint(RP.rateLimitThreshold),
+          RateLimitDuration   = tostring(RP.rateLimitDuration),
+          GroupByUserSession  = strcat_array(extract_all(@'(?i)"variableName"\s*:\s*"([^"]+)"',
+                                                         tostring(RP.groupByUserSession)), ', '),
+          WafState = iff(isempty(WafState), 'Unknown', WafState),
+          WafMode  = iff(isempty(WafMode),  'Unknown', WafMode),
+          WafAttached = Attached,
+          MatchConditionsJson = McText,
+          ResourceGroupName = resourceGroup,
+          // Renamed explicitly, like every other ARG-native column here. The other files in
+          // this folder get a capitalised Location from their union legs; this one has no
+          // union, so a bare `Location` resolves against nothing and the query fails.
+          Location = location,
+          SubscriptionName,
+          SubscriptionId = subscriptionId,
+          WafId = id
+| order by SubscriptionName asc, WafName asc, Priority asc

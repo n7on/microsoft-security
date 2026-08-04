@@ -1,0 +1,159 @@
+// One row per managed-rule override across every WAF in every accessible subscription - which
+// core-rule-set rules have been turned off or had their action changed, in which rule group,
+// and whether that change is actually in force.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Waf -Name ManagedRules.
+//
+// READ THIS FIRST - what this query can and cannot show you. Resource Graph stores the WAF
+// POLICY, and a policy records only the DEVIATIONS from a managed rule set, never the rule set
+// itself. The OWASP / Microsoft_DefaultRuleSet catalogue - every rule id, its description, its
+// default state - is not in Resource Graph in any table, so:
+//   * A rule that has never been touched has NO row here. Its absence means "at the rule set
+//     default", which for nearly every rule means enabled.
+//   * Scope 'RuleSetDefaults' is a row for a rule set with no overrides at all. It exists so
+//     the rule set and its version are visible even when nothing has been changed.
+//   * The rule catalogue itself comes from a different API, not from KQL:
+//       Get-AzApplicationGatewayAvailableWafRuleSets
+//     Join that against these rows to turn a bare rule id into a description.
+// So this file answers "what has someone changed", exhaustively and reliably. It does not
+// answer "what is every rule doing", and no Resource Graph query can.
+//
+// Scope is one of:
+//   NoManagedRuleSets - the policy has no managed rule sets at all. Custom rules only, so the
+//                       core rule set is not protecting it. Kept as a row rather than dropped -
+//                       the same reason KeyVault/NetworkRules.kql keeps its 'None' rows.
+//   RuleSetDefaults   - rule set present, no overrides anywhere in it. Nothing to report, and
+//                       that is the reportable fact.
+//   RuleGroup         - an override on a rule group with no per-rule entries, so it applies to
+//                       the group as a whole.
+//   Rule              - a specific rule id.
+//
+//   # Everything actually switched off right now, widest scope first:
+//   Search-MsecAzureResourceGraph -ResourceType Waf -Name ManagedRules |
+//       Where-Object { $_.Disabled -and $_.Enforcing } | Sort-Object Scope, WafName
+//
+//   # Rules left on but downgraded to Allow or Log - quieter than a disable, same effect:
+//   ... | Where-Object { -not $_.Disabled -and $_.RuleAction -in 'Allow', 'Log' }
+//
+// Source separates the two shapes a WAF takes; both are here so no gateway is missed:
+//   Policy              - ruleGroupOverrides inside a WAF policy resource. One row per rule.
+//   GatewayInlineConfig - disabledRuleGroups on a legacy inline WAF block. Everything listed
+//                         there is disabled by definition, so RuleState is always 'Disabled'
+//                         and RuleAction is '-'.
+//
+// NB: the legacy leg is one row per disabled rule GROUP, not per rule. Where a group is only
+// partially disabled its specific rule ids are listed, comma separated, in RuleId. Expanding
+// them to a row each would need a fifth mv-expand and Resource Graph's documented cap is three.
+// Group-Object on RuleId will therefore behave differently across the two Source values.
+//
+// NB: Disabled treats an override whose state is unspecified as disabled. Before `state`
+// existed, listing a rule under ruleGroupOverrides was itself how you disabled it, so that is
+// the historically correct reading - and it over-reports weakening rather than under-reporting
+// it, which is the only safe direction. RuleState carries the raw value either way.
+//
+// NB: `iff(array_length(...) == 0, dynamic([{}]), ...)` substitutes a single empty element for
+// an empty or absent array. That is what keeps a rule set with no overrides, or a group with no
+// per-rule entries, from being erased by mv-expand - which drops the row entirely.
+//
+// NB: `limit 2000` on every mv-expand. The Resource Graph default is 128 and a DRS 2.1 policy
+// can carry far more overrides than that; without it the rest disappear without a word.
+//
+// NB: the union leg and the subscription lookup are inlined rather than hoisted into `let`.
+// Resource Graph only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+| extend PolicyProps = properties
+| mv-expand Rs = iff(coalesce(array_length(PolicyProps.managedRules.managedRuleSets), 0) == 0,
+                     dynamic([{}]), PolicyProps.managedRules.managedRuleSets) limit 2000
+| mv-expand Grp = iff(coalesce(array_length(Rs.ruleGroupOverrides), 0) == 0,
+                      dynamic([{}]), Rs.ruleGroupOverrides) limit 2000
+| mv-expand R = iff(coalesce(array_length(Grp.rules), 0) == 0,
+                    dynamic([{}]), Grp.rules) limit 2000
+| project Source         = 'Policy',
+          WafName        = name,
+          RuleSetType    = tostring(Rs.ruleSetType),
+          RuleSetVersion = tostring(Rs.ruleSetVersion),
+          RuleGroupName  = tostring(Grp.ruleGroupName),
+          RuleId         = tostring(R.ruleId),
+          RuleState      = tostring(R.state),
+          RuleAction     = tostring(R.action),
+          WafState       = tostring(PolicyProps.policySettings.state),
+          WafMode        = tostring(PolicyProps.policySettings.mode),
+          Attached       = (coalesce(array_length(PolicyProps.applicationGateways), 0)
+                          + coalesce(array_length(PolicyProps.httpListeners), 0)
+                          + coalesce(array_length(PolicyProps.pathBasedRules), 0)) > 0,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          WafId             = id
+| union (
+    // Legacy inline WAF. Without this leg a v1 gateway with half its rule groups switched off
+    // reports nothing at all, which reads as a clean WAF.
+    Resources
+    | where type =~ 'microsoft.network/applicationgateways'
+    | extend Waf = properties.webApplicationFirewallConfiguration
+    | where isnotnull(Waf)
+    | mv-expand DisabledGroup = iff(coalesce(array_length(Waf.disabledRuleGroups), 0) == 0,
+                                    dynamic([{}]), Waf.disabledRuleGroups) limit 2000
+    | project Source         = 'GatewayInlineConfig',
+              WafName        = name,
+              RuleSetType    = tostring(Waf.ruleSetType),
+              RuleSetVersion = tostring(Waf.ruleSetVersion),
+              RuleGroupName  = tostring(DisabledGroup.ruleGroupName),
+              // Int rule ids, comma separated. Empty when the whole group is disabled.
+              RuleId         = iff(isnull(DisabledGroup.rules), '', strcat_array(DisabledGroup.rules, ', ')),
+              // Anything in disabledRuleGroups is off; there is no state or action to read.
+              RuleState      = iff(isempty(tostring(DisabledGroup.ruleGroupName)), '', 'Disabled'),
+              RuleAction     = '-',
+              WafState       = iff(coalesce(tobool(Waf.enabled), false), 'Enabled', 'Disabled'),
+              WafMode        = tostring(Waf.firewallMode),
+              Attached       = true,
+              ResourceGroupName = resourceGroup,
+              Location          = location,
+              SubscriptionId    = subscriptionId,
+              WafId             = id
+  )
+| extend HasRuleSet = isnotempty(RuleSetType),
+         HasGroup   = isnotempty(RuleGroupName),
+         HasRule    = isnotempty(RuleId)
+| extend Scope = case(
+             not(HasRuleSet), 'NoManagedRuleSets',
+             HasRule,         'Rule',
+             HasGroup,        'RuleGroup',
+             'RuleSetDefaults')
+| extend Disabled  = (Scope in ('Rule', 'RuleGroup')) and (RuleState !~ 'Enabled'),
+         // Whether the WAF this override belongs to is doing anything at all. An override in a
+         // policy that is switched off, or attached to nothing, changes nothing.
+         Enforcing = (WafState =~ 'Enabled') and Attached
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project WafName,
+          Scope,
+          RuleSetType    = iff(isempty(RuleSetType), '-', RuleSetType),
+          RuleSetVersion = iff(isempty(RuleSetVersion), '-', RuleSetVersion),
+          RuleGroupName  = iff(isempty(RuleGroupName), '-', RuleGroupName),
+          RuleId         = iff(isempty(RuleId), '-', RuleId),
+          Disabled,
+          Enforcing,
+          // Raw value. '(unspecified)' is a real override with no state recorded - see the NB
+          // above for why Disabled reads that as off.
+          RuleState  = case(Scope in ('NoManagedRuleSets', 'RuleSetDefaults'), '-',
+                            isempty(RuleState),                                '(unspecified)',
+                            RuleState),
+          // AnomalyScoring is the DRS default - the rule contributes to the anomaly score
+          // rather than deciding on its own. Allow, Log or Block here is an explicit override.
+          RuleAction = iff(isempty(RuleAction), '-', RuleAction),
+          Source,
+          WafState = iff(isempty(WafState), 'Unknown', WafState),
+          WafMode  = iff(isempty(WafMode),  'Unknown', WafMode),
+          WafAttached = Attached,
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          WafId
+| order by SubscriptionName asc, WafName asc, RuleSetType asc, RuleGroupName asc, RuleId asc

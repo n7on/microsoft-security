@@ -1,0 +1,186 @@
+// One row per WAF configuration across every accessible subscription - the index for this
+// folder. Companions:
+//   -Name ManagedRules one row per managed-rule override (which rules were turned off or had
+//                      their action changed, and in which rule group)
+//   -Name Exclusions   one row per exclusion, with the rules each one is scoped to
+//   -Name CustomRules  one row per custom rule
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Waf.
+//
+// Source distinguishes the two things an Application Gateway WAF can be, and both are here so
+// that "every WAF in the estate" is one query rather than two:
+//   Policy              - a Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies
+//                         resource. What every WAF_v2 gateway uses.
+//   GatewayInlineConfig - the legacy webApplicationFirewallConfiguration block living on the
+//                         gateway itself. WAF v1, and v2 gateways never migrated to a policy.
+//                         It has no custom rules - v1 WAF does not support them - so
+//                         CustomRuleCount is 0 on these rows and that is a fact, not a gap.
+//
+// EffectiveMode is the column to report on. Mode alone says 'Prevention' on a policy that is
+// switched off, or attached to nothing, and reads as protection that is not there:
+//   NotAttached - referenced by no gateway, listener or path rule. Configuration with no effect.
+//   Disabled    - policySettings.state is Disabled. The rules are inert.
+//   Unknown     - policySettings.state came back empty. Reported rather than assumed; see NB.
+//   Detection   - attached and on, but it only logs. Nothing is ever blocked.
+//   Prevention  - attached, on, and blocking.
+//
+//   # WAFs that look protective but block nothing:
+//   Search-MsecAzureResourceGraph -ResourceType Waf |
+//       Where-Object EffectiveMode -in 'NotAttached', 'Disabled', 'Detection'
+//
+//   # Anyone still on an old core rule set:
+//   ... | Where-Object { $_.ManagedRuleSets -match 'OWASP' -and $_.ManagedRuleSetVersions -match '^3\.[01]' }
+//
+// The three counts here are navigational - they tell you which policy to go and look at. The
+// rows behind them are in -Name ManagedRules and -Name Exclusions.
+//
+// SCOPE: Application Gateway WAF only. Front Door has its own policy resource type
+// (microsoft.network/frontdoorwebapplicationfirewallpolicies) with a different schema, and it
+// is NOT in these results - a Front Door WAF will not show up here, and its absence is not
+// evidence that Front Door is unprotected.
+//
+// NB: ManagedRuleSets and ManagedRuleSetVersions are positionally aligned - the Nth type goes
+// with the Nth version. Pairing them into one string needs an mv-expand, and this file has
+// none; -Name ManagedRules emits the pairs properly, one row per rule set.
+//
+// NB: policySettings.state is not guaranteed to be present on policies created outside the
+// portal. Where it is empty this query reports 'Unknown' and counts the policy as NOT enabled.
+// Guessing 'Enabled' would turn an unverified control into a green tick, which is the one
+// outcome a security report must never produce.
+//
+// NB: every extract_all() wraps its pattern in a capture group even where only the match COUNT
+// is wanted. Resource Graph rejects a group-less pattern at parse time with
+// Functions_ArgumentRegexMatchingGroupCountInvalid and the whole query fails.
+//
+// NB: the union leg and the lookups are inlined rather than hoisted into `let`. Resource Graph
+// only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.network/applicationgatewaywebapplicationfirewallpolicies'
+| extend RuleSetsText = tostring(properties.managedRules.managedRuleSets)
+| project Source            = 'Policy',
+          Name              = name,
+          PolicyIdLower     = tolower(id),
+          InlineGatewayName = '',
+          State             = tostring(properties.policySettings.state),
+          Mode              = tostring(properties.policySettings.mode),
+          GatewayAssociations  = coalesce(array_length(properties.applicationGateways), 0),
+          ListenerAssociations = coalesce(array_length(properties.httpListeners), 0),
+          PathRuleAssociations = coalesce(array_length(properties.pathBasedRules), 0),
+          ManagedRuleSets        = strcat_array(extract_all(@'(?i)"ruleSetType"\s*:\s*"([^"]+)"', RuleSetsText), ', '),
+          ManagedRuleSetVersions = strcat_array(extract_all(@'(?i)"ruleSetVersion"\s*:\s*"([^"]+)"', RuleSetsText), ', '),
+          // Rule GROUPS carrying an override. Counted off managedRuleSets only - exclusions
+          // name rule groups too, and tostring(properties.managedRules) would double-count them.
+          ManagedRuleOverrides = coalesce(array_length(extract_all(@'(?i)"(ruleGroupName)"', RuleSetsText)), 0),
+          ExclusionCount    = coalesce(array_length(properties.managedRules.exclusions), 0),
+          CustomRuleCount   = coalesce(array_length(properties.customRules), 0),
+          RequestBodyCheck  = coalesce(tobool(properties.policySettings.requestBodyCheck), true),
+          MaxRequestBodySizeInKb      = toint(properties.policySettings.maxRequestBodySizeInKb),
+          RequestBodyInspectLimitInKB = toint(properties.policySettings.requestBodyInspectLimitInKB),
+          FileUploadLimitInMb         = toint(properties.policySettings.fileUploadLimitInMb),
+          CustomBlockResponseStatusCode = toint(properties.policySettings.customBlockResponseStatusCode),
+          LogScrubbing      = tostring(properties.policySettings.logScrubbing.state),
+          ProvisioningState = tostring(properties.provisioningState),
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| union (
+    // Gateways still running the legacy inline WAF block. Without this leg a v1 estate reports
+    // zero WAF configurations, which reads as "no WAF anywhere" rather than "no WAF policies".
+    Resources
+    | where type =~ 'microsoft.network/applicationgateways'
+    | extend Waf = properties.webApplicationFirewallConfiguration
+    | where isnotnull(Waf)
+    | project Source            = 'GatewayInlineConfig',
+              Name              = name,
+              PolicyIdLower     = tolower(id),
+              InlineGatewayName = name,
+              // The inline block has a boolean, not a state string. Mapped onto the same two
+              // values so EffectiveMode below can treat both sources identically.
+              State             = iff(coalesce(tobool(Waf.enabled), false), 'Enabled', 'Disabled'),
+              Mode              = tostring(Waf.firewallMode),
+              // It lives ON the gateway, so it is attached by construction.
+              GatewayAssociations  = 1,
+              ListenerAssociations = 0,
+              PathRuleAssociations = 0,
+              // Exactly one rule set, and both fields are scalars here rather than an array.
+              ManagedRuleSets        = tostring(Waf.ruleSetType),
+              ManagedRuleSetVersions = tostring(Waf.ruleSetVersion),
+              ManagedRuleOverrides = coalesce(array_length(Waf.disabledRuleGroups), 0),
+              ExclusionCount    = coalesce(array_length(Waf.exclusions), 0),
+              // v1 WAF has no custom rules. A real zero, not a missing value.
+              CustomRuleCount   = 0,
+              RequestBodyCheck  = coalesce(tobool(Waf.requestBodyCheck), true),
+              MaxRequestBodySizeInKb      = toint(Waf.maxRequestBodySizeInKb),
+              RequestBodyInspectLimitInKB = toint(Waf.requestBodyInspectLimitInKB),
+              FileUploadLimitInMb         = toint(Waf.fileUploadLimitInMb),
+              CustomBlockResponseStatusCode = toint(0),
+              LogScrubbing      = '',
+              ProvisioningState = tostring(properties.provisioningState),
+              ResourceGroupName = resourceGroup,
+              Location          = location,
+              SubscriptionId    = subscriptionId,
+              Id                = id
+  )
+// Gateway names come from the gateways themselves rather than the policy's back-reference
+// array: that array holds whole gateway objects whose nested ids repeat the gateway name, which
+// makes extracting a clean list from it unreliable. Listener- and path-level associations are
+// still counted from the back-references, since those have no equivalent forward lookup here.
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.network/applicationgateways'
+    | where isnotempty(tostring(properties.firewallPolicy.id))
+    | summarize Gateways = strcat_array(make_list(name), ', ')
+        by PolicyIdLower = tolower(tostring(properties.firewallPolicy.id))
+  ) on PolicyIdLower
+| extend Attached = (GatewayAssociations + ListenerAssociations + PathRuleAssociations) > 0
+| extend EffectiveMode = case(
+             not(Attached),        'NotAttached',
+             State =~ 'Disabled',  'Disabled',
+             isempty(State),       'Unknown',
+             State !~ 'Enabled',   strcat('Unknown (', State, ')'),
+             isempty(Mode),        'Unknown',
+             Mode)
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project SubscriptionId = subscriptionId, SubscriptionName = name
+  ) on SubscriptionId
+| project Name,
+          Source,
+          EffectiveMode,
+          Attached,
+          State = iff(isempty(State), 'Unknown', State),
+          Mode  = iff(isempty(Mode),  'Unknown', Mode),
+          // Empty on a policy attached at listener or path level only - those associations
+          // have no gateway-level forward reference to read a name from.
+          Gateways = case(Source == 'GatewayInlineConfig', InlineGatewayName,
+                          isempty(Gateways),               '',
+                          Gateways),
+          GatewayAssociations,
+          ListenerAssociations,
+          PathRuleAssociations,
+          ManagedRuleSets   = iff(isempty(ManagedRuleSets), '(none)', ManagedRuleSets),
+          ManagedRuleSetVersions,
+          // Go and read the rows: -Name ManagedRules, -Name Exclusions, -Name CustomRules.
+          ManagedRuleOverrides,
+          ExclusionCount,
+          CustomRuleCount,
+          // Absent requestBodyCheck means TRUE - body inspection is on by default. Defaulting
+          // it to false would report inspection as missing on nearly every policy.
+          RequestBodyCheck,
+          MaxRequestBodySizeInKb,
+          // Bodies larger than this are inspected only up to the limit; the remainder passes
+          // uninspected. On DRS 2.1 policies this decides how much of a large upload is seen.
+          RequestBodyInspectLimitInKB,
+          FileUploadLimitInMb,
+          CustomBlockResponseStatusCode,
+          LogScrubbing,
+          ProvisioningState,
+          ResourceGroupName,
+          Location,
+          SubscriptionName,
+          SubscriptionId,
+          Id
+| order by SubscriptionName asc, EffectiveMode asc, Name asc

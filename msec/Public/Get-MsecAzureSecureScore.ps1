@@ -66,15 +66,18 @@ function Get-MsecAzureSecureScore {
         throw 'No Azure context. Run Connect-AzAccount before Get-MsecAzureSecureScore.'
     }
 
-    # Default to every accessible subscription in the current tenant (same
-    # convention as Search-MsecAzureResourceGraph).
+    # Default to every accessible subscription in the current tenant (same convention as
+    # Search-MsecAzureResourceGraph). Via Get-MsecSubscriptionList so the enumeration is pinned
+    # to the active context's tenant rather than fanning out across every tenant the account can
+    # see - which is what a bare Get-AzSubscription does, and what this comment always claimed
+    # it did not.
     $subs = if ($SubscriptionId) {
         $SubscriptionId | ForEach-Object {
-            Get-AzSubscription -SubscriptionId $_ -ErrorAction Stop
+            Get-AzSubscription -SubscriptionId $_ -TenantId (Get-AzContext).Tenant.Id -ErrorAction Stop
         }
     }
     else {
-        Get-AzSubscription -ErrorAction Stop
+        Get-MsecSubscriptionList
     }
 
     # ARM endpoint for the current cloud (management.chinacloudapi.cn in China). Derived

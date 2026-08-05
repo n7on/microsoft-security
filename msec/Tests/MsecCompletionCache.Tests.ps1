@@ -1,7 +1,7 @@
 #Requires -Module Pester
 #
 # Tests for the module's completion cache - the only on-disk state it keeps - and for the
-# -SubscriptionId completer that every Azure-facing command shares.
+# -Subscription completer that every Azure-facing command shares.
 #
 # The cache exists so completers never call Azure: one that queries ARM blocks the prompt on
 # every Tab, and when ARM is unhealthy it hangs rather than failing fast.
@@ -25,18 +25,25 @@ AfterAll {
 }
 
 Describe 'Msec completion cache' {
-    It 'honours MSEC_CACHE_DIR, and otherwise defaults to per-user state' {
+    It 'honours MSEC_CACHE_DIR, scopes by tenant, and defaults to per-user state' {
         # The override is what lets the whole suite run without touching the developer's real
-        # cache. The default must not be the module folder - routinely read-only, and shared.
-        (InModuleScope msec { Get-MsecCachePath -Name 'subscriptions' }) |
-            Should -Be (Join-Path $script:CacheDir 'subscriptions.json')
-
-        $default = InModuleScope msec {
+        # cache. The tenant folder is what lets two tenants stay warm across a context flip
+        # instead of overwriting each other. The default must not be the module folder -
+        # routinely read-only, and shared.
+        $paths = InModuleScope msec {
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-A' } } }
+            $a = Get-MsecCachePath -Name 'subscriptions'
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-B' } } }
+            $b = Get-MsecCachePath -Name 'subscriptions'
             $saved = $env:MSEC_CACHE_DIR
             $env:MSEC_CACHE_DIR = $null
-            try { Get-MsecCachePath -Name 'subscriptions' } finally { $env:MSEC_CACHE_DIR = $saved }
+            try { $d = Get-MsecCachePath -Name 'subscriptions' } finally { $env:MSEC_CACHE_DIR = $saved }
+            [pscustomobject]@{ A = $a; B = $b; Default = $d }
         }
-        $default | Should -Not -BeLike "$((Get-Module msec).ModuleBase)*"
+
+        $paths.A | Should -Be (Join-Path (Join-Path $script:CacheDir 'tenant-A') 'subscriptions.json')
+        $paths.B | Should -Be (Join-Path (Join-Path $script:CacheDir 'tenant-B') 'subscriptions.json')
+        $paths.Default | Should -Not -BeLike "$((Get-Module msec).ModuleBase)*"
     }
 
     It 'round-trips items, and degrades to empty rather than throwing' {
@@ -47,63 +54,66 @@ Describe 'Msec completion cache' {
             Save-MsecCache -Name 'subscriptions' -Item @(
                 [pscustomobject]@{ Id = 'sub-1'; Name = 'Contoso-Prod'; TenantId = 't1' }
             )
-            Set-Content -LiteralPath (Get-MsecCachePath -Name 'corrupt') -Value '{ not json'
+            $corrupt = Get-MsecCachePath -Name 'corrupt'
+            New-Item -ItemType Directory -Path (Split-Path -Parent $corrupt) -Force | Out-Null
+            Set-Content -LiteralPath $corrupt -Value '{ not json'
+            $saved = @(Read-MsecCache -Name 'subscriptions')
+            # Another tenant reads its own folder, so it sees nothing of this one - and this
+            # one's cache survives the flip rather than being discarded and overwritten.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'a-different-tenant' } } }
+            $otherTenant = @(Read-MsecCache -Name 'subscriptions')
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-1' } } }
             [pscustomobject]@{
-                Saved   = @(Read-MsecCache -Name 'subscriptions')
-                Missing = @(Read-MsecCache -Name 'no-such-cache')
-                Corrupt = @(Read-MsecCache -Name 'corrupt')
+                Saved       = $saved
+                Missing     = @(Read-MsecCache -Name 'no-such-cache')
+                Corrupt     = @(Read-MsecCache -Name 'corrupt')
+                OtherTenant = $otherTenant
+                StillThere  = @(Read-MsecCache -Name 'subscriptions')
             }
         }
 
-        $result.Saved.Name    | Should -Be 'Contoso-Prod'
-        $result.Missing.Count | Should -Be 0
-        $result.Corrupt.Count | Should -Be 0
+        $result.Saved.Name        | Should -Be 'Contoso-Prod'
+        $result.Missing.Count     | Should -Be 0
+        $result.Corrupt.Count     | Should -Be 0
+        $result.OtherTenant.Count | Should -Be 0
+        $result.StillThere.Name   | Should -Be 'Contoso-Prod'
     }
 
-    It 'every test file that can trigger a cache write redirects MSEC_CACHE_DIR' {
-        # This bit three times: a test mocks Get-AzSubscription, the command under test refreshes
-        # the cache on its way past, and the MOCK data lands in the developer's real cache. It is
-        # silent - you notice later when tab completion offers 'sub-1'.
-        $writers = 'Search-MsecAzureResourceGraph', 'Search-MsecLogAnalytics',
-                   'Get-MsecSubscriptionList', 'Save-MsecCache'
-
-        $offenders = Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.Tests.ps1' -File | ForEach-Object {
-            $text = Get-Content -LiteralPath $_.FullName -Raw
-            $triggers = @($writers | Where-Object { $text -match "\b$([regex]::Escape($_))\b" })
-            if ($triggers.Count -gt 0 -and $text -notmatch 'MSEC_CACHE_DIR') { $_.Name }
-        }
-
-        $offenders | Should -BeNullOrEmpty
-    }
 }
 
-Describe '-SubscriptionId completion' {
+Describe '-Subscription completion' {
     BeforeAll {
+        # Get-AzContext is NOT mocked here on purpose: Save-MsecCache stamps the cache with the
+        # tenant it was written under, and the completer runs outside InModuleScope against the
+        # real context. Stamping a fake tenant would make Read-MsecCache correctly discard it.
         InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-1' } } }
             Save-MsecCache -Name 'subscriptions' -Item @(
                 [pscustomobject]@{ Id = '11111111-1111-1111-1111-111111111111'; Name = 'Contoso-Prod';    TenantId = 't1' }
                 [pscustomobject]@{ Id = '22222222-2222-2222-2222-222222222222'; Name = 'Contoso-Prod-US'; TenantId = 't1' }
                 [pscustomobject]@{ Id = '33333333-3333-3333-3333-333333333333'; Name = 'Fabrikam-Dev';    TenantId = 't1' }
+                [pscustomobject]@{ Id = '44444444-4444-4444-4444-444444444444'; Name = 'Shared-Name';    TenantId = 't1' }
+                [pscustomobject]@{ Id = '55555555-5555-5555-5555-555555555555'; Name = 'Shared-Name';    TenantId = 't2' }
             )
         }
     }
 
-    It 'matches on name or id prefix but always inserts the id' {
-        # The parameter takes a GUID and nobody remembers GUIDs. Matching the name while
-        # completing to the id is the entire point.
-        $line = 'Search-MsecAzureResourceGraph -ResourceType VM -SubscriptionId Contoso'
+    It 'completes -Subscription to the name, or to the id when that name is ambiguous' {
+        $line = 'Search-MsecAzureResourceGraph -ResourceType VM -Subscription Contoso'
         $byName = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches
-        $byName.CompletionText | Should -Contain '11111111-1111-1111-1111-111111111111'
-        $byName.CompletionText | Should -Contain '22222222-2222-2222-2222-222222222222'
-        $byName.CompletionText | Should -Not -Contain '33333333-3333-3333-3333-333333333333'
-        # The list shows the name, or you are picking a GUID blind.
-        ($byName | Where-Object CompletionText -eq '11111111-1111-1111-1111-111111111111').ListItemText |
-            Should -Match 'Contoso-Prod'
+        $byName.CompletionText | Should -Contain 'Contoso-Prod'
+        $byName.CompletionText | Should -Contain 'Contoso-Prod-US'
+        $byName.CompletionText | Should -Not -Contain 'Fabrikam-Dev'
+        # The id is still shown, so you know which subscription you are picking.
+        ($byName | Where-Object CompletionText -eq 'Contoso-Prod').ListItemText |
+            Should -Match '11111111-1111-1111-1111-111111111111'
 
-        $line = 'Search-MsecAzureResourceGraph -ResourceType VM -SubscriptionId 33333'
-        (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText |
-            Should -Contain '33333333-3333-3333-3333-333333333333'
+        # A name two subscriptions share is completed as the ID: the name would bind and then
+        # fail as ambiguous, so offering it would hand over a value known not to work.
+        $line = 'Search-MsecAzureResourceGraph -ResourceType VM -Subscription Shared'
+        $ambiguous = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+        $ambiguous | Should -Contain '44444444-4444-4444-4444-444444444444'
+        $ambiguous | Should -Contain '55555555-5555-5555-5555-555555555555'
+        $ambiguous | Should -Not -Contain 'Shared-Name'
     }
 
     It 'never makes a network call from the completer' {

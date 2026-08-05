@@ -19,7 +19,7 @@ AfterAll {
 Describe 'Invoke-MsecAzureVMScript' {
     It '-Os Linux runs the bundled .sh via RunShellScript and projects the response' {
         $results = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             $script:CapturedScriptPath = $null
             $script:CapturedCommandId  = $null
             Mock Invoke-AzVMRunCommand -MockWith {
@@ -53,7 +53,7 @@ Describe 'Invoke-MsecAzureVMScript' {
 
     It '-Os Windows runs the bundled .ps1 via RunPowerShellScript and projects the response' {
         $results = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             $script:CapturedScriptPath = $null
             $script:CapturedCommandId  = $null
             Mock Invoke-AzVMRunCommand -MockWith {
@@ -86,7 +86,7 @@ Describe 'Invoke-MsecAzureVMScript' {
         # entry whose Message is "Enable succeeded:\n[stdout]\n<actual>\n[stderr]\n<err>".
         # The runner must strip that wrapper so ConvertFrom-Json on $_.Output works.
         $result = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
                     Status = 'Succeeded'
@@ -128,7 +128,7 @@ Enable succeeded:
         # Reproduces the user-reported case: script succeeded, took ~30s, but Output came
         # back blank because Az.Compute's Code field didn't contain 'StdOut'.
         $out = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
                     Status = 'Succeeded'
@@ -149,7 +149,7 @@ Enable succeeded:
 
     It 'throws a clear "<Os> script not found" error at runtime when the script does not exist' {
         InModuleScope msec {
-            Mock Get-AzContext         -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext         -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called' }
 
             $vm = [pscustomobject]@{ Name = 'lin-1'; ResourceGroupName = 'rg-a' }
@@ -218,7 +218,7 @@ Enable succeeded:
         # pipes rows that carry their own Os, and each row is dispatched against the
         # right Scripts/<Os>/ folder.
         $out = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 # Echo the CommandId so the test can prove the per-row dispatch picked
                 # the right script flavour (RunShellScript vs RunPowerShellScript).
@@ -288,7 +288,7 @@ Enable succeeded:
         # The sequential path is what we can actually mock - this verifies the refactor
         # to a worker-scriptblock didn't change observable behaviour at ThrottleLimit=1.
         $out = InModuleScope msec {
-            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
                     Status = 'Succeeded'

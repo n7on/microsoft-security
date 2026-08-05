@@ -14,6 +14,12 @@ function Read-MsecCache {
         listing the real candidates - which is a better outcome than a completer that silently
         offers nothing because the file is a week old.
 
+        Nor does it check the tenant, because it cannot need to: Get-MsecCachePath puts each
+        tenant's caches in their own folder, so reading the wrong tenant's data is not something
+        this function could do. That also means both tenants stay warm across a
+        Select-MsecAzureContext flip, which an on-read check could not manage - it would discard
+        the other tenant's cache and the next query would overwrite it.
+
     .PARAMETER Name
         Cache name. See Get-MsecCachePath.
 

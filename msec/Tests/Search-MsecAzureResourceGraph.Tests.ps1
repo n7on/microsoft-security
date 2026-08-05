@@ -11,7 +11,7 @@ BeforeAll {
 
     # Redirect the completion cache for the whole file. An unscoped Search-MsecAzureResourceGraph
     # enumerates subscriptions and refreshes the cache, and with Get-AzSubscription mocked that
-    # writes MOCK data - which lands in the developer's real cache and leaves -SubscriptionId
+    # writes MOCK data - which lands in the developer's real cache and leaves -Subscription
     # completing to 'sub-1'. There is a guard test in MsecCompletionCache.Tests.ps1 that fails if
     # a test file which can trigger a cache write forgets this.
     $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
@@ -29,9 +29,17 @@ AfterAll {
 }
 
 Describe 'Search-MsecAzureResourceGraph' {
+    BeforeEach {
+        # Results are cached by default, so the same query run in two tests would serve the
+        # first test's mocked rows to the second and the second's mock would look like it had
+        # no effect. Start every test cache-cold. (Pester rejects BeforeEach at file root, so
+        # this lives in each Describe that re-runs a query.)
+        Get-ChildItem -LiteralPath $script:CacheDir -Filter *.json -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+    }
+
     It 'loads Kql/Graph/VM/All.kql by convention and shuttles it to Search-AzGraph unchanged' {
         $result = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith {
@@ -62,7 +70,7 @@ Describe 'Search-MsecAzureResourceGraph' {
         # .SkipToken (string) + .Data (array of rows). Without unwrapping, downstream
         # Where-Object can only filter on 'SkipToken' / 'Data' - useless.
         $rows = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
                 [pscustomobject]@{
@@ -88,7 +96,7 @@ Describe 'Search-MsecAzureResourceGraph' {
         # Must NOT enumerate every accessible sub - it should pass only the current one
         # to Search-AzGraph.
         $sub = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-current' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-current' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { throw 'should not enumerate all subscriptions with -CurrentSubscription' }
             $script:CapturedSub = $null
             Mock Search-AzGraph -MockWith { $script:CapturedSub = $Subscription; @() }
@@ -99,18 +107,82 @@ Describe 'Search-MsecAzureResourceGraph' {
         $sub | Should -Be @('sub-current')
     }
 
-    It 'throws when -CurrentSubscription and -SubscriptionId are both supplied' {
+    It 'resolves -Subscription by name, passes an id straight through, and refuses an ambiguous name' {
+        # Names are what people remember, but they are not unique - this estate has three
+        # subscriptions called 'Cloud Subscription'. An id must therefore still work, and an
+        # ambiguous name must fail with the candidates rather than pick one.
+        $captured = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 't1' } } }
+            Mock Get-AzSubscription -MockWith {
+                @([pscustomobject]@{ Id = '11111111-1111-1111-1111-111111111111'; Name = 'Contoso-Prod'; TenantId = 't1' },
+                  [pscustomobject]@{ Id = '44444444-4444-4444-4444-444444444444'; Name = 'Shared-Name'; TenantId = 't1' },
+                  [pscustomobject]@{ Id = '55555555-5555-5555-5555-555555555555'; Name = 'Shared-Name'; TenantId = 't2' })
+            }
+            $script:CapturedSub = $null
+            Mock Search-AzGraph -MockWith { $script:CapturedSub = $Subscription; @() }
+
+            $null = Search-MsecAzureResourceGraph -ResourceType VM -Subscription 'Contoso-Prod'
+            $byName = $script:CapturedSub
+            # A GUID needs no lookup at all, so this must not depend on enumeration succeeding.
+            $null = Search-MsecAzureResourceGraph -ResourceType VM -Subscription '99999999-9999-9999-9999-999999999999'
+            [pscustomobject]@{ ByName = $byName; ById = $script:CapturedSub }
+        }
+
+        $captured.ByName | Should -Be @('11111111-1111-1111-1111-111111111111')
+        $captured.ById   | Should -Be @('99999999-9999-9999-9999-999999999999')
+
         InModuleScope msec {
-            Mock Get-AzContext  -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 't1' } } }
+            Mock Get-AzSubscription -MockWith {
+                @([pscustomobject]@{ Id = '44444444-4444-4444-4444-444444444444'; Name = 'Shared-Name'; TenantId = 't1' },
+                  [pscustomobject]@{ Id = '55555555-5555-5555-5555-555555555555'; Name = 'Shared-Name'; TenantId = 't2' })
+            }
             Mock Search-AzGraph -MockWith { @() }
-            { Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription -SubscriptionId 'sub-2' } |
-                Should -Throw -ExpectedMessage '*either -CurrentSubscription or -SubscriptionId*'
+            { Search-MsecAzureResourceGraph -ResourceType VM -Subscription 'Shared-Name' } |
+                Should -Throw -ExpectedMessage '*ambiguous*'
+            { Search-MsecAzureResourceGraph -ResourceType VM -Subscription 'No-Such-Sub' } |
+                Should -Throw -ExpectedMessage '*not found. Available: Shared-Name*'
+        }
+    }
+
+    It 'reuses a cached result, honours -NoCache, and never crosses subscription scopes' {
+        # Caching is on by default. The scope label is what keeps that safe: a result gathered
+        # for one subscription must never be served to an unscoped call, which would report a
+        # fraction of the estate as all of it.
+        $calls = InModuleScope msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1'; Name = 'Contoso-Prod'; TenantId = 'tenant-1' }) }
+            $script:Calls = 0
+            Mock Search-AzGraph -MockWith { $script:Calls++; @([pscustomobject]@{ Name = 'vm-1' }) }
+
+            $null = Search-MsecAzureResourceGraph -ResourceType VM              # live
+            $first = $script:Calls
+            $null = Search-MsecAzureResourceGraph -ResourceType VM              # cached
+            $second = $script:Calls
+            $null = Search-MsecAzureResourceGraph -ResourceType VM -NoCache     # forced live
+            $third = $script:Calls
+            $null = Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription  # different scope
+            [pscustomobject]@{ First = $first; Second = $second; Third = $third; Scoped = $script:Calls }
+        }
+
+        $calls.First  | Should -Be 1   # first call queries Azure
+        $calls.Second | Should -Be 1   # second is served from cache
+        $calls.Third  | Should -Be 2   # -NoCache goes back to Azure
+        $calls.Scoped | Should -Be 3   # a different scope must not reuse the unscoped result
+    }
+
+    It 'throws when -CurrentSubscription and -Subscription are both supplied' {
+        InModuleScope msec {
+            Mock Get-AzContext  -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
+            Mock Search-AzGraph -MockWith { @() }
+            { Search-MsecAzureResourceGraph -ResourceType VM -CurrentSubscription -Subscription 'sub-2' } |
+                Should -Throw -ExpectedMessage '*either -CurrentSubscription or -Subscription*'
         }
     }
 
     It 'throws a clear error when the named .kql file does not exist' {
         InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith { @() }
             { Search-MsecAzureResourceGraph -ResourceType VM -Name 'NoSuchQuery' } |
@@ -139,7 +211,7 @@ Describe 'Search-MsecAzureResourceGraph' {
         # End-to-end: ARG-shaped rows -> Where-Object -> runner. Validates that
         # Search-MsecAzureResourceGraph's output (Name + ResourceGroupName) binds correctly to the runner.
         $captured = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
                 @(
@@ -167,8 +239,11 @@ Describe 'Search-MsecAzureResourceGraph' {
 
 Describe 'Search-MsecAzureResourceGraph pagination' {
     BeforeEach {
+        # Every test here runs VM/All; without clearing, the second onwards would be served the
+        # first one's cached rows instead of exercising its own paging mock.
+        Get-ChildItem -LiteralPath $script:CacheDir -Filter *.json -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
         InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
         }
     }
@@ -265,7 +340,7 @@ Describe 'Kql/Graph/KeyVault' {
 
     It 'All.kql treats a missing networkAcls block as open, not unknown' {
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -287,7 +362,7 @@ Describe 'Kql/Graph/KeyVault' {
 
     It 'NetworkRules.kql covers ip rules, vnet rules and vaults with neither' {
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -324,7 +399,7 @@ Describe 'Kql/Graph/Storage' {
         # to false / TLS1_2 would silently under-report exposure - the failure mode that
         # makes a security report worse than no report.
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -343,7 +418,7 @@ Describe 'Kql/Graph/Storage' {
 
     It 'NetworkRules.kql covers all four rule kinds plus accounts with none' {
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -377,7 +452,7 @@ Describe 'Kql/Graph/NSG' {
 
     It 'SecurityRules.kql projects the columns the old Get-ViedocAzNetworkGroupSecurityRules printed' {
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -410,7 +485,7 @@ Describe 'Kql/Graph/NSG' {
 
     It 'All.kql flags NSGs that are attached to nothing' {
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -439,7 +514,7 @@ Describe 'Kql/Graph/MySQL' {
         # flexible server's firewall rules (no child type is projected), so the access model
         # is the closest thing to an exposure answer that KQL alone can give.
         $query = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -458,7 +533,7 @@ Describe 'Kql/Graph/MySQL' {
 Describe 'Kql/Graph/AppGateway' {
     BeforeAll {
         $script:AppGwQueries = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -510,7 +585,7 @@ Describe 'Kql/Graph/AppGateway' {
 Describe 'Kql/Graph/Waf' {
     BeforeAll {
         $script:WafQueries = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
@@ -558,7 +633,7 @@ Describe 'Kql/Graph/Waf' {
 Describe 'Kql/Graph/Resource' {
     BeforeAll {
         $script:ResQueries = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             $script:CapturedQuery = $null
             Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }

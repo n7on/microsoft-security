@@ -14,7 +14,8 @@ BeforeAll {
     $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
     New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
     $script:CacheDir  = $env:MSEC_CACHE_DIR
-    $script:CachePath = Join-Path $env:MSEC_CACHE_DIR 'graph-loganalytics-all.json'
+    # Tenant-scoped now, so ask the module rather than assuming a flat layout.
+    $script:CachePath = InModuleScope msec { Get-MsecCachePath -Name 'graph-loganalytics-all' }
 }
 
 AfterAll {
@@ -27,14 +28,14 @@ AfterAll {
 
 Describe 'Search-MsecLogAnalytics' {
     BeforeEach {
-        # Workspace resolution goes through Search-MsecAzureResourceGraph -UseCache, so a previous
-        # test's mocked workspace list would be served to the next one from disk.
-        if (Test-Path -LiteralPath $script:CachePath) { Remove-Item -LiteralPath $script:CachePath -Force }
+        # Workspace resolution reads the cached workspace list, so a previous test's mocked
+        # workspaces would be served to the next one from disk.
+        Get-ChildItem -LiteralPath $script:CacheDir -Filter *.json -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
     }
 
-    It 'loads the .kql by convention, resolves the workspace name, and passes -Days as a timespan' {
+    It 'loads the .kql by convention, resolves the workspace name, and passes the window as a timespan' {
         $result = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
                 @([pscustomobject]@{ Name = 'ws-1'; ResourceGroupName = 'rg-a'
@@ -51,14 +52,17 @@ Describe 'Search-MsecLogAnalytics' {
             }
 
             $rows = Search-MsecLogAnalytics -Subject Waf -WorkspaceName ws-1 -Days 3
-            [pscustomobject]@{ Rows = $rows; Query = $script:CapturedQuery
-                               WorkspaceId = $script:CapturedId; Timespan = $script:CapturedSpan }
+            $byDays = $script:CapturedSpan
+            $null = Search-MsecLogAnalytics -Subject Waf -WorkspaceName ws-1 -Timespan 4:00
+            [pscustomobject]@{ Rows = $rows; Query = $script:CapturedQuery; WorkspaceId = $script:CapturedId
+                               ByDays = $byDays; ByTimespan = $script:CapturedSpan }
         }
 
         # The workspace NAME is resolved to its customerId - that GUID is what the API takes -
         # and the window is a server-side timespan, not a clause appended to the query.
         $result.WorkspaceId | Should -Be 'cid-1'
-        $result.Timespan    | Should -Be ([TimeSpan]::FromDays(3))
+        $result.ByDays      | Should -Be ([TimeSpan]::FromDays(3))
+        $result.ByTimespan  | Should -Be ([TimeSpan]::FromHours(4))
         $result.Query       | Should -Match 'ApplicationGatewayFirewallLog'
         $result.Rows[0].Workspace | Should -Be 'ws-1'
     }
@@ -67,7 +71,7 @@ Describe 'Search-MsecLogAnalytics' {
         # "Workspace not found" on its own sends you to the portal. With dozens of workspaces the
         # candidate list is the entire value of the error.
         InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
                 @([pscustomobject]@{ Name = 'contoso-monitoring-log'; ResourceGroupName = 'rg-a'
@@ -86,7 +90,7 @@ Describe 'Search-MsecLogAnalytics' {
         # Two workspaces of the same name in different resource groups is normal in a sharded
         # estate. Picking one silently would query the wrong data and look completely fine.
         InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
                 @([pscustomobject]@{ Name = 'dup-log'; ResourceGroupName = 'rg-a'
@@ -115,6 +119,7 @@ Describe 'Search-MsecLogAnalytics' {
 
 Describe '-WorkspaceName completion' {
     It 'completes from the cached workspace query' {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $script:CachePath) -Force | Out-Null
         Set-Content -LiteralPath $script:CachePath -Encoding utf8 -Value (@{
             UpdatedUtc = '2026-01-01T00:00:00Z'
             Items      = @(

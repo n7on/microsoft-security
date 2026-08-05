@@ -36,6 +36,12 @@ function Get-MsecCachePath {
         thing that works until it doesn't - and when it doesn't it silently costs a developer
         their warm cache. Also useful for CI.
 
+        Tests that mock Az and forget to redirect are contained rather than dangerous: their
+        fake context yields a fake tenant, so they write to a folder of their own and cannot
+        touch a real tenant's cache. Worth knowing before adding machinery to police it - an
+        earlier guard test tried to, could not see transitive writes through the call graph, and
+        was deleted once partitioning made the damage cosmetic.
+
     .PARAMETER Name
         Cache name, used as the file's base name. 'subscriptions', 'graph-loganalytics-all'.
 
@@ -49,6 +55,19 @@ function Get-MsecCachePath {
         [string] $Name
     )
 
+    # Tenant-scoped, one subfolder per tenant. Flipping context with Select-MsecAzureContext is
+    # routine, and a single shared file would mean each flip discards the other tenant's cache
+    # and overwrites it - so ping-ponging between two tenants leaves the cache permanently cold
+    # and completion dead after every switch. Separate folders let both stay warm, and make
+    # cross-tenant bleed impossible by construction rather than by a check on read.
+    $tenantId = (Get-AzContext -ErrorAction SilentlyContinue).Tenant.Id
+    if (-not $tenantId) {
+        # Callers all treat a failure here as "no cache": Read-MsecCache returns empty,
+        # Save-MsecCache logs to verbose, completers offer nothing. Without a context there is
+        # nothing to query anyway.
+        throw 'No Azure context, so there is no tenant to scope the cache to.'
+    }
+
     $dir = $env:MSEC_CACHE_DIR
     if (-not $dir) {
         $base = [Environment]::GetFolderPath('LocalApplicationData')
@@ -59,5 +78,5 @@ function Get-MsecCachePath {
         }
         $dir = Join-Path $base 'msec'
     }
-    Join-Path $dir "$Name.json"
+    Join-Path (Join-Path $dir $tenantId) "$Name.json"
 }

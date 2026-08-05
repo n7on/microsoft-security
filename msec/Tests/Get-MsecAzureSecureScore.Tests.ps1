@@ -9,9 +9,21 @@
 BeforeAll {
     $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
+
+    # Get-MsecAzureSecureScore enumerates subscriptions through Get-MsecSubscriptionList, which
+    # refreshes the completion cache. With Az mocked that would leave a folder of fake data in
+    # the developer's real cache directory.
+    $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
+    $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
+    $script:CacheDir = $env:MSEC_CACHE_DIR
 }
 
 AfterAll {
+    if ($script:CacheDir -and (Test-Path -LiteralPath $script:CacheDir)) {
+        Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
+    }
+    $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
@@ -19,7 +31,7 @@ Describe 'Get-MsecAzureSecureScore' {
 
     It 'returns one Overall row per subscription with correct percent (current / max * 100)' {
         $rows = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith {
                 @(
                     [pscustomobject]@{ Id = 'sub-A'; Name = 'we-dev-sub'  }
@@ -70,7 +82,7 @@ Describe 'Get-MsecAzureSecureScore' {
 
     It '-IncludeControls emits one row per (subscription, control) in addition to Overall' {
         $rows = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-A'; Name = 'we-dev-sub' }) }
             Mock Get-AzAccessToken  -MockWith { [pscustomobject]@{ Token = 'mock-arm-token'; ExpiresOn = (Get-Date).AddHours(1) } }
 
@@ -126,7 +138,7 @@ Describe 'Get-MsecAzureSecureScore' {
 
     It 'warns and skips a single failing subscription rather than aborting the whole batch' {
         $output = InModuleScope msec {
-            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' } } }
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith {
                 @(
                     [pscustomobject]@{ Id = 'sub-A'; Name = 'reader-ok'  }   # works

@@ -40,13 +40,16 @@ function Search-MsecAzureResourceGraph {
         KQL file base name (without extension). Defaults to 'All'. Tab-completes from the
         .kql files in the selected ResourceType folder.
 
-    .PARAMETER SubscriptionId
-        Restrict to specific subscriptions. Omit to query every accessible subscription.
+    .PARAMETER Subscription
+        Restrict to specific subscriptions, by NAME or id - 'PROD' rather than a GUID. Names are
+        not unique (this estate has three called 'Cloud Subscription'), so an ambiguous name
+        fails with the candidate ids rather than picking one. Omit to query every accessible
+        subscription. Aliased to -SubscriptionId for anything already written against that name.
 
     .PARAMETER CurrentSubscription
         Scope the query to just the active Az context's subscription - shorthand for
-        -SubscriptionId (Get-AzContext).Subscription.Id. Mutually exclusive with
-        -SubscriptionId. Handy when you want results that line up with the single
+        -Subscription (Get-AzContext).Subscription.Id. Mutually exclusive with
+        -Subscription. Handy when you want results that line up with the single
         subscription Invoke-MsecAzureVMScript will act on.
 
     .PARAMETER First
@@ -58,23 +61,18 @@ function Search-MsecAzureResourceGraph {
         Safety ceiling on total rows returned across all pages. Default 50000. Hitting it
         emits a warning and stops; results are never truncated silently.
 
-    .PARAMETER UseCache
-        Serve the previous result for this query from disk when it is younger than -MaxCacheAge,
-        instead of calling Azure. Opt-in, and it stays opt-in: a stale security answer is
-        indistinguishable from a fresh one at the point you read it.
+    .PARAMETER NoCache
+        Query Azure instead of reusing a recent result. The result still refreshes the cache.
 
-        Every real call refreshes the cache regardless of this switch, so it is always warm. A
-        result truncated by -MaxRows is never cached.
+        Results are cached and reused BY DEFAULT, because Azure resource inventory changes on the
+        timescale of deployments rather than seconds. A cached result is only reused when it was
+        written under the SAME tenant, for the SAME subscription scope, and within the cache
+        window (15 minutes) - a scoped result is never handed back to an unscoped call, which
+        would report a fraction of the estate as all of it. A result truncated by -MaxRows is
+        never cached.
 
-        The cache lives under %LOCALAPPDATA%\msec (~/.local/share/msec elsewhere), one file per
-        query - 'graph-loganalytics-all.json' and so on - and MSEC_CACHE_DIR moves it. The
-        subscription scope is not part of the cache key, so a scoped call overwrites the cached
-        estate-wide result for the same query; the scope that produced a cached result is
-        recorded in it and reported by -Verbose.
-
-    .PARAMETER MaxCacheAge
-        How old a cached result may be before -UseCache ignores it and queries Azure anyway.
-        Default one hour. Ignored without -UseCache.
+        Use -NoCache when you have just changed something and are checking whether the change
+        took: that is the one case where minutes-old data actively misleads.
 
     .EXAMPLE
         Search-MsecAzureResourceGraph -ResourceType VM
@@ -89,9 +87,9 @@ function Search-MsecAzureResourceGraph {
             Invoke-MsecAzureVMScript -Os Linux -ScriptName os-info
 
     .EXAMPLE
-        # Slow-moving reference data - reuse the last result for an hour rather than paying for
-        # a round trip each time. This is how Search-MsecLogAnalytics resolves a workspace name.
-        Search-MsecAzureResourceGraph -ResourceType LogAnalytics -UseCache
+        # You just closed a vault firewall and want to confirm it - do not trust a cached answer:
+        Search-MsecAzureResourceGraph -ResourceType KeyVault -NoCache |
+            Where-Object NetworkExposure -eq 'OpenToAllNetworks'
 
     .OUTPUTS
         PSCustomObject rows shaped by the .kql file's project clause.
@@ -142,12 +140,15 @@ function Search-MsecAzureResourceGraph {
         })]
         [string] $Name = 'All',
 
+        # Names or ids, or a mix. 'PROD' beats a GUID at the call site and in a script anyone
+        # has to read later; the id still works because subscription names are not unique.
         [Parameter()]
-        [string[]] $SubscriptionId,
+        [Alias('SubscriptionId')]
+        [string[]] $Subscription,
 
         # Scope to just the active Az context's subscription - the easy alternative to
-        # passing -SubscriptionId (Get-AzContext).Subscription.Id by hand. Mutually
-        # exclusive with -SubscriptionId. Without either, every accessible subscription is
+        # passing -Subscription (Get-AzContext).Subscription.Id by hand. Mutually
+        # exclusive with -Subscription. Without either, every accessible subscription is
         # queried (the estate-wide default the bundled reports rely on).
         [Parameter()]
         [switch] $CurrentSubscription,
@@ -160,24 +161,9 @@ function Search-MsecAzureResourceGraph {
         [ValidateRange(1, [int]::MaxValue)]
         [int] $MaxRows = 50000,
 
-        # Serve the previous result for this query from disk when it is younger than
-        # -MaxCacheAge, instead of calling Azure.
-        #
-        # OPT-IN, AND IT STAYS OPT-IN. Every bundled query here answers a security question, and
-        # a stale answer is indistinguishable from a fresh one at the point you read it - the
-        # subscription that was added yesterday is simply absent, the vault that was opened to
-        # the internet this morning still looks sealed. That is the failure mode this whole
-        # module is written against, so the default is always a real call.
-        #
-        # A real call ALWAYS refreshes the cache, whether or not this switch was passed. That is
-        # what keeps tab completion warm without anybody having to think about it.
+        # Skip the cache and query Azure. The result still refreshes the cache.
         [Parameter()]
-        [switch] $UseCache,
-
-        # How old a cached result may be before -UseCache ignores it and calls Azure anyway.
-        # Default one hour. Ignored without -UseCache.
-        [Parameter()]
-        [timespan] $MaxCacheAge = [timespan]::FromHours(1)
+        [switch] $NoCache
     )
 
     if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
@@ -192,30 +178,38 @@ function Search-MsecAzureResourceGraph {
 
     $cacheName = Get-MsecGraphCacheName -ResourceType $ResourceType -Name $Name
 
-    if ($UseCache) {
-        $cached = Read-MsecCache -Name $cacheName -Envelope
-        if ($cached -and $cached.UpdatedUtc) {
-            $age = [DateTime]::UtcNow - [DateTime]::Parse($cached.UpdatedUtc, $null,
-                        [System.Globalization.DateTimeStyles]::RoundtripKind)
-            if ($age -le $MaxCacheAge) {
-                Write-Verbose ("Serving $(@($cached.Items).Count) row(s) from cache " +
-                    "($([int]$age.TotalMinutes) minute(s) old, scope: $($cached.Scope)). " +
-                    'Pass -MaxCacheAge 0 or drop -UseCache to force a live query.')
-                return @($cached.Items)
-            }
-            Write-Verbose "Cache for '$cacheName' is $([int]$age.TotalMinutes) minute(s) old, past -MaxCacheAge. Querying Azure."
-        }
-        else {
-            Write-Verbose "No usable cache for '$cacheName'. Querying Azure."
-        }
+    if ($CurrentSubscription -and $Subscription) {
+        throw 'Specify either -CurrentSubscription or -Subscription, not both.'
     }
 
-    if ($CurrentSubscription -and $SubscriptionId) {
-        throw 'Specify either -CurrentSubscription or -SubscriptionId, not both.'
+    # A LABEL for the scope, worked out before anything is resolved or enumerated. It is what
+    # makes a cached result safe to reuse: a run scoped to one subscription must never be handed
+    # back to an unscoped run, which would silently report a fraction of the estate as all of it.
+    # Deriving it from the raw arguments also means a cache hit skips subscription enumeration
+    # entirely - the slowest and least reliable part of an unscoped call.
+    #
+    # Two spellings of the same scope ('PROD' and its GUID) produce different labels and so miss
+    # each other. That is the conservative direction: a needless refetch, never a wrong answer.
+    $scopeLabel = if ($CurrentSubscription) { "current:$((Get-AzContext).Subscription.Id)" }
+                  elseif ($Subscription)    { 'subs:' + (($Subscription | Sort-Object) -join ',') }
+                  else                      { 'all' }
+
+    if (-not $NoCache) {
+        $cached = Read-MsecCache -Name $cacheName -Envelope
+        if ($cached -and $cached.Scope -eq $scopeLabel -and $cached.UpdatedUtc) {
+            $age = [DateTime]::UtcNow - [DateTime]::Parse($cached.UpdatedUtc, $null,
+                        [System.Globalization.DateTimeStyles]::RoundtripKind)
+            if ($age -le $script:MsecGraphCacheMaxAge) {
+                Write-Verbose ("Serving $(@($cached.Items).Count) row(s) from cache " +
+                    "($([int]$age.TotalMinutes) minute(s) old, scope '$scopeLabel'). Use -NoCache to force a live query.")
+                return @($cached.Items)
+            }
+            Write-Verbose "Cache for '$cacheName' is $([int]$age.TotalMinutes) minute(s) old. Querying Azure."
+        }
     }
 
     # Resolve the subscription scope:
-    #   -SubscriptionId      -> exactly those subs
+    #   -Subscription        -> exactly those subs, by name or id
     #   -CurrentSubscription -> just the active Az context's sub
     #   (neither)            -> EVERY accessible sub. Search-AzGraph's own default is only
     #                           the current context's sub, which is wrong for estate-wide
@@ -228,9 +222,13 @@ function Search-MsecAzureResourceGraph {
         $SubscriptionId = @($currentSub)
         Write-Verbose "Scoping to current subscription: $currentSub"
     }
-    elseif (-not $SubscriptionId) {
+    elseif ($Subscription) {
+        $SubscriptionId = @(Resolve-MsecSubscription -Subscription $Subscription)
+        Write-Verbose "Scoped to $($SubscriptionId.Count) subscription(s): $($SubscriptionId -join ', ')"
+    }
+    else {
         # Get-MsecSubscriptionList rather than Get-AzSubscription: identical data, and it
-        # refreshes the -SubscriptionId completion cache on the way past. Every estate-wide call
+        # refreshes the -Subscription completion cache on the way past. Every estate-wide call
         # already pays for this enumeration, so completion costs nothing extra.
         $SubscriptionId = (Get-MsecSubscriptionList).Id
         Write-Verbose "Querying $($SubscriptionId.Count) accessible subscription(s): $($SubscriptionId -join ', ')"
@@ -279,10 +277,10 @@ function Search-MsecAzureResourceGraph {
             if ($null -eq $r) { continue }
             if ($emitted -ge $MaxRows) {
                 Write-Warning ("Stopped at -MaxRows ($MaxRows) with more results available. " +
-                    'Results are INCOMPLETE - raise -MaxRows, or narrow with -SubscriptionId.')
+                    'Results are INCOMPLETE - raise -MaxRows, or narrow with -Subscription.')
                 # Deliberately NOT cached. A truncated result written to the cache would be
-                # served later by -UseCache as though it were the whole answer, turning a loud
-                # one-off warning into a silent permanent undercount.
+                # read back later as though it were the whole answer, turning a loud one-off
+                # warning into a silently truncated completion list.
                 return
             }
             $obj = [pscustomobject]$(
@@ -296,10 +294,13 @@ function Search-MsecAzureResourceGraph {
         }
     } while ($skipToken)
 
-    # Refresh the cache on every real call, whether or not -UseCache was passed: that is what
-    # keeps tab completion warm without a priming step. Best effort - Save-MsecCache never throws.
+    # Refresh the cache on every call. It is read back only by tab completion and by
+    # Search-MsecLogAnalytics resolving a workspace name - this cmdlet itself always queries
+    # Azure, because a stale security answer is indistinguishable from a fresh one. Best effort:
+    # Save-MsecCache never throws.
     Save-MsecCache -Name $cacheName -Item $collected.ToArray() -Metadata @{
-        Scope = if ($SubscriptionId) { ($SubscriptionId -join ', ') } else { 'all accessible subscriptions' }
+        Scope        = $scopeLabel
+        ScopeDetail  = if ($SubscriptionId) { ($SubscriptionId -join ', ') } else { 'all accessible subscriptions' }
     }
 
     Write-Verbose "Returned $emitted row(s) across $page page(s)."

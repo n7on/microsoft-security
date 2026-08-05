@@ -49,18 +49,24 @@ function Search-MsecLogAnalytics {
         than picking one.
 
         Tab-completes from a local cache, never from a live query - see the comment on the
-        parameter. Any call refreshes it; on a fresh machine prime it with
+        parameter. Any call that reaches Azure refreshes it; on a fresh machine prime it with
         Search-MsecAzureResourceGraph -ResourceType LogAnalytics.
 
     .PARAMETER ResourceGroupName
         Disambiguates when the same workspace name exists in more than one resource group.
 
-    .PARAMETER SubscriptionId
-        Disambiguates when the same workspace name exists in more than one subscription.
 
     .PARAMETER Days
-        Time window, passed to the API as a server-side timespan. Default 7. The .kql files do
-        NOT carry their own time filter - see the NB below.
+        Time window in whole days, passed to the API as a server-side timespan. Default 7. The
+        .kql files do NOT carry their own time filter - see the NB below.
+
+    .PARAMETER Timespan
+        Time window for anything shorter or finer than a day - 4:00 for four hours, 0:30 for
+        thirty minutes, 1.12:00:00 for a day and a half. Mutually exclusive with -Days.
+
+        A BARE INTEGER is a trap here: PowerShell coerces it to ticks, so -Timespan 7 means 700
+        nanoseconds, not 7 days. Anything under a minute is rejected rather than silently
+        returning an empty result set.
 
     .PARAMETER MaxRows
         Safety ceiling on rows returned. Default 50000. Hitting it emits a warning and stops;
@@ -68,6 +74,10 @@ function Search-MsecLogAnalytics {
 
     .EXAMPLE
         Search-MsecLogAnalytics -Subject Waf -Name TopRules -WorkspaceName prod-sentinel-log
+
+    .EXAMPLE
+        # Last four hours - what is firing right now, during an incident:
+        Search-MsecLogAnalytics -Subject Waf -WorkspaceName prod-sentinel-log -Timespan 4:00
 
     .EXAMPLE
         # Which WAF rules actually fire, against which rules are switched off:
@@ -93,12 +103,13 @@ function Search-MsecLogAnalytics {
         exist in a workspace is a hard query error rather than an empty result. So the
         workspace is mandatory and explicit. Nothing is ever queried that you did not name.
 
-        NB - TIME IS A PARAMETER, NOT PART OF THE QUERY. -Days is passed to the API as a
-        timespan, which the service applies server-side against the TimeGenerated index. The
-        .kql files therefore contain NO `where TimeGenerated > ago(...)` clause. This is the
-        same separation as Search-MsecAzureResourceGraph doing no filtering in KQL: a window
-        baked into the file is invisible at the call site and cannot be widened without
-        editing the file.
+        NB - TIME IS A PARAMETER, NOT PART OF THE QUERY. -Days (or -Timespan) is passed to the
+        API as a timespan, which the service applies server-side against the TimeGenerated
+        index. The .kql files therefore contain NO `where TimeGenerated > ago(...)` clause. This
+        is the same separation as Search-MsecAzureResourceGraph doing no filtering in KQL: a
+        window baked into the file is invisible at the call site and cannot be widened without
+        editing the file. It is also why a sub-day window needed a new parameter rather than a
+        change to any query.
 
         NB - NO PAGINATION. Resource Graph hands out a skip token and this module follows it
         until the result set is exhausted. The Log Analytics query API has no equivalent: it
@@ -114,7 +125,7 @@ function Search-MsecLogAnalytics {
         a number in KQL sorts lexically in PowerShell unless you cast it - '9' sorts after
         '10'. Cast at the call site: Sort-Object { [int]$_.Hits } -Descending.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Days')]
     param(
         # Tab-completes from every folder under Kql/Law that contains at least one .kql file.
         #
@@ -164,15 +175,22 @@ function Search-MsecLogAnalytics {
         # completer that calls Azure blocks the prompt on every Tab; worse, when ARM is
         # unhealthy it does not fail fast, it hangs. Reading a small JSON file cannot do that.
         #
-        # Every Search-MsecLogAnalytics call refreshes that cache on its way to resolving the
-        # workspace - including one that fails on an unknown name - so normal use keeps it warm.
-        # On a fresh machine, prime it with:
+        # Read-MsecCache rather than Search-MsecAzureResourceGraph, which is what the function
+        # body uses to resolve the same list. The two mean different things: the cmdlet means
+        # "get the answer, fetching if necessary" and will enumerate subscriptions and query ARM
+        # on a miss or once the cache window has passed. A completer fires on every keypress, so
+        # it needs "use what is already there, never fetch" - otherwise Tab is instant sometimes,
+        # three seconds other times, and indefinite when ARM is unwell.
+        #
+        # Any Search-MsecLogAnalytics call that actually queries Azure refreshes this cache on
+        # its way to resolving the workspace - including one that fails on an unknown name. On a
+        # fresh machine, prime it with:
         #   Search-MsecAzureResourceGraph -ResourceType LogAnalytics
         #
         # NB: same session-state trap as the completers above - this scriptblock runs in the
-        # completion engine, NOT in the module, so Get-MsecWorkspaceCachePath is not directly
+        # completion engine, NOT in the module, so the private cache functions are not directly
         # callable. Invoking the scriptblock against the module object (& $module { ... }) runs
-        # it in module scope, where private functions do resolve.
+        # it in module scope, where they do resolve.
         [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
@@ -198,15 +216,34 @@ function Search-MsecLogAnalytics {
         })]
         [string] $WorkspaceName,
 
+        # No -Subscription here on purpose: the workspace determines its own subscription, so
+        # scoping by one could only ever disambiguate two workspaces sharing a name - and
+        # -ResourceGroupName already does that. Scope belongs to Search-MsecAzureResourceGraph,
+        # which is what actually runs a query across subscriptions.
         [Parameter()]
         [string] $ResourceGroupName,
 
-        [Parameter()]
-        [string] $SubscriptionId,
-
-        [Parameter()]
+        [Parameter(ParameterSetName = 'Days')]
         [ValidateRange(1, 365)]
         [int] $Days = 7,
+
+        # Sub-day windows. -Timespan 4:00 is four hours, -Timespan 0:30 is thirty minutes,
+        # -Timespan 1.12:00:00 is a day and a half.
+        #
+        # NB the validation below is not decoration. PowerShell coerces a BARE INTEGER to a
+        # timespan as TICKS, so -Timespan 7 silently means 700 nanoseconds rather than 7 days:
+        # the query returns nothing and reads as "there was nothing to find". Anything under a
+        # minute is refused with a message pointing at -Days.
+        [Parameter(Mandatory, ParameterSetName = 'Timespan')]
+        [ValidateScript({
+            if ($_ -lt [timespan]::FromMinutes(1)) {
+                throw ("-Timespan $_ is under a minute. A bare integer is read as TICKS - " +
+                       '-Timespan 7 means 700ns, not 7 days. Use -Days 7, or -Timespan 04:00:00.')
+            }
+            if ($_ -gt [timespan]::FromDays(365)) { throw "-Timespan $_ exceeds the 365 day maximum." }
+            $true
+        })]
+        [timespan] $Timespan,
 
         [Parameter()]
         [ValidateRange(1, [int]::MaxValue)]
@@ -237,9 +274,9 @@ function Search-MsecLogAnalytics {
     # It happens BEFORE the name is matched on purpose: a first attempt with a name you
     # half-remembered still teaches the completer every workspace in the estate, so the retry can
     # be tab-completed.
-    $listParams = @{ ResourceType = 'LogAnalytics'; UseCache = $true }
-    if ($SubscriptionId) { $listParams['SubscriptionId'] = @($SubscriptionId) }
-    $workspaces = @(Search-MsecAzureResourceGraph @listParams)
+    # Search-MsecAzureResourceGraph caches by default, so a repeated log query costs a file read
+    # rather than a ~3s round trip to re-learn a name-to-GUID mapping that changes about never.
+    $workspaces = @(Search-MsecAzureResourceGraph -ResourceType LogAnalytics)
 
     $matched = @($workspaces | Where-Object { $_.Name -eq $WorkspaceName })
     if ($ResourceGroupName) { $matched = @($matched | Where-Object { $_.ResourceGroupName -eq $ResourceGroupName }) }
@@ -253,7 +290,7 @@ function Search-MsecLogAnalytics {
     if ($matched.Count -gt 1) {
         $where = ($matched | ForEach-Object { "$($_.Name) (rg=$($_.ResourceGroupName), sub=$($_.SubscriptionId))" }) -join '; '
         throw ("Workspace name '$WorkspaceName' is ambiguous - $($matched.Count) matches: $where. " +
-               'Narrow it with -ResourceGroupName or -SubscriptionId.')
+               'Narrow it with -ResourceGroupName.')
     }
 
     $workspace = $matched[0]
@@ -261,12 +298,14 @@ function Search-MsecLogAnalytics {
         throw "Workspace '$WorkspaceName' has no customerId - it may still be provisioning."
     }
 
+    $window = if ($PSCmdlet.ParameterSetName -eq 'Timespan') { $Timespan } else { [timespan]::FromDays($Days) }
+
     Write-Verbose ("Workspace $($workspace.Name) (rg=$($workspace.ResourceGroupName), " +
-                   "id=$($workspace.CustomerId)), last $Days day(s):" + [Environment]::NewLine + $query)
+                   "id=$($workspace.CustomerId)), last $window" + [Environment]::NewLine + $query)
 
     $result = Invoke-AzOperationalInsightsQuery -WorkspaceId $workspace.CustomerId `
                                                 -Query $query `
-                                                -Timespan (New-TimeSpan -Days $Days) `
+                                                -Timespan $window `
                                                 -ErrorAction Stop
 
     $rows = @($result.Results)

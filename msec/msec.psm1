@@ -50,6 +50,13 @@ Update-TypeData -TypeName 'MsecAdoServiceConnection' `
     -DefaultDisplayPropertySet 'Name', 'Type', 'AuthScheme', 'IsShared' `
     -Force
 
+# How long a cached Resource Graph result is reused before Search-MsecAzureResourceGraph goes
+# back to Azure. Deliberately short. Resource inventory changes on the timescale of deployments,
+# so a few minutes buys most of the benefit across a working session - while an hour is long
+# enough that a vault opened to the internet this morning could still read as sealed, and these
+# queries exist to catch exactly that. -NoCache forces a live query when you need one.
+$script:MsecGraphCacheMaxAge = [timespan]::FromMinutes(15)
+
 # Cache-backed -SubscriptionId completion, shared by every command that takes one.
 #
 # Registered here rather than as a per-parameter [ArgumentCompleter()] attribute because four
@@ -70,15 +77,23 @@ $msecSubscriptionCompleter = {
         if (-not $module) { return }
         # Read-MsecCache is private, and completers run outside module scope; invoking the
         # scriptblock against the module object runs it where private functions resolve.
-        $subs = & $module { Read-MsecCache -Name 'subscriptions' }
+        $subs = @(& $module { Read-MsecCache -Name 'subscriptions' })
         $word = ([string]$wordToComplete).Trim("'`"")
-        $subs |
-            # Match on either, so typing a name you remember inserts the id you don't.
-            Where-Object { $_.Name -like "$word*" -or $_.Id -like "$word*" } |
-            Sort-Object Name |
+
+        $subs | Where-Object { $_.Name -like "$word*" -or $_.Id -like "$word*" } | Sort-Object Name |
             ForEach-Object {
+                # -Subscription takes a name; -SubscriptionId (the older cmdlets, and the alias)
+                # takes a GUID. Same cache, same list, different thing inserted.
+                #
+                # A name shared by several subscriptions is completed as the ID instead: the name
+                # would bind and then fail as ambiguous, so completing it would be handing over a
+                # value known not to work. This estate has three called 'Cloud Subscription'.
+                $duplicated = @($subs | Where-Object Name -eq $_.Name).Count -gt 1
+                $insert = if ($parameterName -eq 'Subscription' -and -not $duplicated) { $_.Name } else { $_.Id }
+                if ($insert -match "[\s']") { $insert = "'" + ($insert -replace "'", "''") + "'" }
+
                 [System.Management.Automation.CompletionResult]::new(
-                    $_.Id, "$($_.Name)  $($_.Id)", 'ParameterValue',
+                    $insert, "$($_.Name)  $($_.Id)", 'ParameterValue',
                     "$($_.Name) - $($_.Id) (tenant $($_.TenantId))")
             }
     }
@@ -87,9 +102,14 @@ $msecSubscriptionCompleter = {
     }
 }
 
+Register-ArgumentCompleter -ParameterName 'Subscription' -ScriptBlock $msecSubscriptionCompleter -CommandName @(
+    'Search-MsecAzureResourceGraph'
+)
+
+# The two older cmdlets still take a GUID: Invoke-MsecAzureVMScript's -SubscriptionId is not a
+# filter at all, it is pipeline data carrying the VM's subscription from Search-MsecAzureResource-
+# Graph rows, so renaming it would break that binding.
 Register-ArgumentCompleter -ParameterName 'SubscriptionId' -ScriptBlock $msecSubscriptionCompleter -CommandName @(
-    'Search-MsecAzureResourceGraph',
-    'Search-MsecLogAnalytics',
     'Get-MsecAzureSecureScore',
     'Invoke-MsecAzureVMScript'
 )

@@ -1,0 +1,92 @@
+// One row per resource per resource-logging policy evaluation - the closest thing to a
+// diagnostic-settings report that Resource Graph can give.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Policy -Name DiagnosticSettings.
+//
+// READ THIS BEFORE TRUSTING IT. Diagnostic settings themselves are NOT in Resource Graph. They
+// are extension resources hanging off their parent
+// (/subscriptions/.../applicationGateways/foo/providers/Microsoft.Insights/diagnosticSettings/bar)
+// and ARG does not project extension resources - `Resources | where type contains 'diagnostic'`
+// returns nothing, verified against this tenant while App Gateway logs were demonstrably
+// flowing. What this file reads instead is Azure POLICY's opinion about them: the compliance
+// states produced by whichever resource-logging policies are assigned.
+//
+// So this answers "which resources are failing a resource-logging policy", which is the gap
+// report. It does NOT answer "which workspace does this resource send to" - a compliance record
+// records pass or fail, not the destination. For the destination there are two options, both
+// outside Resource Graph:
+//   * per resource: GET <resourceId>/providers/Microsoft.Insights/diagnosticSettings
+//     ?api-version=2021-05-01-preview  (one ARM call each, and the only way to see a resource
+//     that has NO setting at all)
+//   * per workspace: ask Log Analytics what is arriving -
+//     Search-MsecLogAnalytics ... AzureDiagnostics | summarize by ResourceId, Category
+//
+// MATCHED BY KEYWORD, WHICH IS THE WEAK POINT. Built-in policy definitions live at TENANT scope
+// and are not returned by a subscription-scoped query, so their display names cannot be joined
+// in - there is nothing here to match on but the definition id, the initiative's reference id,
+// and the definition name. The filter below therefore keyword-matches those. That means:
+//
+//   AN EMPTY RESULT IS AMBIGUOUS. It means either no resource-logging policy is assigned, or one
+//   is and its identifiers do not contain any of these keywords. Distinguish the two before
+//   concluding anything:
+//     Search-MsecAzureResourceGraph -ResourceType Policy      # is anything assigned at all?
+//   'ASC Default' is the Microsoft Cloud Security Benchmark and contains the resource-logging
+//   policies, so seeing it there while getting nothing here means the keywords need widening.
+//
+// `contains`, not `has`: reference ids look like 'auditDiagnosticSetting' or
+// 'resourceLogsInKeyVaultShouldBeEnabled', and `has` matches whole terms - it would find none
+// of them. Same trap as Tier has 'WAF' in AppGateway/All.kql.
+//
+// VOLUME: policy states run to tens of thousands of rows on a mid-sized estate (53,508 in this
+// tenant) - well past the cmdlet's default -MaxRows of 50000, which warns rather than truncating
+// silently. This file is filtered for that reason; narrow further with -Subscription if needed.
+//
+// NB: compliance states are produced by periodic evaluation, not live. A resource fixed in the
+// last few hours can still read NonCompliant, and a newly created one may have no state at all -
+// absence from these results is not evidence of compliance.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+PolicyResources
+| where type =~ 'microsoft.policyinsights/policystates'
+| extend P = properties
+| extend DefinitionId  = tolower(tostring(P.policyDefinitionId)),
+         ReferenceId   = tostring(P.policyDefinitionReferenceId),
+         DefinitionName = tostring(P.policyDefinitionName),
+         TargetId      = tostring(P.resourceId)
+| extend Haystack = tolower(strcat(DefinitionId, ' ', ReferenceId, ' ', DefinitionName))
+| where Haystack contains 'diagnostic'
+     or Haystack contains 'resourcelog'
+     or Haystack contains 'logsshouldbeenabled'
+     or Haystack contains 'auditsetting'
+     // 'Audit diagnostic setting', the long-standing built-in carried by the ASC Default
+     // initiative. Matched by id because its reference id is not always descriptive.
+     or DefinitionId contains '7f89b1eb-583c-429a-8828-af049802c1d9'
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project ComplianceState = tostring(P.complianceState),
+          // The resource being graded, not the policy object.
+          ResourceName    = tostring(split(TargetId, '/')[-1]),
+          ResourceType    = tostring(P.resourceType),
+          ResourceGroupName = tostring(P.resourceGroup),
+          // Which rule graded it. ReferenceId is the initiative's own label for the policy and
+          // is usually the readable one; Definition is the raw GUID for built-ins.
+          ReferenceId,
+          Definition      = tostring(split(DefinitionId, '/')[-1]),
+          // auditIfNotExists is the shape used to check for a diagnostic setting; deployIfNotExists
+          // means the assignment will CREATE one, so a NonCompliant row there is pending
+          // remediation rather than a permanent gap.
+          Effect          = tostring(P.policyDefinitionAction),
+          Initiative      = tostring(split(tostring(P.policySetDefinitionId), '/')[-1]),
+          AssignmentName  = tostring(P.policyAssignmentName),
+          // When the evaluation ran, not when the resource changed. See the NB above.
+          EvaluatedUtc    = todatetime(P.timestamp),
+          Location        = tostring(P.resourceLocation),
+          SubscriptionName,
+          SubscriptionId  = subscriptionId,
+          ResourceId      = TargetId
+| order by ComplianceState asc, SubscriptionName asc, ResourceType asc, ResourceName asc

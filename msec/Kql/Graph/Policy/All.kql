@@ -1,0 +1,59 @@
+// One row per Azure Policy assignment across every accessible subscription - what is actually
+// assigned, where, and whether it is enforcing or just reporting.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Policy.
+// Its companion, -Name DiagnosticSettings, reads the compliance states those assignments produce.
+//
+// NB: this reads the PolicyResources table, NOT Resources. Policy objects are not in Resources
+// at all, which is why an inventory built on that table shows no microsoft.authorization types
+// and it means nothing - look here instead.
+//
+// Kind separates the two things an assignment can point at, and the distinction matters when
+// you go looking for a specific control:
+//   Initiative - a policy SET. 'ASC Default' is the Microsoft Cloud Security Benchmark and
+//                contains hundreds of individual policies, including the resource-logging ones.
+//                So a estate can be checking for diagnostic settings without anything named
+//                'diagnostic' appearing in this list at all.
+//   Policy     - a single definition, assigned directly.
+//
+// EnforcementMode 'DoNotEnforce' means the assignment evaluates and reports but never blocks or
+// remediates - a policy that looks assigned and changes nothing. Worth checking before treating
+// an assignment as a control:
+//   Search-MsecAzureResourceGraph -ResourceType Policy | Where-Object EnforcementMode -ne 'Default'
+//
+// SCOPE: Resource Graph returns assignments within the subscriptions being queried. An
+// assignment made at MANAGEMENT GROUP scope is not returned by a subscription-scoped query even
+// though it applies to those subscriptions - so an empty or short list here is not proof that
+// nothing is assigned. Search-AzGraph -ManagementGroup covers that case and this module does not
+// currently expose it.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+PolicyResources
+| where type =~ 'microsoft.authorization/policyassignments'
+| extend DefinitionId = tostring(properties.policyDefinitionId)
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project DisplayName = tostring(properties.displayName),
+          Kind        = iff(DefinitionId contains '/policySetDefinitions/', 'Initiative', 'Policy'),
+          // The definition's GUID or name. Built-in definitions live at tenant scope and are NOT
+          // returned by a subscription-scoped query, so their friendly names cannot be joined in
+          // here - the id is what there is.
+          Definition  = tostring(split(DefinitionId, '/')[-1]),
+          // 'Default' enforces; 'DoNotEnforce' reports only.
+          EnforcementMode = iff(isempty(tostring(properties.enforcementMode)), 'Default',
+                                tostring(properties.enforcementMode)),
+          AssignmentScope = tostring(properties.scope),
+          // Assignments carrying a managed identity are the deployIfNotExists / modify ones -
+          // the ones that can change your estate rather than just grade it.
+          Identity        = tostring(identity.type),
+          ExcludedScopes  = coalesce(array_length(properties.notScopes), 0),
+          Description     = tostring(properties.description),
+          SubscriptionName,
+          SubscriptionId  = subscriptionId,
+          Id              = id
+| order by SubscriptionName asc, Kind asc, DisplayName asc

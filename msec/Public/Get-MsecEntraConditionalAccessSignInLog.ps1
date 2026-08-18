@@ -41,11 +41,22 @@ function Get-MsecEntraConditionalAccessSignInLog {
         /auditLogs/signIns endpoint (Premium tenants get longer retention via
         Log Analytics export, not via Graph) - hence the -Days max of 30.
 
-        Requires the 'AuditLog.Read.All' application permission. A clearer error
-        is raised on the typical 403.
+        Requires the 'AuditLog.Read.All' application permission AND Microsoft Entra ID
+        P1 or P2 on the tenant - the endpoint is premium-gated independently of
+        permissions. A 403 is re-thrown with Graph's own message and is distinguished
+        between the two causes, because a licensing 403 cannot be fixed by granting a
+        permission.
 
     .PARAMETER Days
         Window size in days. Default 1, max 30 (Graph retention cap).
+
+    .PARAMETER UserId
+        Restrict to these user object ids. Without it every sign-in in the window is
+        paged, which on a real tenant is tens of thousands of events per day; with it
+        Graph filters server-side and a handful of users costs almost nothing. Ids are
+        batched 15 per request so a long list cannot overflow the URL length limit.
+
+        Use the object id, not the UPN - userId is the filterable property here.
 
     .EXAMPLE
         Get-MsecEntraConditionalAccessSignInLog -Days 1 |
@@ -90,7 +101,11 @@ function Get-MsecEntraConditionalAccessSignInLog {
     param(
         [Parameter()]
         [ValidateRange(1, 30)]
-        [int] $Days = 1
+        [int] $Days = 1,
+
+
+        [Parameter()]
+        [string[]] $UserId
     )
 
     Assert-MsecSession
@@ -102,11 +117,13 @@ function Get-MsecEntraConditionalAccessSignInLog {
     # appliedConditionalAccessPolicies has to stay as the nested array (it's
     # multi-valued per event) - we just don't try to flatten it further.
     #
-    # NB: 'mfaDetail' is a beta-only field; v1.0/signIns has 'authenticationDetails'
-    # as a different shape (array of per-step records). For CA-insights queries the
-    # MFA method isn't a headline metric, so we skip both - if you need per-step
-    # auth detail, query /beta/auditLogs/signIns directly or extend this $select
-    # with 'authenticationDetails'.
+    # NB: the v1.0 signIn resource has NO authenticationRequirement, authenticationDetails
+    # or mfaDetail property - all three are beta-only, and selecting them here would
+    # produce empty columns. Whether MFA was demanded and met is therefore derived from
+    # appliedConditionalAccessPolicies (see MfaRequiredByPolicies / MfaSatisfied below),
+    # which is the stronger signal for evidence anyway: it names the policy and the
+    # control instead of asserting a bare boolean. For per-step authentication detail,
+    # query /beta/auditLogs/signIns directly.
     $select = @(
         'id'
         'createdDateTime'
@@ -115,25 +132,84 @@ function Get-MsecEntraConditionalAccessSignInLog {
         'ipAddress', 'location'
         'clientAppUsed'
         'deviceDetail'
+        'isInteractive'
         'conditionalAccessStatus'
         'appliedConditionalAccessPolicies'
         'riskLevelAggregated', 'riskLevelDuringSignIn'
         'status'
     ) -join ','
 
-    $path = "/v1.0/auditLogs/signIns?`$filter=createdDateTime ge $startStr&`$select=$select"
+    # Without -UserId this pages EVERY sign-in in the window, which on a real tenant is
+    # tens of thousands of events per day - the difference between a query and a coffee
+    # break. userId supports $filter (eq), so asking about a handful of users is cheap;
+    # ids are batched because a filter naming hundreds of them would blow the URL length
+    # limit rather than fail informatively.
+    $filters = @()
+    if ($UserId) {
+        $ids = @($UserId | Where-Object { $_ } | Sort-Object -Unique)
+        for ($i = 0; $i -lt $ids.Count; $i += 15) {
+            $chunk = $ids[$i..([Math]::Min($i + 14, $ids.Count - 1))]
+            $clause = ($chunk | ForEach-Object { "userId eq '$_'" }) -join ' or '
+            $filters += "createdDateTime ge $startStr and ($clause)"
+        }
+    }
+    else {
+        $filters = @("createdDateTime ge $startStr")
+    }
 
     try {
-        $events = @(Invoke-MsecGraphRequest -Path $path -All)
+        $events = [System.Collections.Generic.List[object]]::new()
+        $batchNo = 0
+        foreach ($filter in $filters) {
+            $batchNo++
+            # One request per id batch, so a large -UserId list is several round trips.
+            # Reported only when there is more than one, to keep the common case quiet.
+            if ($filters.Count -gt 1) {
+                Write-Progress -Id 1730 -Activity 'Reading sign-in logs' `
+                    -Status "User batch $batchNo of $($filters.Count) - $($events.Count) event(s) so far" `
+                    -PercentComplete (100 * ($batchNo - 1) / $filters.Count)
+            }
+            $path = "/v1.0/auditLogs/signIns?`$filter=$filter&`$select=$select"
+            $page = @(Invoke-MsecGraphRequest -Path $path -All)
+            if ($page.Count) { $events.AddRange([object[]]$page) }
+        }
+        if ($filters.Count -gt 1) {
+            Write-Progress -Id 1730 -Activity 'Reading sign-in logs' -Completed
+        }
     }
     catch {
-        if ($_.Exception.Message -match '403|Forbidden') {
-            throw "Forbidden when calling /auditLogs/signIns. The msec app needs the 'AuditLog.Read.All' application permission (admin consent required). Re-run New-MsecApp to add and consent it. Original error: $($_.Exception.Message)"
+        $err = $_
+        if ($err.Exception.Message -notmatch '403|Forbidden') { throw }
+
+        # This endpoint returns 403 for two unrelated reasons, and they need OPPOSITE
+        # responses:
+        #   1. the app is missing AuditLog.Read.All          -> grant + consent it
+        #   2. the tenant has no Entra ID P1/P2              -> a licensing limit; no
+        #      permission grant can ever fix it
+        # Assuming (1) and printing that advice for a case (2) tenant is actively
+        # misleading - it sends people through a New-MsecApp + consent cycle that cannot
+        # change the outcome. So read what Graph actually said instead of guessing.
+        $detail = Get-MsecGraphErrorMessage $err
+
+        # "Tenant is not a B2C tenant and doesn't have premium license" is the licensing 403.
+        if ($detail -match 'premium|B2C') {
+            throw "Sign-in logs are not available in this tenant. Microsoft Graph reports: '$detail'. /auditLogs/signIns requires Microsoft Entra ID P1 or P2 - this is a LICENSING limit, not a permission problem, so granting 'AuditLog.Read.All' will not change it. Either license the tenant or treat Conditional Access / sign-in metrics as not applicable here."
         }
-        throw
+
+        throw "Forbidden when calling /auditLogs/signIns. Microsoft Graph reports: '$detail'. The usual cause is the msec app missing the 'AuditLog.Read.All' application permission (admin consent required) - re-run New-MsecApp to add and consent it. If that permission is already consented, check licensing instead: this endpoint also requires Entra ID P1/P2."
     }
 
     foreach ($e in $events) {
+        # Whether MFA was DEMANDED and MET on this sign-in, read from the policies that
+        # actually fired. v1.0 has no authenticationRequirement / mfaDetail field, so
+        # this is the only signal available - and it is the better one for evidence,
+        # because it names the policy and the control rather than asserting a bare
+        # boolean. enforcedGrantControls carries 'Mfa'; PowerShell's -contains is
+        # case-insensitive, so the casing difference from the policy API's 'mfa'
+        # does not matter.
+        $applied = @($e.appliedConditionalAccessPolicies)
+        $mfaPolicies = @($applied | Where-Object { @($_.enforcedGrantControls) -contains 'Mfa' })
+
         [PSCustomObject]@{
             Id                      = $e.id
             CreatedDateTime         = if ($e.createdDateTime) { [datetime]$e.createdDateTime } else { $null }
@@ -151,8 +227,18 @@ function Get-MsecEntraConditionalAccessSignInLog {
             DeviceBrowser           = $e.deviceDetail.browser
             DeviceCompliant         = $e.deviceDetail.isCompliant
             DeviceTrustType         = $e.deviceDetail.trustType
+            # Non-interactive sign-ins are token refreshes and background service calls.
+            # They legitimately do not prompt, so counting them as single-factor would
+            # make every tenant look uncovered.
+            IsInteractive           = [bool] $e.isInteractive
+
             ConditionalAccessStatus = $e.conditionalAccessStatus
-            AppliedPolicies         = @($e.appliedConditionalAccessPolicies)
+            AppliedPolicies         = @($applied)
+
+            # Flattened MFA facts - the audit-evidence view of the same data.
+            MfaRequiredByPolicies   = @($mfaPolicies | ForEach-Object { $_.displayName })
+            MfaSatisfied            = @($mfaPolicies | Where-Object { $_.result -eq 'success' }).Count -gt 0
+            MfaFailed               = @($mfaPolicies | Where-Object { $_.result -eq 'failure' }).Count -gt 0
             RiskLevelAggregated     = $e.riskLevelAggregated
             RiskLevelDuringSignIn   = $e.riskLevelDuringSignIn
             ResultCode              = $e.status.errorCode

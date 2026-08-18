@@ -42,6 +42,30 @@ Update-TypeData -TypeName 'MsecEntraConditionalAccessPolicy' `
     -DefaultDisplayPropertySet 'DisplayName', 'State', 'Requires', 'IncludedGroups' `
     -Force
 
+Update-TypeData -TypeName 'MsecEntraTenantSecuritySetting' `
+    -DefaultDisplayPropertySet 'SecurityDefaultsEnabled', 'ConditionalAccessAvailable', 'GlobalAdministratorCount', 'EntraIdPremium' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraMfaRegistration' `
+    -DefaultDisplayPropertySet 'UserPrincipalName', 'IsAdmin', 'IsMfaCapable', 'DefaultMfaMethod' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraMfaEvidence' `
+    -DefaultDisplayPropertySet 'UserPrincipalName', 'EvidenceStatus', 'IsMfaCapable', 'DefaultMfaMethod', 'IsAdmin' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraLicense' `
+    -DefaultDisplayPropertySet 'SkuPartNumber', 'Enabled', 'Assigned', 'CapabilityStatus' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraDirectoryRoleMember' `
+    -DefaultDisplayPropertySet 'RoleName', 'UserPrincipalName', 'MemberType', 'AccountEnabled' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraPrivilegedPrincipal' `
+    -DefaultDisplayPropertySet 'EffectiveName', 'EffectiveType', 'RoleName', 'AssignmentType', 'PrincipalName', 'PrincipalType' `
+    -Force
+
 Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
     -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentCount', 'Status' `
     -Force

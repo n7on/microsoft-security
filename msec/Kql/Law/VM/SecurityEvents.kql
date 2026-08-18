@@ -1,0 +1,34 @@
+// One row per Windows SECURITY-auditing event (the SecurityEvent table) - logons, privilege use,
+// account changes. This is the channel that carries 4624/4625/4672 etc., NOT the operational
+// event log, which has its own file: -Name WindowsEvents.
+//
+// Loaded by Search-MsecLogAnalytics -Subject VM -Name SecurityEvents -WorkspaceName <ws>.
+//
+// REQUIRES A SECURITY DATA SOURCE. SecurityEvent is only populated where the Security/Defender
+// solution or the equivalent data-collection rule is attached - a plain VM-insights workspace
+// has the table absent, not empty. This is a single-table query (no isfuzzy), so such a workspace
+// errors naming the missing table rather than returning blank. Check -Name All first: a zero in
+// its SecurityEvents column means "collected but quiet", a hard error here means "not collected".
+//
+// FILTER IN POWERSHELL - EventID and LogonType are the usual axes:
+//   $s = Search-MsecLogAnalytics -Subject VM -Name SecurityEvents -WorkspaceName ws -Days 1
+//   $s | Where-Object EventID -eq 4625                              # failed logons
+//   $s | Where-Object { $_.EventID -eq 4624 -and $_.LogonType -eq 10 }   # remote-interactive (RDP)
+//
+// NO TIME FILTER IN THIS FILE - -Days is a server-side timespan. VOLUME: security auditing is the
+// highest-cardinality VM signal there is; the response caps at 500,000 rows with no continuation
+// token, so keep -Days short and filter hard downstream.
+
+SecurityEvent
+| project TimeGenerated,
+          Computer,
+          Activity      = tostring(column_ifexists('Activity', '')),
+          EventID       = tostring(column_ifexists('EventID', '')),
+          Account       = tostring(column_ifexists('Account', '')),
+          AccountType   = tostring(column_ifexists('AccountType', '')),
+          LogonType     = tostring(column_ifexists('LogonType', '')),
+          LogonTypeName = tostring(column_ifexists('LogonTypeName', '')),
+          IpAddress     = tostring(column_ifexists('IpAddress', '')),
+          Process       = tostring(column_ifexists('Process', '')),
+          ResourceId    = tolower(tostring(column_ifexists('_ResourceId', '')))
+| order by TimeGenerated desc

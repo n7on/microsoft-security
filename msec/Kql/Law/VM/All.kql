@@ -1,0 +1,105 @@
+// One row per VM the workspace is hearing from, summarizing EVERY telemetry signal this module
+// knows about - so it answers "what VM logs does this workspace actually collect, and from
+// which machines" before you commit to a wide pull from any one table.
+//
+// Loaded by Search-MsecLogAnalytics -Subject VM -WorkspaceName <ws> (the -Name default).
+// Its companions pull the raw rows from a single table each:
+//   -Name Heartbeat       agent health (this file's LastHeartbeat/OS/AgentVersion, ungrouped)
+//   -Name WindowsEvents   the Event table
+//   -Name Syslog          the Syslog table
+//   -Name SecurityEvents  the SecurityEvent table
+//
+// THE PAIR. Kql/Graph/VM/* reads the ARM CONTROL PLANE - every VM that EXISTS, its power state,
+// its patch posture. This reads the DATA PLANE - every VM the workspace is actually RECEIVING
+// telemetry from. The gap between the two lists is the finding: a VM that exists in Graph/VM/All
+// but is absent here is running blind - no agent, or an agent that stopped reporting.
+//   $exist   = Search-MsecAzureResourceGraph -ResourceType VM | Where-Object Running
+//   $logging = Search-MsecLogAnalytics -Subject VM -WorkspaceName prod-sentinel-log -Days 1
+//   $exist | Where-Object { $_.Name -notin $logging.Computer }   # running but not logging
+//
+// WHY isfuzzy. A real estate is mixed: a Linux-only workspace has no Event or SecurityEvent
+// table, a Windows-only one has no Syslog, and referencing a table that has never existed in a
+// workspace is a HARD query error, not an empty leg. `union isfuzzy=true` is what lets a missing
+// table drop out silently instead of failing the whole overview. The single-table companions
+// deliberately do NOT do this - if you asked for -Name Syslog against a Windows-only workspace,
+// an error naming the missing table is the honest answer, not a blank result.
+//
+// COUNTS ARE PER-WINDOW, NOT TOTALS. Heartbeats / WindowsEvents / SyslogEvents / SecurityEvents
+// count rows inside the -Days (or -Timespan) window the call passed - a VM idle for the window
+// shows zeros with only a stale LastHeartbeat. They exist to tell you which signals a machine is
+// emitting, not to be summed into a grand total.
+//
+// OSType comes from Heartbeat where a machine sends one; for a machine seen only through Event /
+// SecurityEvent (Windows) or Syslog (Linux) it is inferred from which table carried it, so a VM
+// with no heartbeat still gets classified rather than showing blank.
+//
+// NO TIME FILTER IN THIS FILE, deliberately. Search-MsecLogAnalytics passes -Days to the API as
+// a server-side timespan against the TimeGenerated index; a window baked in here would be
+// invisible at the call site and could not be widened without editing the file.
+
+union isfuzzy=true
+    (
+        Heartbeat
+        | project Computer,
+                  TimeGenerated,
+                  Signal       = 'Heartbeat',
+                  OSType       = tostring(OSType),
+                  OSName       = tostring(column_ifexists('OSName', '')),
+                  AgentVersion = tostring(column_ifexists('Version', '')),
+                  ResourceId   = tolower(tostring(column_ifexists('_ResourceId', '')))
+    ),
+    (
+        Event
+        | project Computer,
+                  TimeGenerated,
+                  Signal       = 'WindowsEvent',
+                  OSType       = 'Windows',
+                  OSName       = '',
+                  AgentVersion = '',
+                  ResourceId   = tolower(tostring(column_ifexists('_ResourceId', '')))
+    ),
+    (
+        Syslog
+        | project Computer,
+                  TimeGenerated,
+                  Signal       = 'Syslog',
+                  OSType       = 'Linux',
+                  OSName       = '',
+                  AgentVersion = '',
+                  ResourceId   = tolower(tostring(column_ifexists('_ResourceId', '')))
+    ),
+    (
+        SecurityEvent
+        | project Computer,
+                  TimeGenerated,
+                  Signal       = 'SecurityEvent',
+                  OSType       = 'Windows',
+                  OSName       = '',
+                  AgentVersion = '',
+                  ResourceId   = tolower(tostring(column_ifexists('_ResourceId', '')))
+    )
+| summarize LastHeartbeat  = maxif(TimeGenerated, Signal == 'Heartbeat'),
+            Heartbeats     = countif(Signal == 'Heartbeat'),
+            WindowsEvents  = countif(Signal == 'WindowsEvent'),
+            SyslogEvents   = countif(Signal == 'Syslog'),
+            SecurityEvents = countif(Signal == 'SecurityEvent'),
+            LastSeen       = max(TimeGenerated),
+            // Prefer a real heartbeat OSType; fall back to the value inferred from the table that
+            // carried a machine seen only through events.
+            OSType         = take_anyif(OSType, isnotempty(OSType)),
+            OSName         = take_anyif(OSName, isnotempty(OSName)),
+            AgentVersion   = take_anyif(AgentVersion, isnotempty(AgentVersion)),
+            ResourceId     = take_anyif(ResourceId, isnotempty(ResourceId))
+    by Computer
+| project Computer,
+          OSType,
+          OSName,
+          AgentVersion,
+          LastHeartbeat,
+          LastSeen,
+          Heartbeats,
+          WindowsEvents,
+          SyslogEvents,
+          SecurityEvents,
+          ResourceId
+| order by LastSeen desc

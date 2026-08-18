@@ -1,0 +1,33 @@
+// One row per Windows event-log entry the agent forwarded into the workspace (the Event table -
+// System, Application and any other channel the data-collection rule was told to collect).
+//
+// Loaded by Search-MsecLogAnalytics -Subject VM -Name WindowsEvents -WorkspaceName <ws>.
+//
+// NOT SecurityEvent. This is the operational event log - service crashes, driver failures,
+// unexpected reboots (EventLog == 'System', EventID 6008). The Windows SECURITY auditing channel
+// (logons, privilege use) lands in its own table and has its own file: -Name SecurityEvents.
+//
+// A single-table query: no isfuzzy, so a workspace not collecting the Event table errors naming
+// it rather than returning blank - the honest answer to "show me Windows events" from a
+// workspace configured to collect none. Check -Name All first to see what a workspace carries.
+//
+// FILTER IN POWERSHELL, not here - EventLevelName tells you severity:
+//   Search-MsecLogAnalytics -Subject VM -Name WindowsEvents -WorkspaceName ws -Days 1 |
+//       Where-Object EventLevelName -in 'Error','Critical'
+//
+// NO TIME FILTER IN THIS FILE - -Days is a server-side timespan. VOLUME: the Event table is
+// high-cardinality on a busy fleet; the query API caps a response at 500,000 rows with no
+// continuation token, so keep -Days short at this raw grain.
+
+Event
+| project TimeGenerated,
+          Computer,
+          EventLog            = tostring(column_ifexists('EventLog', '')),
+          Source              = tostring(column_ifexists('Source', '')),
+          EventID             = tostring(column_ifexists('EventID', '')),
+          EventLevelName      = tostring(column_ifexists('EventLevelName', '')),
+          EventLevel          = tostring(column_ifexists('EventLevel', '')),
+          UserName            = tostring(column_ifexists('UserName', '')),
+          RenderedDescription = tostring(column_ifexists('RenderedDescription', '')),
+          ResourceId          = tolower(tostring(column_ifexists('_ResourceId', '')))
+| order by TimeGenerated desc

@@ -1,0 +1,28 @@
+// One row per Linux syslog entry the agent forwarded into the workspace (the Syslog table) - the
+// Linux counterpart to -Name WindowsEvents.
+//
+// Loaded by Search-MsecLogAnalytics -Subject VM -Name Syslog -WorkspaceName <ws>.
+//
+// A single-table query: no isfuzzy, so a Windows-only workspace with no Syslog table errors
+// naming it rather than returning blank. Check -Name All first to see what a workspace carries.
+//
+// FILTER IN POWERSHELL - Facility and SeverityLevel are the two axes:
+//   Search-MsecLogAnalytics -Subject VM -Name Syslog -WorkspaceName ws -Days 1 |
+//       Where-Object { $_.Facility -eq 'auth' -or $_.Facility -eq 'authpriv' }   # SSH / sudo
+//   ... | Where-Object SeverityLevel -in 'err','crit','alert','emerg'
+//
+// NO TIME FILTER IN THIS FILE - -Days is a server-side timespan. VOLUME: auth/cron facilities on
+// a busy fleet are high-cardinality and the response caps at 500,000 rows with no continuation
+// token, so keep -Days short at this raw grain.
+
+Syslog
+| project TimeGenerated,
+          Computer,
+          Facility      = tostring(column_ifexists('Facility', '')),
+          SeverityLevel = tostring(column_ifexists('SeverityLevel', '')),
+          ProcessName   = tostring(column_ifexists('ProcessName', '')),
+          ProcessID     = tostring(column_ifexists('ProcessID', '')),
+          HostName      = tostring(column_ifexists('HostName', '')),
+          SyslogMessage = tostring(column_ifexists('SyslogMessage', '')),
+          ResourceId    = tolower(tostring(column_ifexists('_ResourceId', '')))
+| order by TimeGenerated desc

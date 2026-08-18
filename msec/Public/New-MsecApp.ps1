@@ -30,7 +30,10 @@ function New-MsecApp {
         Current required permissions (configured at the top of the function in $resources):
           - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
                              DeviceManagementManagedDevices.Read.All, ThreatHunting.Read.All,
-                             SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All
+                             SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All,
+                             Organization.Read.All, RoleManagement.Read.Directory,
+                             User.Read.All, Group.Read.All, Application.Read.All,
+                             PrivilegedEligibilitySchedule.Read.AzureADGroup
           - WindowsDefenderATP: Score.Read.All - commercial-only. Skipped automatically in
             clouds without a Defender for Endpoint presence (e.g. Azure China), since its
             service principal doesn't exist there; the rest of the app is still created.
@@ -119,8 +122,24 @@ function New-MsecApp {
                 'DeviceManagementManagedDevices.Read.All',# Intune managed devices (Get-MsecIntuneDevice)
                 'ThreatHunting.Read.All',                 # Advanced hunting / EmailEvents (Get-MsecDefenderEmailStats)
                 'SecurityIncident.Read.All',              # Defender XDR incidents (Get-MsecDefenderIncidentStats)
-                'Policy.Read.All',                        # Conditional Access policies (Get-MsecEntraConditionalAccessPolicy)
-                'AuditLog.Read.All'                       # Sign-in logs (Get-MsecEntraConditionalAccessSignInLog)
+                'Policy.Read.All',                        # CA policies + tenant security settings (Get-MsecEntraConditionalAccessPolicy, Get-MsecEntraTenantSecuritySetting)
+                'AuditLog.Read.All',                      # Sign-in logs + MFA registration report (Get-MsecEntraConditionalAccessSignInLog, Get-MsecEntraMfaRegistration) - both also need Entra ID P1/P2 on the tenant
+                'Organization.Read.All',                  # Licence SKUs / service plans (Get-MsecEntraLicense) - tells "unlicensed" apart from "no permission"
+                'RoleManagement.Read.Directory',          # Directory role members + assignments (Get-MsecEntraDirectoryRoleMember, Get-MsecEntraPrivilegedPrincipal)
+                # Reading role assignments and reading the identities they point at are
+                # SEPARATE grants. With RoleManagement.Read.Directory alone, Graph returns
+                # every assignment but each principal as an id-and-type shell with all
+                # properties null - a privileged-access report that is complete and
+                # entirely anonymous. These three name the principals; Group.Read.All also
+                # covers expanding role-assignable groups to the users inside them.
+                'User.Read.All',                          # Name user principals (Get-MsecEntraPrivilegedPrincipal)
+                'Group.Read.All',                         # Name groups + read their transitive members (Get-MsecEntraPrivilegedPrincipal)
+                'Application.Read.All',                   # Name service principals holding privileged roles (Get-MsecEntraPrivilegedPrincipal)
+                # PIM for Groups. A PIM-governed group has ELIGIBLE members, who are
+                # absent from /transitiveMembers entirely - so without this the group
+                # reads as empty and everyone who can activate into a role-carrying
+                # group is missing from the inventory (Get-MsecEntraPrivilegedPrincipal).
+                'PrivilegedEligibilitySchedule.Read.AzureADGroup'
             )
         }
     )

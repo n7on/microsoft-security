@@ -129,7 +129,7 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
             Select -ExpandProperty UserPrincipalName) | Should -Be 'attacker@external.test'
     }
 
-    It 'rewrites a 403 to mention the missing AuditLog.Read.All permission' {
+    It 'rewrites a bare 403 to mention the missing AuditLog.Read.All permission' {
         InModuleScope msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -141,6 +141,37 @@ Describe 'Get-MsecEntraConditionalAccessSignInLog' {
 
             { Get-MsecEntraConditionalAccessSignInLog -Days 1 } |
                 Should -Throw -ExpectedMessage '*AuditLog.Read.All*'
+        }
+    }
+
+    # The 403 that cost real time: an UNLICENSED tenant returns Forbidden here, and the
+    # old handler blamed the permission unconditionally - sending you through a
+    # New-MsecApp consent cycle that cannot possibly fix a licensing limit.
+    It 'identifies the premium-licensing 403 and does NOT blame the permission' {
+        InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/auditLogs/signIns' } -MockWith {
+                # Graph puts its real message in the response body, which surfaces on
+                # $_.ErrorDetails.Message - not in the exception text.
+                $body = '{"error":{"code":"Authentication_RequestFromUnsupportedUserRole","message":"Tenant is not a B2C tenant and doesn''t have premium license"}}'
+                $ex   = [System.Exception]::new('Response status code does not indicate success: 403 (Forbidden).')
+                $rec  = [System.Management.Automation.ErrorRecord]::new(
+                            $ex, 'HttpResponse403', 'PermissionDenied', $null)
+                $rec.ErrorDetails = [System.Management.Automation.ErrorDetails]::new($body)
+                throw $rec
+            }
+
+            $msg = try { Get-MsecEntraConditionalAccessSignInLog -Days 1; $null }
+                   catch { $_.Exception.Message }
+
+            # Graph's own words are surfaced, and the cause is named as licensing...
+            $msg | Should -BeLike '*premium license*'
+            $msg | Should -BeLike '*LICENSING limit*'
+            # ...explicitly telling the reader a permission grant will NOT help.
+            $msg | Should -BeLike '*will not change it*'
         }
     }
 }

@@ -185,6 +185,30 @@ Describe 'Kql/Law bundled queries' {
         }
     }
 
+    It 'makes the VM overview resilient to a missing table but keeps the single-table variants strict' {
+        # Kql/Law/VM/All is a cross-signal roster over a mixed estate, so a Linux-only workspace
+        # (no Event/SecurityEvent) or a Windows-only one (no Syslog) must NOT fail the whole query -
+        # that is what union isfuzzy=true buys. The per-signal variants target one table each and
+        # deliberately do the opposite: no isfuzzy, so an absent table errors naming it rather than
+        # lying with a blank result.
+        $all = Get-Content -LiteralPath (Join-Path $script:LawRoot 'VM/All.kql') -Raw
+        $all | Should -Match 'union isfuzzy=true'
+        foreach ($table in 'Heartbeat', 'Event', 'Syslog', 'SecurityEvent') {
+            $all | Should -Match $table
+        }
+
+        $singles = @{ Heartbeat = 'Heartbeat'; WindowsEvents = 'Event'
+                      Syslog = 'Syslog'; SecurityEvents = 'SecurityEvent' }
+        foreach ($name in $singles.Keys) {
+            $path = Join-Path $script:LawRoot "VM/$name.kql"
+            # Comments talk ABOUT isfuzzy; the query code must not USE it. Strip comment lines the
+            # same way the "no time filter" test does before asserting.
+            $code = ((Get-Content -LiteralPath $path) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+            $code | Should -Not -Match 'isfuzzy'
+            $code | Should -Match $singles[$name]
+        }
+    }
+
     It 'shares a byte-identical normalization block between the two Waf queries' {
         # Duplicated because Log Analytics cannot share a fragment across files. Duplicated and
         # DIVERGED would mean Action and RuleId mean different things in the two views.

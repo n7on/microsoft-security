@@ -29,6 +29,14 @@ function Get-MsecDefenderIncidentStats {
         artificially deflate the average; not counting them gives a more honest "time
         to handle real things" number.
 
+        CONSEQUENCE, and read ResolvedClassifiedCount before trusting an MTTR: because
+        UNCLASSIFIED incidents are excluded too, a team that closes incidents without
+        setting a classification gets MeanTimeToResolveHours = $null however many
+        incidents it resolved. That null means "nothing qualified to be averaged" - it is
+        neither a collection failure nor a claim that resolution was instant. Equally, an
+        MTTR backed by ResolvedClassifiedCount = 1 is one incident, not an average; that
+        is the case where mean and median come back identical.
+
         Requires the 'SecurityIncident.Read.All' application permission on the msec
         app registration (admin consent required). A clearer error is raised on the
         typical 403.
@@ -50,7 +58,8 @@ function Get-MsecDefenderIncidentStats {
 
     .OUTPUTS
         PSCustomObject with StartDate, EndDate, volume/severity/classification counts,
-        MTTR (mean + median in hours), CurrentlyOpen + OldestOpenAgeDays.
+        TotalResolvedInWindow + ResolvedClassifiedCount, MTTR (mean + median in hours),
+        CurrentlyOpen + OldestOpenAgeDays.
     #>
     [CmdletBinding()]
     param(
@@ -163,6 +172,12 @@ function Get-MsecDefenderIncidentStats {
 
         # Resolution in window
         TotalResolvedInWindow    = $resolvedInWindow.Count
+        # The DENOMINATOR behind the two MTTR figures, and the reason they can be null.
+        # Emitted so a consumer never has to guess: 0 means "nothing was classified, so
+        # there was nothing to average" (not "resolution was instant" and not a
+        # collection failure), and a low number means the average rests on that few
+        # incidents. Always <= TotalResolvedInWindow.
+        ResolvedClassifiedCount  = $hoursList.Count
         MeanTimeToResolveHours   = $meanMttr
         MedianTimeToResolveHours = $medianMttr
 

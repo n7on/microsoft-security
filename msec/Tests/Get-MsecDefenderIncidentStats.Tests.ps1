@@ -113,6 +113,9 @@ Describe 'Get-MsecDefenderIncidentStats' {
         # FalsePositive (15min = 0.25h) deliberately excluded.
         $out.MeanTimeToResolveHours   | Should -Be 8.0
         $out.MedianTimeToResolveHours | Should -Be 8.0
+        # ...and the denominator is published, so a reader can see the average rests on
+        # 3 of the 4 resolved incidents rather than all of them.
+        $out.ResolvedClassifiedCount  | Should -Be 3
 
         # ---- Backlog ----
         $out.CurrentlyOpen     | Should -Be 2
@@ -137,10 +140,57 @@ Describe 'Get-MsecDefenderIncidentStats' {
         $out.TotalCreated              | Should -Be 0
         $out.High                      | Should -Be 0
         $out.TotalResolvedInWindow     | Should -Be 0
+        $out.ResolvedClassifiedCount   | Should -Be 0
         $out.MeanTimeToResolveHours    | Should -BeNullOrEmpty
         $out.MedianTimeToResolveHours  | Should -BeNullOrEmpty
         $out.CurrentlyOpen             | Should -Be 0
         $out.OldestOpenAgeDays         | Should -BeNullOrEmpty
+    }
+
+    # The real-world case that made this field necessary: a team that resolves incidents
+    # but never classifies them gets a null MTTR, which looks identical to a collection
+    # failure. ResolvedClassifiedCount = 0 alongside TotalResolvedInWindow > 0 says
+    # plainly "nothing qualified to be averaged".
+    It 'publishes a zero classified count when incidents are resolved but never classified' {
+        $out = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            # Filters must be mutually exclusive - an overlapping generic mock shadows
+            # the specific ones. Created in window: two incidents, both unclassified.
+            Mock Invoke-RestMethod `
+                -ParameterFilter { $Uri -match '/security/incidents' -and $Uri -match 'createdDateTime ge' -and $Uri -notmatch "status eq 'resolved'" } `
+                -MockWith {
+                    [pscustomobject]@{ value = @(
+                        [pscustomobject]@{ severity = 'medium'; status = 'resolved'; classification = $null; createdDateTime = '2026-05-20T08:00:00Z'; lastUpdateDateTime = '2026-05-20T12:00:00Z' }
+                        [pscustomobject]@{ severity = 'low';    status = 'resolved'; classification = $null; createdDateTime = '2026-05-21T08:00:00Z'; lastUpdateDateTime = '2026-05-22T08:00:00Z' }
+                    ) }
+                }
+            # Resolved in window: the same two, closed with NO classification set.
+            Mock Invoke-RestMethod `
+                -ParameterFilter { $Uri -match '/security/incidents' -and $Uri -match "status eq 'resolved'" } `
+                -MockWith {
+                    [pscustomobject]@{ value = @(
+                        [pscustomobject]@{ classification = $null; createdDateTime = '2026-05-20T08:00:00Z'; lastUpdateDateTime = '2026-05-20T12:00:00Z' }
+                        [pscustomobject]@{ classification = $null; createdDateTime = '2026-05-21T08:00:00Z'; lastUpdateDateTime = '2026-05-22T08:00:00Z' }
+                    ) }
+                }
+            Mock Invoke-RestMethod `
+                -ParameterFilter { $Uri -match '/security/incidents' -and $Uri -match "status eq 'active'" } `
+                -MockWith { [pscustomobject]@{ value = @() } }
+
+            Get-MsecDefenderIncidentStats
+        }
+
+        # Work WAS done - two incidents resolved...
+        $out.TotalResolvedInWindow    | Should -Be 2
+        $out.Unclassified             | Should -Be 2
+        # ...but none of it can be timed, and the count says so explicitly rather than
+        # leaving a bare null that looks like a collection failure.
+        $out.ResolvedClassifiedCount  | Should -Be 0 -Because 'nothing was classified, so nothing could be averaged'
+        $out.MeanTimeToResolveHours   | Should -BeNullOrEmpty
+        $out.MedianTimeToResolveHours | Should -BeNullOrEmpty
     }
 
     It 'rewrites a 403 to mention the missing SecurityIncident.Read.All permission' {

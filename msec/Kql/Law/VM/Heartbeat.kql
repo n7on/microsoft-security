@@ -1,0 +1,29 @@
+// One row per Heartbeat record - the agent's periodic "I am alive" ping, the ground truth for
+// which VMs are monitored and when each was last seen. Raw grain: the agent beats about once a
+// minute, so this runs to hundreds of rows per VM per hour.
+//
+// Loaded by Search-MsecLogAnalytics -Subject VM -Name Heartbeat -WorkspaceName <ws>.
+// For a per-VM roster (last-seen and signal counts, one row per machine) use -Name All instead,
+// which folds these beats down server-side and survives a much wider -Days.
+//
+// A single-table query on purpose: unlike -Name All this does NOT use isfuzzy, so a workspace
+// with no Heartbeat table errors naming the missing table rather than returning blank. That is
+// the honest answer to "show me heartbeats" from a workspace that collects none.
+//
+// NO TIME FILTER IN THIS FILE - Search-MsecLogAnalytics passes -Days to the API as a server-side
+// timespan. VOLUME: at ~1 beat/minute/VM, a wide -Days here is large; prefer -Name All for a
+// standing roster and reserve this for confirming a specific VM's beat cadence over a short
+// window.
+
+Heartbeat
+| project TimeGenerated,
+          Computer,
+          OSType         = tostring(OSType),
+          OSName         = tostring(column_ifexists('OSName', '')),
+          OSMajorVersion = tostring(column_ifexists('OSMajorVersion', '')),
+          AgentVersion   = tostring(column_ifexists('Version', '')),
+          Category       = tostring(column_ifexists('Category', '')),
+          ComputerIP     = tostring(column_ifexists('ComputerIP', '')),
+          RemoteIPCountry = tostring(column_ifexists('RemoteIPCountry', '')),
+          ResourceId     = tolower(tostring(column_ifexists('_ResourceId', '')))
+| order by TimeGenerated desc

@@ -33,6 +33,29 @@ $script:MsecModuleRoot = $PSScriptRoot
 #   }
 $script:MsecSession = $null
 
+# Global Administrator's roleTemplateId - the same GUID in every tenant and every
+# cloud. Named here because the role's DISPLAY name is not dependable: Graph returns
+# it as the legacy 'Company Administrator' on many tenants, and a tenant may rename it
+# outright, so any code comparing role names would silently report zero Global Admins.
+# Anything asking "is this the Global Administrator role" compares against this.
+$script:MsecGlobalAdministratorTemplateId = '62e90394-69f5-4237-9190-012177145e10'
+
+# Table views for the types with COLLECTION columns, which a DefaultDisplayPropertySet
+# cannot render properly - it chooses the columns but not their formatting, so a string[]
+# comes out as '{a, b}'. See the header of msec.format.ps1xml for why the data stays an
+# array and only the display is flattened.
+#
+# Loaded here rather than declared as FormatsToProcess in msec.psd1 because the test suite
+# imports msec.psm1 DIRECTLY - a manifest key would be skipped on that path, and the views
+# would silently not apply in exactly the place they are verified. One mechanism, one code
+# path, works for both import styles.
+$msecFormatFile = Join-Path $PSScriptRoot 'msec.format.ps1xml'
+if (Test-Path -LiteralPath $msecFormatFile) {
+    # -PrependPath so these win over anything already registered for the same type names,
+    # which matters on a re-import during development.
+    Update-FormatData -PrependPath $msecFormatFile
+}
+
 # Default display property sets for msec types. Each Get-Msec* row that embeds a
 # `Raw` (or otherwise heavy nested) property gets a PowerShell type name so
 # Format-Table only shows the curated columns by default. The Raw column is still
@@ -58,16 +81,36 @@ Update-TypeData -TypeName 'MsecEntraLicense' `
     -DefaultDisplayPropertySet 'SkuPartNumber', 'Enabled', 'Assigned', 'CapabilityStatus' `
     -Force
 
-Update-TypeData -TypeName 'MsecEntraDirectoryRoleMember' `
-    -DefaultDisplayPropertySet 'RoleName', 'UserPrincipalName', 'MemberType', 'AccountEnabled' `
-    -Force
-
-Update-TypeData -TypeName 'MsecEntraPrivilegedPrincipal' `
+# The holder leads, because that is who an access review is about; the assignee
+# trails, so a role inherited through a group shows the group it came from.
+Update-TypeData -TypeName 'MsecEntraRoleHolder' `
     -DefaultDisplayPropertySet 'EffectiveName', 'EffectiveType', 'RoleName', 'AssignmentType', 'PrincipalName', 'PrincipalType' `
     -Force
 
+# Two views for one row shape. Direction is deliberately out of both: it repeats
+# what the caller already asked for, and only matters when rows from both
+# directions are mixed. Convert-MsecEntraSid -Resolve pushes the ...Resolved type
+# name in front so the resolved columns show up without a Format-Table; the plain
+# name stays on the row either way, so a type check matches both.
+Update-TypeData -TypeName 'MsecEntraSid' `
+    -DefaultDisplayPropertySet 'Sid', 'ObjectId' `
+    -Force
+
+Update-TypeData -TypeName 'MsecEntraSidResolved' `
+    -DefaultDisplayPropertySet 'Sid', 'ObjectId', 'DisplayName', 'ObjectType' `
+    -Force
+
+# NB: msec.format.ps1xml defines the TABLE view for this type, and wins for Format-Table.
+# This set still governs Format-List and Select-Object, keeping Raw and AssignmentDetail
+# out of a list view - so both are needed, and both list the same columns on purpose.
+#
+# AssignmentType + AssignmentGroup rather than AssignmentCount: the count cannot tell 'All
+# Users plus an exclusion group' from 'two unrelated groups', and which of those it is
+# decides whether a row needs looking at. ExclusionGroup shows up in AssignmentType, so a
+# carve-out is still visible here; AssignmentExcludedGroup names it. The count stays on the
+# object, just out of the default view.
 Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
-    -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentCount', 'Status' `
+    -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentType', 'AssignmentGroup', 'Status' `
     -Force
 
 Update-TypeData -TypeName 'MsecAdoServiceConnection' `

@@ -20,7 +20,29 @@ function Get-MsecIntuneConfigurationProfile {
 
         Each row also carries:
 
-          - Assignments (count): pulled via $expand in the same call - no extra round trip.
+          - Assignments: pulled via $expand in the same call - no extra round trip.
+            AssignmentCount is how many; the rest say WHO, as separate typed columns so
+            each can be filtered on its own:
+
+            All of the collection columns are ARRAYS, not joined strings, so they can be
+            tested exactly - `Where-Object AssignmentGroup -contains 'sg-pilot-ring'`. The
+            default table renders them comma-separated via msec.format.ps1xml, so the
+            display is flat while the data is not; a joined property would force
+            -like '*sg-pilot-ring*' and match 'sg-pilot' too.
+
+              AssignmentType          'AllUsers', 'AllDevices', 'Group',
+                                      'ExclusionGroup', 'ConfigManagerCollection' -
+                                      distinct, so three groups report 'Group' once
+              AssignmentGroup         the INCLUDED group names (or ids)
+              AssignmentExcludedGroup the EXCLUDED group names, kept apart because a
+                                      carve-out changes what the policy means
+              HasAssignmentFilter     true when a device filter narrows any assignment
+              AssignmentDetail        one structured row per assignment
+
+            The target type costs nothing extra - it is already on the expanded
+            assignment. Group display NAMES are resolved by default, one cached Graph
+            call per DISTINCT group; -NoGroupNameLookup skips that for a zero-extra-call
+            sweep and reports group ids instead.
 
           - Status (optional, -IncludeStatus): per-policy check-in counts. Templates use
             /deviceStatusOverview (one call per policy); Settings Catalog uses the Intune
@@ -62,9 +84,71 @@ function Get-MsecIntuneConfigurationProfile {
         extra Graph call per SC policy. Off by default. Templates already include their
         settings inline in the list response - this switch is a no-op for them.
 
+    .PARAMETER NoGroupNameLookup
+        Report assignment groups by id instead of resolving their display names.
+
+        Names are resolved by DEFAULT, because a GUID in an AssignmentGroup column is not
+        an answer to "who is this aimed at" - it is the question again. The cost is one
+        Graph call per DISTINCT group, cached for the run, which is what makes this
+        different in kind from -IncludeStatus and -IncludeSettings: those scale with the
+        number of policies, this scales with the (much smaller) number of groups Intune
+        assignments actually use. A tenant with 200 policies sharing 12 groups pays 12
+        calls, not 200.
+
+        Resolution needs 'Group.Read.All', which New-MsecApp already grants. If it is
+        missing, one warning is raised for the whole run and ids are used - so a missing
+        permission degrades the names, never the target types.
+
+        Use this switch when you want the inventory with provably no per-group calls, or
+        to silence the lookup entirely on an app that cannot read groups. AssignmentType,
+        AssignmentCount and HasAssignmentFilter are unaffected by it: those come from the
+        expanded assignment and cost nothing either way.
+
+        A group that no longer exists is reported as '<deleted group {id}>' rather than
+        as a blank: a policy assigned only to a deleted group is deployed to nobody,
+        which is a finding and not a gap in the output.
+
     .EXAMPLE
-        # Quick inventory (fastest)
+        # Standard inventory. Target types and named groups are in the default table.
         Get-MsecIntuneConfigurationProfile | Format-Table
+
+    .EXAMPLE
+        # Fastest possible sweep: two Graph calls total, no per-group lookups. Groups
+        # come back as ids; the target TYPES are unaffected.
+        Get-MsecIntuneConfigurationProfile -NoGroupNameLookup |
+            Format-Table DisplayName, AssignmentType, AssignmentCount
+
+    .EXAMPLE
+        # Which policies are tenant-wide? These apply to everyone who enrols tomorrow.
+        # An exact test on a typed column, not a match against a rendered phrase.
+        Get-MsecIntuneConfigurationProfile |
+            Where-Object { $_.AssignmentType -contains 'AllUsers' -or
+                           $_.AssignmentType -contains 'AllDevices' }
+
+    .EXAMPLE
+        # Assigned to nobody - configured, reviewed, and doing nothing.
+        Get-MsecIntuneConfigurationProfile | Where-Object AssignmentCount -eq 0
+
+    .EXAMPLE
+        # Tenant-wide but carved into by an exclusion. The riskiest thing to misread as
+        # "applies to everyone", and the reason a count was never enough.
+        Get-MsecIntuneConfigurationProfile |
+            Where-Object { $_.AssignmentExcludedGroup } |
+            Format-Table DisplayName, AssignmentType, AssignmentExcludedGroup
+
+    .EXAMPLE
+        # Every group that any profile is scoped to, and how many profiles each carries.
+        Get-MsecIntuneConfigurationProfile |
+            ForEach-Object { $_.AssignmentDetail } |
+            Where-Object TargetType -in 'Group', 'ExclusionGroup' |
+            Group-Object GroupName -NoElement | Sort-Object Count -Descending
+
+    .EXAMPLE
+        # Assignments narrowed by a device filter, where the stated target overstates
+        # the real reach.
+        Get-MsecIntuneConfigurationProfile |
+            Where-Object HasAssignmentFilter |
+            Select-Object DisplayName, AssignmentType, AssignmentGroup
 
     .EXAMPLE
         # Find policies failing on many devices
@@ -80,7 +164,8 @@ function Get-MsecIntuneConfigurationProfile {
 
     .OUTPUTS
         PSCustomObject with PSTypeName 'MsecIntuneConfigurationProfile'. Default
-        Format-Table view is: DisplayName, Source, Platform, AssignmentCount, Status
+        Format-Table view is: DisplayName, Source, Platform, AssignmentType,
+        AssignmentGroup, Status
         (last column only present with -IncludeStatus). All other columns including
         Raw remain available via Select-Object / Format-List / direct property access.
 
@@ -100,10 +185,84 @@ function Get-MsecIntuneConfigurationProfile {
         [switch] $IncludeStatus,
 
         [Parameter()]
-        [switch] $IncludeSettings
+        [switch] $IncludeSettings,
+
+        [Parameter()]
+        [switch] $NoGroupNameLookup
     )
 
     Assert-MsecSession
+
+    # groupId -> display name, for AssignmentGroup / AssignmentExcludedGroup /
+    # AssignmentDetail. On by default - an unresolved GUID in a group column is not an
+    # answer - and skippable with -NoGroupNameLookup.
+    #
+    # Cached across the whole run rather than per policy, which is what keeps this
+    # affordable enough to be the default: the call count is the number of DISTINCT
+    # groups used by any assignment, not the number of policies. One group assigned to
+    # thirty profiles is one lookup, not thirty.
+    #
+    # Deliberately one request per group rather than a batched /groups?$filter=id in (...):
+    # a filtered list silently OMITS ids that no longer exist, so telling a deleted group
+    # from an unreadable one would mean diffing the response against what was asked for.
+    # Per-group lookups get that distinction from the 404 directly, and the cache already
+    # bounds the count.
+    $groupNameCache = @{}
+
+    # A hashtable, not a bool: $resolveGroupNames is invoked with & and so runs in a child
+    # scope, where assigning to an outer SCALAR silently creates a local instead - the flag
+    # would reset on every policy and the auth warning would repeat per assigned group.
+    # Same reason Get-MsecEntraRoleHolder keeps its counters in one.
+    $groupLookup = @{ Denied = $false }
+
+    $resolveGroupNames = {
+        param($Assignments)
+
+        foreach ($a in @($Assignments)) {
+            $groupId = [string]$a.target.groupId
+            if (-not $groupId -or $groupNameCache.ContainsKey($groupId)) { continue }
+            if ($groupLookup.Denied) { continue }
+
+            try {
+                $g = Invoke-MsecGraphRequest -Path "/v1.0/groups/$groupId`?`$select=id,displayName"
+                $groupNameCache[$groupId] = if ($g.displayName) { $g.displayName } else { $groupId }
+            }
+            catch {
+                if ($_.Exception.Message -match '404|Not Found') {
+                    # A profile assigned to a group that no longer exists is deployed to
+                    # nobody, and that is a finding rather than a blank - so it is
+                    # labelled, and cached so the dead id is not looked up again.
+                    $groupNameCache[$groupId] = "<deleted group $groupId>"
+                    continue
+                }
+                # An AUTH failure is not about this group - it will be true of every
+                # subsequent one - so it is reported once and the lookup gives up. Naming
+                # each group it then failed on would bury the actual output of a tenant
+                # with hundreds of profiles under identical warnings.
+                #
+                # 401 and 403 are separated because the fixes are opposite: a token that
+                # is not being accepted at all, versus a token that is fine and lacks a
+                # scope. Sending someone through a consent cycle for the former wastes
+                # their time and does not help.
+                if ($_.Exception.Message -match '\b401\b|Unauthorized') {
+                    $groupLookup.Denied = $true
+                    Write-Warning "Cannot resolve assignment group names: Graph rejected the token (401) on /groups. Group targets are reported by id instead - AssignmentType, AssignmentCount and HasAssignmentFilter are unaffected. Try Disconnect-Msec then Connect-Msec to get a fresh token. Graph said: $($_.Exception.Message)"
+                    continue
+                }
+                if ($_.Exception.Message -match '\b403\b|Forbidden') {
+                    $groupLookup.Denied = $true
+                    Write-Warning "Cannot resolve assignment group names: the msec app needs the 'Group.Read.All' application permission (admin consent required). Group targets are reported by id instead - the target TYPE in AssignmentType is unaffected. Re-run New-MsecApp to add and consent it, or pass -NoGroupNameLookup to skip the lookup."
+                    continue
+                }
+
+                # Anything else IS per-group - a transient failure on one group says
+                # nothing about the next - so it warns per group and carries on. Bounded
+                # by the number of distinct groups, and each one names a different id.
+                Write-Warning "Could not resolve assignment group '$groupId': $($_.Exception.Message)"
+                $groupNameCache[$groupId] = $groupId
+            }
+        }
+    }
 
     # If we'll need Settings Catalog status, pre-fetch the Reports API export *once* for
     # the whole tenant so the per-policy loop is just hashtable lookups.
@@ -120,15 +279,38 @@ function Get-MsecIntuneConfigurationProfile {
         param($id, $displayName, $description, $platform, $type, $sourceTag,
               $created, $modified, $assignments, $raw)
         $assignmentCount = @($assignments).Count
+
+        if (-not $NoGroupNameLookup) { & $resolveGroupNames $assignments }
+        $targets = ConvertTo-MsecAssignmentTarget $assignments -GroupName $groupNameCache
+
         $obj = [ordered]@{
-            PSTypeName      = 'MsecIntuneConfigurationProfile'
-            Id              = $id
-            DisplayName     = $displayName
-            Description     = $description
-            Platform        = $platform
-            Type            = $type
-            Source          = $sourceTag
-            AssignmentCount = $assignmentCount
+            PSTypeName       = 'MsecIntuneConfigurationProfile'
+            Id               = $id
+            DisplayName      = $displayName
+            Description      = $description
+            Platform         = $platform
+            Type             = $type
+            Source           = $sourceTag
+            AssignmentCount  = $assignmentCount
+
+            # Who the policy is aimed at, as separate typed columns rather than one
+            # rendered phrase - the kind of target and the group it points at are
+            # different facts, and each is filterable on its own with -contains.
+            # AssignmentCount cannot answer any of this: an 'All Users' assignment plus
+            # an exclusion group is 2, and so is a pair of unrelated groups.
+            AssignmentType   = $targets.Type
+
+            # Included and excluded groups kept in separate columns. One list with a
+            # parallel type column would leave the reader working out which name was the
+            # carve-out, and the carve-out is the part that changes the meaning.
+            AssignmentGroup         = $targets.Group
+            AssignmentExcludedGroup = $targets.ExcludedGroup
+
+            # An assignment filter re-evaluates the target at check-in, so a filtered
+            # 'All Devices' is not all devices.
+            HasAssignmentFilter     = $targets.HasFilter
+
+            AssignmentDetail        = $targets.Detail
         }
 
         if ($IncludeStatus) {

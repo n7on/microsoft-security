@@ -22,6 +22,14 @@ function Get-MsecCachePath {
           * graph-<type>-<name>     - the result of a bundled Resource Graph query, e.g.
                                       graph-loganalytics-all. Written by every real call, read
                                       back by -UseCache and by completers.
+          * directory-roles         - the tenant's Entra role definitions, written by every
+                                      Get-MsecEntraRoleHolder run so its -Role completer can
+                                      offer real role names. There is no local source at all:
+                                      the names are per-tenant, a tenant may rename a role,
+                                      and custom roles exist nowhere but the directory. The
+                                      curated built-in names in Get-MsecPrivilegedRoleTemplate
+                                      cover only the privileged subset, and the completer
+                                      falls back to them when this cache is cold.
         Nothing else currently qualifies. The -ResourceType and -Name completers read .kql files
         from the module folder: already local, already instant, and caching them would add
         staleness for no gain.

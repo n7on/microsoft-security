@@ -125,20 +125,20 @@ function New-MsecApp {
                 'Policy.Read.All',                        # CA policies + tenant security settings (Get-MsecEntraConditionalAccessPolicy, Get-MsecEntraTenantSecuritySetting)
                 'AuditLog.Read.All',                      # Sign-in logs + MFA registration report (Get-MsecEntraConditionalAccessSignInLog, Get-MsecEntraMfaRegistration) - both also need Entra ID P1/P2 on the tenant
                 'Organization.Read.All',                  # Licence SKUs / service plans (Get-MsecEntraLicense) - tells "unlicensed" apart from "no permission"
-                'RoleManagement.Read.Directory',          # Directory role members + assignments (Get-MsecEntraDirectoryRoleMember, Get-MsecEntraPrivilegedPrincipal)
+                'RoleManagement.Read.Directory',          # Directory role assignments + eligibility (Get-MsecEntraRoleHolder)
                 # Reading role assignments and reading the identities they point at are
                 # SEPARATE grants. With RoleManagement.Read.Directory alone, Graph returns
                 # every assignment but each principal as an id-and-type shell with all
                 # properties null - a privileged-access report that is complete and
                 # entirely anonymous. These three name the principals; Group.Read.All also
                 # covers expanding role-assignable groups to the users inside them.
-                'User.Read.All',                          # Name user principals (Get-MsecEntraPrivilegedPrincipal)
-                'Group.Read.All',                         # Name groups + read their transitive members (Get-MsecEntraPrivilegedPrincipal)
-                'Application.Read.All',                   # Name service principals holding privileged roles (Get-MsecEntraPrivilegedPrincipal)
+                'User.Read.All',                          # Name user principals (Get-MsecEntraRoleHolder)
+                'Group.Read.All',                         # Name groups + read their transitive members (Get-MsecEntraRoleHolder)
+                'Application.Read.All',                   # Name service principals holding privileged roles (Get-MsecEntraRoleHolder)
                 # PIM for Groups. A PIM-governed group has ELIGIBLE members, who are
                 # absent from /transitiveMembers entirely - so without this the group
                 # reads as empty and everyone who can activate into a role-carrying
-                # group is missing from the inventory (Get-MsecEntraPrivilegedPrincipal).
+                # group is missing from the inventory (Get-MsecEntraRoleHolder).
                 'PrivilegedEligibilitySchedule.Read.AzureADGroup'
             )
         }

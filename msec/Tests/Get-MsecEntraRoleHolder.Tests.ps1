@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Get-MsecEntraPrivilegedPrincipal. The behaviours that matter are the ones a
+# Tests for Get-MsecEntraRoleHolder. The behaviours that matter are the ones a
 # partial implementation would get wrong and still look plausible: eligible
 # assignments appearing at all, role-assignable groups expanding to the users inside
 # them, nested groups not double-counting, AU-scoped assignments not being read as
@@ -12,13 +12,24 @@ BeforeAll {
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
+
+    # Every run writes the directory-roles cache for the -Role completer. Redirected so
+    # the suite cannot touch the developer's real cache.
+    $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
+    $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
+    New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
+    $script:CacheDir = $env:MSEC_CACHE_DIR
 }
 
 AfterAll {
+    if ($script:CacheDir -and (Test-Path -LiteralPath $script:CacheDir)) {
+        Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
+    }
+    $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
     Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Get-MsecEntraPrivilegedPrincipal' {
+Describe 'Get-MsecEntraRoleHolder' {
     BeforeEach {
         InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
@@ -126,7 +137,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 [pscustomobject]@{ value = @() }
             }
 
-            Get-MsecEntraPrivilegedPrincipal
+            Get-MsecEntraRoleHolder
         }
 
         # 2 direct user rows + 1 eligible + 2 expanded group members. The group itself
@@ -139,7 +150,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
         ($ga | Select-Object -Unique IsHighlyPrivileged).IsHighlyPrivileged | Should -BeTrue
         ($ga | Select-Object -Unique RoleName).RoleName | Should -Be 'Tenant God Mode'
 
-        # The eligible administrator - invisible to Get-MsecEntraDirectoryRoleMember.
+        # The eligible administrator - invisible to the older /directoryRoles endpoint.
         $erik = $rows | Where-Object EffectiveId -eq 'u2'
         $erik.AssignmentType | Should -Be 'Eligible'
         $erik.MembershipType | Should -BeNullOrEmpty   # assignee and holder are one object
@@ -207,7 +218,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
         # Global Reader is read-only and deliberately not privileged.
         ($rows | Where-Object EffectiveId -eq 'u9').IsHighlyPrivileged | Should -BeFalse
 
-        $rows[0].PSObject.TypeNames | Should -Contain 'MsecEntraPrivilegedPrincipal'
+        $rows[0].PSObject.TypeNames | Should -Contain 'MsecEntraRoleHolder'
     }
 
     It 'projects administrative-unit scope and does not read it as tenant-wide' {
@@ -249,7 +260,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 [pscustomobject]@{ value = @() }
             }
 
-            Get-MsecEntraPrivilegedPrincipal
+            Get-MsecEntraRoleHolder
         }
 
         $scoped = $rows | Where-Object PrincipalId -eq 'u1'
@@ -299,7 +310,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
             # The 403 body is what tells licensing apart from permission; without
             # ErrorDetails the function must fall back to the permission wording.
             $warnings = @()
-            $rows = Get-MsecEntraPrivilegedPrincipal -WarningVariable warnings -WarningAction SilentlyContinue
+            $rows = Get-MsecEntraRoleHolder -WarningVariable warnings -WarningAction SilentlyContinue
             [pscustomobject]@{ Rows = @($rows); Warnings = @($warnings) }
         }
 
@@ -343,7 +354,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 throw 'eligibility must not be queried when -AssignmentType Active'
             }
 
-            Get-MsecEntraPrivilegedPrincipal -AssignmentType Active
+            Get-MsecEntraRoleHolder -AssignmentType Active
         }
 
         $rows.Count              | Should -Be 1
@@ -394,7 +405,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 [pscustomobject]@{ value = @() }
             }
 
-            $result = @(Get-MsecEntraPrivilegedPrincipal)
+            $result = @(Get-MsecEntraRoleHolder)
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly `
                 -ParameterFilter { $Uri -match 'roleDefinitions/11111111' }
             $result
@@ -457,7 +468,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
             }
 
             $warnings = @()
-            $rows = Get-MsecEntraPrivilegedPrincipal -WarningVariable warnings -WarningAction SilentlyContinue
+            $rows = Get-MsecEntraRoleHolder -WarningVariable warnings -WarningAction SilentlyContinue
             [pscustomobject]@{ Rows = @($rows); Warnings = @($warnings) }
         }
 
@@ -541,7 +552,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 ) }
             }
 
-            Get-MsecEntraPrivilegedPrincipal
+            Get-MsecEntraRoleHolder
         }
 
         # The eligible member replaces the group, exactly as an active member would.
@@ -607,7 +618,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
             }
 
             $warnings = @()
-            $rows = Get-MsecEntraPrivilegedPrincipal -WarningVariable warnings -WarningAction SilentlyContinue
+            $rows = Get-MsecEntraRoleHolder -WarningVariable warnings -WarningAction SilentlyContinue
             [pscustomobject]@{ Rows = @($rows); Warnings = @($warnings) }
         }
 
@@ -668,7 +679,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 throw 'group expansion must not happen with -NoGroupExpansion'
             }
 
-            Get-MsecEntraPrivilegedPrincipal -NoGroupExpansion
+            Get-MsecEntraRoleHolder -NoGroupExpansion
         }
 
         # The assignment-level view: assignee named, holders deliberately not looked up.
@@ -717,7 +728,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
             }
 
             $warnings = @()
-            $rows = Get-MsecEntraPrivilegedPrincipal -WarningVariable warnings -WarningAction SilentlyContinue
+            $rows = Get-MsecEntraRoleHolder -WarningVariable warnings -WarningAction SilentlyContinue
             [pscustomobject]@{ Rows = @($rows); Warnings = @($warnings) }
         }
 
@@ -764,7 +775,7 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 [pscustomobject]@{ value = @() }
             }
 
-            Get-MsecEntraPrivilegedPrincipal -AssignmentType Active
+            Get-MsecEntraRoleHolder -AssignmentType Active
         }
 
         $rows.Count                 | Should -Be 1
@@ -781,8 +792,309 @@ Describe 'Get-MsecEntraPrivilegedPrincipal' {
                 throw 'Response status code does not indicate success: 403 (Forbidden).'
             }
 
-            { Get-MsecEntraPrivilegedPrincipal } |
+            { Get-MsecEntraRoleHolder } |
                 Should -Throw -ExpectedMessage '*RoleManagement.Read.Directory*'
+        }
+    }
+
+    Context '-Role' {
+        # The tenant used throughout this context. Note the Global Administrator
+        # definition is reported by its LEGACY display name, which is what Graph is
+        # observed to return - so every "by name" case here is also a test that the
+        # canonical map is doing its job.
+        BeforeEach {
+            InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+                param($Thumb)
+                $script:MsecSession = @{
+                    TenantId        = 'tenant'
+                    ClientId        = 'client'
+                    KeyVaultName    = 'kv-test'
+                    KeyName         = 'msec-app'
+                    ThumbprintBytes = $Thumb
+                    Tokens          = @{}
+                }
+            }
+        }
+
+        BeforeAll {
+            $script:RoleMocks = {
+                Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                    [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+                }
+                Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-role-tests' } } }
+
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
+                    [pscustomobject]@{ value = @(
+                        [pscustomobject]@{ id = 'def-ga'; displayName = 'Company Administrator'
+                                           templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
+                        [pscustomobject]@{ id = 'def-ua'; displayName = 'User Administrator'
+                                           templateId = 'fe930be7-5e62-47db-91af-98c3a49a38b1'; isBuiltIn = $true }
+                        [pscustomobject]@{ id = 'def-reader'; displayName = 'Global Reader'
+                                           templateId = 'f2ef992c-3afb-46b9-b7cf-a126ee74c451'; isBuiltIn = $true }
+                        # Custom role: no templateId, so only its id or display name can name it.
+                        [pscustomobject]@{ id = 'def-custom'; displayName = 'Contoso Vault Reader'
+                                           templateId = $null; isBuiltIn = $false }
+                    ) }
+                }
+
+                # Honours the $filter the command sends, so a test can tell server-side
+                # filtering from a client-side Where-Object.
+                #
+                # Matched against the FULLY DECODED uri. Invoke-RestMethod's -Uri is typed
+                # [System.Uri], so PowerShell coerces the string the command built and
+                # .NET's canonicalisation unescapes %20 back to a literal space while
+                # leaving %27 alone - the mock would never see the bytes that were sent.
+                # Decoding both sides sidesteps the whole question.
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                    $decoded = [uri]::UnescapeDataString([string]$Uri)
+                    $script:RequestedUris.Add($decoded)
+
+                    $mk = {
+                        param($AssignmentId, $DefinitionId, $PrincipalId)
+                        $p = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'
+                                                id = $PrincipalId; userPrincipalName = "$PrincipalId@x.com" }
+                        [pscustomobject]@{ id = $AssignmentId; roleDefinitionId = $DefinitionId
+                                           principalId = $PrincipalId; directoryScopeId = '/'; principal = $p }
+                    }
+                    $all = @(
+                        & $mk 'as1' 'def-ga'     'ga1'
+                        & $mk 'as2' 'def-ga'     'ga2'
+                        & $mk 'as3' 'def-ua'     'ua1'
+                        & $mk 'as4' 'def-reader' 'rd1'
+                        & $mk 'as5' 'def-custom' 'cu1'
+                    )
+
+                    if ($decoded -match "roleDefinitionId eq '(?<id>[^']+)'") {
+                        $wanted = $Matches['id']
+                        return [pscustomobject]@{ value = @($all | Where-Object roleDefinitionId -eq $wanted) }
+                    }
+                    [pscustomobject]@{ value = $all }
+                }
+
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleEligibilityScheduleInstances' } -MockWith {
+                    [pscustomobject]@{ value = @() }
+                }
+            }
+
+            # Passed as TEXT and rebuilt with [scriptblock]::Create inside InModuleScope.
+            # A scriptblock stays bound to the session state it was written in, so calling
+            # this one directly would fail to resolve Mock's module-private targets - the
+            # mocks would silently not apply.
+            $script:RoleMockText = $script:RoleMocks.ToString()
+        }
+
+        It 'resolves a canonical name against a directory that uses the legacy name' {
+            # THE case this parameter exists for. The tenant calls the role 'Company
+            # Administrator'; nobody types that. Matching display names only would return
+            # nothing here and read as "no Global Admins".
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role 'Global Administrator' -WarningAction SilentlyContinue
+            }
+
+            @($rows).Count | Should -Be 2
+            @($rows.EffectiveId | Sort-Object) | Should -Be @('ga1', 'ga2')
+            ($rows | Select-Object -Unique RoleName).RoleName | Should -Be 'Company Administrator'
+        }
+
+        It 'is case-insensitive and tolerates surrounding whitespace' {
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role '  global ADMINISTRATOR ' -WarningAction SilentlyContinue
+            }
+            @($rows).Count | Should -Be 2
+        }
+
+        It 'resolves a roleTemplateId' {
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role '62e90394-69f5-4237-9190-012177145e10' -WarningAction SilentlyContinue
+            }
+            @($rows).Count | Should -Be 2
+        }
+
+        It 'resolves the display name this tenant actually reports' {
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role 'Company Administrator' -WarningAction SilentlyContinue
+            }
+            @($rows).Count | Should -Be 2
+        }
+
+        It 'resolves a custom role by its definition id, which has no template id' {
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role 'def-custom' -WarningAction SilentlyContinue
+            }
+
+            @($rows).Count            | Should -Be 1
+            $rows.EffectiveId         | Should -Be 'cu1'
+            $rows.RoleName            | Should -Be 'Contoso Vault Reader'
+            # Custom roles are never flagged privileged - the flag is a built-in lookup.
+            $rows.IsHighlyPrivileged  | Should -BeFalse
+        }
+
+        It 'accepts several roles, mixing names and template ids' {
+            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -WarningAction SilentlyContinue `
+                    -Role 'Global Administrator', 'fe930be7-5e62-47db-91af-98c3a49a38b1', 'Contoso Vault Reader'
+            }
+
+            @($rows).Count | Should -Be 4
+            @($rows.RoleName | Sort-Object -Unique) | Should -Be @('Company Administrator', 'Contoso Vault Reader', 'User Administrator')
+            # Global Reader was not asked for and must not appear.
+            $rows.EffectiveId | Should -Not -Contain 'rd1'
+        }
+
+        It 'filters server-side: one request per named role, and no full-tenant sweep' {
+            # Wrapped in an object because InModuleScope unrolls a single-element
+            # collection to the string inside it, and $uris[0] would then index a
+            # character rather than a uri.
+            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -Role 'Global Administrator' -AssignmentType Active -WarningAction SilentlyContinue | Out-Null
+                [pscustomobject]@{ Uris = @($script:RequestedUris) }
+            }
+
+            @($out.Uris).Count | Should -Be 1 -Because 'one named role is one filtered request'
+            $out.Uris[0]       | Should -Match "roleDefinitionId eq 'def-ga'"
+            # The point of the parameter: never pull every assignment in the tenant and
+            # discard the rest.
+            @($out.Uris | Where-Object { $_ -notmatch '\$filter=' }).Count | Should -Be 0
+        }
+
+        It 'sends one filtered request per role when several are named' {
+            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -AssignmentType Active -WarningAction SilentlyContinue `
+                    -Role 'Global Administrator', 'User Administrator' | Out-Null
+                [pscustomobject]@{ Uris = @($script:RequestedUris) }
+            }
+
+            @($out.Uris).Count | Should -Be 2
+            ($out.Uris -join ' ') | Should -Match "roleDefinitionId eq 'def-ga'"
+            ($out.Uris -join ' ') | Should -Match "roleDefinitionId eq 'def-ua'"
+            # Global Reader was never asked for, so it was never fetched.
+            ($out.Uris -join ' ') | Should -Not -Match 'def-reader'
+        }
+
+        It 'reads every assignment in one request when -Role is omitted' {
+            # The unfiltered path must survive: it is one round trip for the whole tenant,
+            # which is the right shape when you want the whole tenant.
+            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -AssignmentType Active -WarningAction SilentlyContinue | Out-Null
+                [pscustomobject]@{ Uris = @($script:RequestedUris) }
+            }
+
+            @($out.Uris).Count | Should -Be 1
+            $out.Uris[0]       | Should -Not -Match '\$filter='
+        }
+
+        It 'throws on an unrecognised role and names the tenant''s roles' {
+            # A typo that returned zero rows would read as a clean bill of health.
+            InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                { Get-MsecEntraRoleHolder -Role 'Globl Administrator' } |
+                    Should -Throw -ExpectedMessage '*Unrecognised role*'
+            }
+        }
+
+        It 'lists the available roles in the error, so the fix is in the message' {
+            $message = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                try { Get-MsecEntraRoleHolder -Role 'Nonsense Administrator'; '' }
+                catch { $_.Exception.Message }
+            }
+
+            $message | Should -Match 'Nonsense Administrator'
+            $message | Should -Match 'Company Administrator'
+            $message | Should -Match 'Contoso Vault Reader'
+        }
+
+        It 'fails the whole call when only one of several roles is unrecognised' {
+            # Returning the roles that DID resolve would hand back a partial answer that
+            # looks complete - worse than failing, for an access review.
+            InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                { Get-MsecEntraRoleHolder -Role 'Global Administrator', 'Not A Role' } |
+                    Should -Throw -ExpectedMessage '*Not A Role*'
+            }
+        }
+
+        It 'returns nothing, without error, for a known role absent from this tenant' {
+            # Distinct from a typo: msec knows this name, the tenant has no definition for
+            # it, so nobody holds it. An empty answer is the correct answer.
+            $rows = InModuleScope msec {
+                Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                    [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+                }
+                Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-role-tests' } } }
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
+                    [pscustomobject]@{ value = @(
+                        [pscustomobject]@{ id = 'def-ga'; displayName = 'Company Administrator'
+                                           templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
+                    ) }
+                }
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                    throw 'no assignment call should be made for a role with no definition'
+                }
+
+                @(Get-MsecEntraRoleHolder -Role 'Partner Tier2 Support' -WarningAction SilentlyContinue)
+            }
+
+            @($rows).Count | Should -Be 0
+        }
+
+        It 'refuses -Role together with -HighlyPrivilegedOnly' {
+            # Logically empty combinations are another way to get a zero that reads as an
+            # answer, so the parameter sets make it unrepresentable.
+            { Get-MsecEntraRoleHolder -Role 'Global Administrator' -HighlyPrivilegedOnly } |
+                Should -Throw
+        }
+
+        It 'caches the tenant''s role definitions for the completer' {
+            $cached = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+                param($MockText)
+                $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
+                & ([scriptblock]::Create($MockText))
+                Get-MsecEntraRoleHolder -AssignmentType Active -WarningAction SilentlyContinue | Out-Null
+                @(Read-MsecCache -Name 'directory-roles')
+            }
+
+            @($cached).Count | Should -Be 4
+            # Both names are kept: the completer needs the canonical one to offer and the
+            # directory one to show alongside it.
+            ($cached | Where-Object TemplateId -eq '62e90394-69f5-4237-9190-012177145e10').DisplayName |
+                Should -Be 'Company Administrator'
+            ($cached | Where-Object Id -eq 'def-custom').IsBuiltIn | Should -BeFalse
         }
     }
 }

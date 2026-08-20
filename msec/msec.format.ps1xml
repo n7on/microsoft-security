@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Table views for msec types whose columns are COLLECTIONS.
+
+  Every other msec type gets its default table from a DefaultDisplayPropertySet in
+  msec.psm1, which is lighter and needs no XML. That mechanism can only pick which
+  properties appear, though - not how they render. A string[] column therefore comes out
+  as PowerShell's collection literal, '{sg-pilot-ring, sg-broad-ring}', braces and all.
+
+  The fix is not to store a joined string. AssignmentGroup and AssignmentType are arrays
+  so that callers can test them exactly:
+
+      Where-Object AssignmentGroup -contains 'sg-pilot-ring'
+
+  Joining them at the source would force -like '*sg-pilot-ring*' on every such query, and
+  a substring match happily reports 'sg-pilot' as a hit for 'sg-pilot-ring'. This module
+  has been bitten by loose matching on display values more than once. So the data stays
+  typed and only the rendering is flattened, here, where flattening is the whole point.
+-->
+<Configuration>
+  <ViewDefinitions>
+    <View>
+      <Name>MsecIntuneConfigurationProfile</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecIntuneConfigurationProfile</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>DisplayName</Label><Width>26</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Source</Label><Width>15</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Platform</Label><Width>11</Width></TableColumnHeader>
+          <!-- 28 fits 'AllDevices, ExclusionGroup', the widest realistic pairing; truncating it
+               would hide the carve-out. -->
+          <TableColumnHeader><Label>AssignmentType</Label><Width>28</Width></TableColumnHeader>
+          <TableColumnHeader><Label>AssignmentGroup</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Status</Label><Width>12</Width></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>DisplayName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Source</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Platform</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>@($_.AssignmentType) -join ', '</ScriptBlock>
+              </TableColumnItem>
+              <!--
+                Included groups, then the exclusions after the word 'excluding'. Both live
+                in this one column because a seventh would not fit, and because an empty
+                group cell next to an AssignmentType of 'ExclusionGroup' reads as a bug
+                rather than as "the only group here is a carve-out". Rendering only - the
+                two sets stay in AssignmentGroup and AssignmentExcludedGroup, apart.
+              -->
+              <TableColumnItem>
+                <ScriptBlock>
+                  $inc = @($_.AssignmentGroup) -join ', '
+                  $exc = @($_.AssignmentExcludedGroup) -join ', '
+                  if ($exc) { (@($inc, "excluding $exc") | Where-Object { $_ }) -join ', ' } else { $inc }
+                </ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+  </ViewDefinitions>
+</Configuration>

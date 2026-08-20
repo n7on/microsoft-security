@@ -27,7 +27,9 @@ function Get-MsecEntraTenantSecuritySetting {
           /policies/identitySecurityDefaultsEnforcementPolicy  Policy.Read.All
           /policies/authorizationPolicy                        Policy.Read.All
           Get-MsecEntraLicense (/subscribedSkus)               Organization.Read.All
-          Get-MsecEntraDirectoryRoleMember (/directoryRoles)   RoleManagement.Read.Directory
+          Get-MsecEntraRoleHolder (roleManagement)             RoleManagement.Read.Directory
+                                                               + User/Group/Application.Read.All
+                                                               to name the principals
 
         By default a section that cannot be read leaves its properties $null and
         records why in the Notes dictionary, rather than throwing - so one missing
@@ -111,21 +113,35 @@ function Get-MsecEntraTenantSecuritySetting {
           AllowInvitesFrom                who may invite guests
           AllowEmailVerifiedUsersToJoin   self-service sign-up into the tenant
 
-          ActivatedRoleCount              directory roles with >= 1 active member
-          GlobalAdministratorCount        active, permanent Global Admins
+          ActivatedRoleCount              distinct roles with >= 1 active assignment
+          GlobalAdministratorCount        active, permanent Global Admins. Counted by
+                                          roleTemplateId, because Graph reports that
+                                          role as 'Company Administrator' on many
+                                          tenants and matching the name reports zero
           HighlyPrivilegedMemberCount     distinct principals in any role flagged
-                                          highly privileged (see
-                                          Get-MsecEntraDirectoryRoleMember)
+                                          highly privileged by
+                                          Get-MsecPrivilegedRoleTemplate
           PrivilegedRoleSummary           array of {RoleName, MemberCount} for the
-                                          highly-privileged roles that have members
+                                          highly-privileged roles that have holders
 
           Notes                           ordered dictionary of section -> reason,
                                           populated only for sections that failed.
                                           Empty when everything was readable.
 
-        Counts come from permanent assignments only; see
-        Get-MsecEntraDirectoryRoleMember for why PIM-eligible holders are not
-        included and when that matters.
+        COUNTS ARE OF PEOPLE AND APPLICATIONS, NOT ASSIGNMENTS. Roles are read via
+        Get-MsecEntraRoleHolder, which expands role-assignable groups, so somebody
+        who inherited Global Administrator through a group is counted - the older
+        /directoryRoles view could only see the group itself. Where a group could
+        not be expanded it counts as one principal rather than as zero, which
+        under-states rather than invents. A principal holding several privileged
+        roles, or the same role through two groups, still counts once.
+
+        Counts come from ACTIVE, permanent assignments only - PIM-eligible holders
+        are excluded, so in a tenant using PIM the true administrator population is
+        larger than these numbers. That is deliberate: this row answers "what
+        standing privilege exists", and PimAvailable in the same row tells you
+        whether to go and ask Get-MsecEntraRoleHolder -AssignmentType Eligible the
+        other half of the question.
     #>
     [CmdletBinding()]
     param(
@@ -194,17 +210,38 @@ function Get-MsecEntraTenantSecuritySetting {
     $p2 = & $hasPlan @('AAD_PREMIUM_P2')
 
     # ---- 4. Privileged roles -------------------------------------------------
-    $roleMembers = & $section 'directoryRoles' { @(Get-MsecEntraDirectoryRoleMember) }
+    # -AssignmentType Active: this row is about STANDING privilege. Including PIM
+    # eligibility would conflate "holds Global Admin permanently" with "can activate it
+    # when needed", which are close to opposite findings in a governed tenant.
+    #
+    # The section name stays 'directoryRoles' because it is the key callers match in
+    # Notes, and renaming it would break their handling of a failed read.
+    $roleMembers = & $section 'directoryRoles' { @(Get-MsecEntraRoleHolder -AssignmentType Active) }
 
     $privileged  = @($roleMembers | Where-Object IsHighlyPrivileged)
+
+    # Who a row is ABOUT. EffectiveId is the holder - the person or application that
+    # would be remediated - and is what a headcount wants now that groups are expanded.
+    # It is $null only where an assigned group could not be expanded, and such a row
+    # falls back to the assignee so the assignment counts as one principal rather than
+    # vanishing: under-stating is survivable, silently dropping a privilege path is not.
+    $holderId = { param($Row) if ($Row.EffectiveId) { $Row.EffectiveId } else { $Row.PrincipalId } }
+
+    $distinctHolders = {
+        param($Rows)
+        @($Rows | ForEach-Object { & $holderId $_ } | Where-Object { $_ } | Sort-Object -Unique).Count
+    }
+
+    # MemberCount is distinct holders per role, not row count: one person who inherits a
+    # role through two groups is one administrator of it, not two.
     $roleSummary = @(
-        $privileged | Group-Object RoleName | Sort-Object Count -Descending | ForEach-Object {
-            [PSCustomObject]@{ RoleName = $_.Name; MemberCount = $_.Count }
-        }
+        $privileged | Group-Object RoleName | ForEach-Object {
+            [PSCustomObject]@{ RoleName = $_.Name; MemberCount = (& $distinctHolders $_.Group) }
+        } | Sort-Object MemberCount -Descending
     )
 
     # A principal in several privileged roles must count once, not once per role.
-    $privilegedPrincipals = @($privileged | Select-Object -ExpandProperty MemberId -Unique).Count
+    $privilegedPrincipals = & $distinctHolders $privileged
 
     # Distinguish "read it, found none" from "could not read it". A tenant with no
     # licences at all is a real, meaningful answer (it says the workloads aren't
@@ -261,10 +298,16 @@ function Get-MsecEntraTenantSecuritySetting {
         AllowEmailVerifiedUsersToJoin           = $authPolicy.allowEmailVerifiedUsersToJoinOrganization
 
         ActivatedRoleCount                      = if ($rolesRead) {
-                                                      @($roleMembers | Select-Object -ExpandProperty RoleName -Unique).Count
+                                                      @($roleMembers | Select-Object -ExpandProperty RoleTemplateId -Unique).Count
                                                   } else { $null }
+        # Matched on the template id, never the display name. Graph returns Global
+        # Administrator under its legacy name 'Company Administrator' on a great many
+        # tenants, so the old `RoleName -eq 'Global Administrator'` comparison reported
+        # ZERO Global Admins on those - in the headline column of this very report.
+        # Template ids are identical in every tenant and every cloud.
         GlobalAdministratorCount                = if ($rolesRead) {
-                                                      @($roleMembers | Where-Object RoleName -eq 'Global Administrator').Count
+                                                      & $distinctHolders @($roleMembers |
+                                                          Where-Object RoleTemplateId -eq $script:MsecGlobalAdministratorTemplateId)
                                                   } else { $null }
         HighlyPrivilegedMemberCount             = if ($rolesRead) { $privilegedPrincipals } else { $null }
         PrivilegedRoleSummary                   = if ($rolesRead) { $roleSummary } else { $null }

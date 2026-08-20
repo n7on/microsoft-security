@@ -5,10 +5,12 @@ function Get-MsecPrivilegedRoleTemplate {
         stable roleTemplateId.
 
     .DESCRIPTION
-        Returns a hashtable of roleTemplateId -> canonical role name. Shared by
-        Get-MsecEntraDirectoryRoleMember and Get-MsecEntraPrivilegedPrincipal so the two
-        can never disagree about what "privileged" means - a split definition would
-        make one function's count silently contradict the other's on the same tenant.
+        Returns a hashtable of roleTemplateId -> canonical role name. The single
+        definition of what msec means by "privileged", used by
+        Get-MsecEntraRoleHolder's IsHighlyPrivileged flag and -HighlyPrivilegedOnly
+        filter, and through it by every count in
+        Get-MsecEntraTenantSecuritySetting - a second definition anywhere would
+        make one report silently contradict another on the same tenant.
 
         Keyed by roleTemplateId rather than displayName because display names are
         localisable and, for some roles, editable: a tenant that renamed Global

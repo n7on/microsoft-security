@@ -72,24 +72,22 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
                     }
                 ) }
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles$' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
                 [pscustomobject]@{ value = @(
                     [pscustomobject]@{ id = 'role-ga'; displayName = 'Global Administrator'
-                                       roleTemplateId = '62e90394-69f5-4237-9190-012177145e10' }
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
                     [pscustomobject]@{ id = 'role-sec'; displayName = 'Security Administrator'
-                                       roleTemplateId = '194ae4cb-b126-40b2-bd5b-6091b380977d' }
+                                       templateId = '194ae4cb-b126-40b2-bd5b-6091b380977d'; isBuiltIn = $true }
                 ) }
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles/role-ga/members' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                $u1 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
+                $u2 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u2'; userPrincipalName = 'b@x.com' }
                 [pscustomobject]@{ value = @(
-                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
-                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u2'; userPrincipalName = 'b@x.com' }
-                ) }
-            }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles/role-sec/members' } -MockWith {
-                # u1 is ALSO a Security Admin - the distinct-principal count must not double-count.
-                [pscustomobject]@{ value = @(
-                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
+                    [pscustomobject]@{ id = 'as1'; roleDefinitionId = 'role-ga';  principalId = 'u1'; directoryScopeId = '/'; principal = $u1 }
+                    [pscustomobject]@{ id = 'as2'; roleDefinitionId = 'role-ga';  principalId = 'u2'; directoryScopeId = '/'; principal = $u2 }
+                    # u1 is ALSO a Security Admin - the distinct-principal count must not double-count.
+                    [pscustomobject]@{ id = 'as3'; roleDefinitionId = 'role-sec'; principalId = 'u1'; directoryScopeId = '/'; principal = $u1 }
                 ) }
             }
 
@@ -151,17 +149,19 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
                     }
                 ) }
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles$' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
                 [pscustomobject]@{ value = @(
                     [pscustomobject]@{ id = 'role-ga'; displayName = 'Global Administrator'
-                                       roleTemplateId = '62e90394-69f5-4237-9190-012177145e10' }
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
                 ) }
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles/role-ga/members' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
                 [pscustomobject]@{ value = @(
                     1..6 | ForEach-Object {
-                        [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'
-                                           id = "u$_"; userPrincipalName = "admin$_@x.com" }
+                        $p = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'
+                                                id = "u$_"; userPrincipalName = "admin$_@x.com" }
+                        [pscustomobject]@{ id = "as$_"; roleDefinitionId = 'role-ga'
+                                           principalId = "u$_"; directoryScopeId = '/'; principal = $p }
                     }
                 ) }
             }
@@ -202,15 +202,17 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/subscribedSkus' } -MockWith {
                 throw 'Response status code does not indicate success: 403 (Forbidden).'
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles$' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
                 [pscustomobject]@{ value = @(
                     [pscustomobject]@{ id = 'role-ga'; displayName = 'Global Administrator'
-                                       roleTemplateId = '62e90394-69f5-4237-9190-012177145e10' }
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
                 ) }
             }
-            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/directoryRoles/role-ga/members' } -MockWith {
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                $u1 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
                 [pscustomobject]@{ value = @(
-                    [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
+                    [pscustomobject]@{ id = 'as1'; roleDefinitionId = 'role-ga'; principalId = 'u1'
+                                       directoryScopeId = '/'; principal = $u1 }
                 ) }
             }
 
@@ -230,6 +232,164 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
         # Sections that DID read still carry real values.
         $s.SecurityDefaultsEnabled    | Should -BeFalse
         $s.GlobalAdministratorCount   | Should -Be 1
+    }
+
+    It 'counts Global Admins when Graph calls the role by its legacy name' {
+        # REGRESSION. Graph returns Global Administrator as 'Company Administrator' on a
+        # great many tenants, and this count used to be `RoleName -eq 'Global
+        # Administrator'` - which reported ZERO Global Admins on every one of them, in
+        # the headline column of this report. The template id is identical everywhere.
+        $s = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'identitySecurityDefaultsEnforcementPolicy' } -MockWith {
+                [pscustomobject]@{ isEnabled = $false }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/policies/authorizationPolicy' } -MockWith {
+                [pscustomobject]@{ defaultUserRolePermissions = [pscustomobject]@{ allowedToCreateApps = $false } }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/subscribedSkus' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/organization' } -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ id = 'tenant-abc'; displayName = 'Contoso' }) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    # The legacy display name, as Graph is observed to return for this role.
+                    [pscustomobject]@{ id = 'role-ga'; displayName = 'Company Administrator'
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    1..3 | ForEach-Object {
+                        $p = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'
+                                                id = "u$_"; userPrincipalName = "u$_@x.com" }
+                        [pscustomobject]@{ id = "as$_"; roleDefinitionId = 'role-ga'
+                                           principalId = "u$_"; directoryScopeId = '/'; principal = $p }
+                    }
+                ) }
+            }
+
+            Get-MsecEntraTenantSecuritySetting
+        }
+
+        $s.GlobalAdministratorCount    | Should -Be 3 -Because 'the count must key on roleTemplateId, not the display name'
+        $s.HighlyPrivilegedMemberCount | Should -Be 3
+        $s.ActivatedRoleCount          | Should -Be 1
+        # The report still shows the name the directory actually uses, rather than
+        # silently substituting a friendlier one.
+        ($s.PrivilegedRoleSummary | Where-Object RoleName -eq 'Company Administrator').MemberCount | Should -Be 3
+    }
+
+    It 'counts a role held by a GROUP as one privileged principal' {
+        # /directoryRoles does not expand groups, so the group is the assignee and the
+        # holder is unknown. The count must come from PrincipalId - EffectiveId is $null
+        # on exactly these rows and would silently drop them.
+        $s = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'identitySecurityDefaultsEnforcementPolicy' } -MockWith {
+                [pscustomobject]@{ isEnabled = $false }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/policies/authorizationPolicy' } -MockWith {
+                [pscustomobject]@{ defaultUserRolePermissions = [pscustomobject]@{ allowedToCreateApps = $false } }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/subscribedSkus' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/organization' } -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ id = 'tenant-abc' }) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ id = 'role-ga'; displayName = 'Company Administrator'
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                $u1 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user';  id = 'u1'; userPrincipalName = 'a@x.com' }
+                $g1 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'sg-admins' }
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ id = 'as1'; roleDefinitionId = 'role-ga'; principalId = 'u1'; directoryScopeId = '/'; principal = $u1 }
+                    [pscustomobject]@{ id = 'as2'; roleDefinitionId = 'role-ga'; principalId = 'g1'; directoryScopeId = '/'; principal = $g1 }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/transitiveMembers' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/transitiveMembers/microsoft\.graph\.user' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    # u1 is BOTH directly assigned and in the group - one administrator.
+                    [pscustomobject]@{ id = 'u1'; userPrincipalName = 'a@x.com' }
+                    [pscustomobject]@{ id = 'u2'; userPrincipalName = 'b@x.com' }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'eligibilityScheduleInstances' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+
+            Get-MsecEntraTenantSecuritySetting -WarningAction SilentlyContinue
+        }
+
+        # Two PEOPLE, not two assignments and not one group: the group is expanded, and
+        # u1 - directly assigned AND inside the group - counts once. The older
+        # /directoryRoles view reported this tenant as 1 user + 1 opaque group.
+        $s.GlobalAdministratorCount    | Should -Be 2
+        $s.HighlyPrivilegedMemberCount | Should -Be 2
+        ($s.PrivilegedRoleSummary | Where-Object RoleName -eq 'Company Administrator').MemberCount | Should -Be 2
+    }
+
+    It 'counts an unexpandable group as one principal rather than dropping it' {
+        # Whoever can write that group's membership can take the role tomorrow, so the
+        # assignment must survive into the count even with no holder resolved.
+        $s = InModuleScope msec {
+            Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+                [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'identitySecurityDefaultsEnforcementPolicy' } -MockWith {
+                [pscustomobject]@{ isEnabled = $false }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/policies/authorizationPolicy' } -MockWith {
+                [pscustomobject]@{ defaultUserRolePermissions = [pscustomobject]@{ allowedToCreateApps = $false } }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/subscribedSkus' } -MockWith {
+                [pscustomobject]@{ value = @() }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/organization' } -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ id = 'tenant-abc' }) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleDefinitions' } -MockWith {
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ id = 'role-ga'; displayName = 'Global Administrator'
+                                       templateId = '62e90394-69f5-4237-9190-012177145e10'; isBuiltIn = $true }
+                ) }
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/roleAssignments' } -MockWith {
+                $g1 = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'sg-admins' }
+                [pscustomobject]@{ value = @(
+                    [pscustomobject]@{ id = 'as1'; roleDefinitionId = 'role-ga'; principalId = 'g1'; directoryScopeId = '/'; principal = $g1 }
+                ) }
+            }
+            # Group.Read.All missing: no cast succeeds, and PIM-for-groups fails too.
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/transitiveMembers' } -MockWith {
+                throw 'Response status code does not indicate success: 403 (Forbidden).'
+            }
+            Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'eligibilityScheduleInstances' } -MockWith {
+                throw 'Response status code does not indicate success: 403 (Forbidden).'
+            }
+
+            Get-MsecEntraTenantSecuritySetting -WarningAction SilentlyContinue
+        }
+
+        $s.GlobalAdministratorCount    | Should -Be 1 -Because 'an unresolved group assignment is still a privilege path'
+        $s.HighlyPrivilegedMemberCount | Should -Be 1
     }
 
     It 'rethrows the annotated error under -Strict' {

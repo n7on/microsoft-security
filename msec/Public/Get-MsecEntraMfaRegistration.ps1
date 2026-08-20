@@ -171,7 +171,7 @@ function Get-MsecEntraMfaRegistration {
 
         `isAdmin` is Graph's own flag for "holds a privileged directory role". It uses
         Microsoft's definition of privileged, which is not identical to the
-        IsHighlyPrivileged list in Get-MsecEntraDirectoryRoleMember - cross-reference the
+        IsHighlyPrivileged list in Get-MsecEntraRoleHolder - cross-reference the
         two rather than assuming they agree.
     #>
     [CmdletBinding()]

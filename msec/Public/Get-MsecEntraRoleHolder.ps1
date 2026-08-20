@@ -1,11 +1,18 @@
-function Get-MsecEntraPrivilegedPrincipal {
+function Get-MsecEntraRoleHolder {
     <#
     .SYNOPSIS
-        Every principal holding an Entra directory role, separating what the role is
-        ASSIGNED TO from who EFFECTIVELY holds it, with the activation state of each.
+        Every principal holding ANY Entra directory role - not only privileged ones -
+        separating what the role is ASSIGNED TO from who EFFECTIVELY holds it, with the
+        activation state of each.
 
     .DESCRIPTION
         Answers "who and what can administer this tenant".
+
+        EVERY ROLE BY DEFAULT, privileged or not: Global Reader and Message Center
+        Reader come back alongside Global Administrator. Pass -HighlyPrivilegedOnly for
+        the escalation-capable subset. The command was once called
+        Get-MsecEntraPrivilegedPrincipal, which read as though the filter were always on
+        - it never was, and the old name misled often enough to be worth changing.
 
         TWO PRINCIPALS PER ROW, which is the whole shape of this output. A directory
         role can be assigned to a user, a service principal, or a role-assignable
@@ -31,8 +38,10 @@ function Get-MsecEntraPrivilegedPrincipal {
         holders (EffectiveId) for "how many administrators", count assignments (Raw.id)
         for "how many grants", and neither question contaminates the other.
 
-        It reads the unified role-management endpoints rather than /directoryRoles,
-        which closes three blind spots in Get-MsecEntraDirectoryRoleMember:
+        It reads the unified role-management endpoints rather than the older
+        /directoryRoles, which has four blind spots this does not - msec used to have a
+        second command built on that endpoint, and these are why it was retired rather
+        than kept as a lighter alternative:
 
           1. PIM-eligible assignments. /directoryRoles returns *activated* roles and
              their *active* members, so in a tenant using PIM most administrators are
@@ -47,7 +56,11 @@ function Get-MsecEntraPrivilegedPrincipal {
              endpoint.
 
           3. Scope. A User Administrator confined to one administrative unit is not the
-             same risk as a tenant-wide one.
+             same risk as a tenant-wide one, and /directoryRoles cannot tell them apart.
+
+          4. Custom roles. They are roleDefinitions and never appear as directoryRole
+             objects, so a bespoke role granting
+             microsoft.directory/roleAssignments went unseen entirely.
 
         A principal that is both actively assigned and separately eligible for the same
         role produces two rows. Those are two distinct facts, and collapsing them would
@@ -100,6 +113,34 @@ function Get-MsecEntraPrivilegedPrincipal {
         a tenant those ARE the whole privileged population. Get-MsecEntraLicense
         confirms which case you are in.
 
+    .PARAMETER Role
+        One or more roles to report on, given as display names, roleTemplateIds, or a
+        mix. Tab completes. Mutually exclusive with -HighlyPrivilegedOnly, which is a
+        different way of naming the same kind of subset.
+
+        A name is matched against three things, in this order, case-insensitively:
+        the roleTemplateId or definition id; the display name THIS tenant reports; and
+        the canonical name msec knows from Get-MsecPrivilegedRoleTemplate.
+
+        That third one is the point of the parameter. Graph returns Global
+        Administrator under its legacy name 'Company Administrator' on many tenants, so
+        -Role 'Global Administrator' resolves through the canonical map to
+        62e90394-69f5-4237-9190-012177145e10 and matches the role anyway. Matching only
+        display names would have reproduced the exact defect this module already carried
+        in its Global Admin count.
+
+        AN UNRECOGNISED VALUE IS A TERMINATING ERROR listing the tenant's roles, rather
+        than an empty result. A misspelled role that returned nothing would be
+        indistinguishable from a role nobody holds - a clean bill of health that is
+        really a typo, which is the worst way for this command to be wrong. A role that
+        resolves but has no definition in this tenant is NOT an error: that is a genuine
+        empty answer, reported as no rows and a verbose note.
+
+        Filtering happens server-side, one request per named role, instead of reading
+        every assignment in the tenant and discarding the rest. Asking who holds one
+        role is therefore cheap on a large directory, and group expansion only runs for
+        groups that hold the named roles.
+
     .PARAMETER AssignmentType
         Which assignments to read: 'All' (default), 'Active' (standing assignments
         only - no premium licence needed), or 'Eligible' (PIM eligibility only,
@@ -107,7 +148,10 @@ function Get-MsecEntraPrivilegedPrincipal {
 
     .PARAMETER HighlyPrivilegedOnly
         Return only roles that can grant further access, reset credentials, or read
-        broadly. The set is defined in Get-MsecPrivilegedRoleTemplate.
+        broadly. The set is defined in Get-MsecPrivilegedRoleTemplate. Mutually
+        exclusive with -Role: naming roles explicitly already is the filter, and
+        combining the two invites an empty result that reads as an answer
+        (-Role 'Global Reader' -HighlyPrivilegedOnly can only ever be zero rows).
 
     .PARAMETER NoGroupExpansion
         Return assignments as Entra records them: one row per assignment, with the
@@ -117,60 +161,79 @@ function Get-MsecEntraPrivilegedPrincipal {
         counted as one.
 
     .EXAMPLE
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly
+
+    .EXAMPLE
+        # One role. Works whether the directory calls it 'Global Administrator' or
+        # 'Company Administrator', and costs one request rather than a tenant sweep.
+        Get-MsecEntraRoleHolder -Role 'Global Administrator'
+
+    .EXAMPLE
+        # Several, mixing a canonical name with a raw template id.
+        Get-MsecEntraRoleHolder -Role 'Global Administrator', 'User Administrator',
+                                      'b1be1c3e-b65d-4f19-8427-f6fa0d97feb9'
+
+    .EXAMPLE
+        # The tier-0 review: who can administer identity, and can they use it today?
+        Get-MsecEntraRoleHolder -Role 'Global Administrator', 'Privileged Role Administrator' |
+            Format-Table EffectiveName, RoleName, AssignmentType, IsActiveNow
+
+    .EXAMPLE
+        # A custom role, by its definition id - the canonical map only covers built-ins.
+        Get-MsecEntraRoleHolder -Role '4f9c8e21-0d3b-4a77-9e18-7c2d5b6a1f04'
 
     .EXAMPLE
         # People only, then applications only. EffectiveType is the HOLDER's kind -
         # PrincipalType would say 'group' for anyone who inherited the role.
-        Get-MsecEntraPrivilegedPrincipal | Where-Object EffectiveType -eq 'user'
-        Get-MsecEntraPrivilegedPrincipal | Where-Object EffectiveType -eq 'servicePrincipal'
+        Get-MsecEntraRoleHolder | Where-Object EffectiveType -eq 'user'
+        Get-MsecEntraRoleHolder | Where-Object EffectiveType -eq 'servicePrincipal'
 
     .EXAMPLE
         # How the privileged population splits between people and applications.
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly |
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly |
             Group-Object EffectiveType -NoElement
 
     .EXAMPLE
         # Privilege that arrives through a group - the path most reviews miss. The
         # assignee differs from the holder exactly when the role was inherited.
-        Get-MsecEntraPrivilegedPrincipal | Where-Object PrincipalType -eq 'group' |
+        Get-MsecEntraRoleHolder | Where-Object PrincipalType -eq 'group' |
             Format-Table EffectiveName, RoleName, PrincipalName, MembershipType
 
     .EXAMPLE
         # PIM for Groups: people who hold nothing today but can activate into a group
         # that carries a role. Invisible to every /members endpoint.
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly |
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly |
             Where-Object MembershipType -eq 'Eligible' |
             Format-Table EffectiveName, RoleName, PrincipalName
 
     .EXAMPLE
         # Privilege usable right now - nothing left to activate on either link.
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly |
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly |
             Where-Object IsActiveNow
 
     .EXAMPLE
         # Standing tenant-wide privilege: the assignments PIM was meant to remove.
-        Get-MsecEntraPrivilegedPrincipal -AssignmentType Active -HighlyPrivilegedOnly |
+        Get-MsecEntraRoleHolder -AssignmentType Active -HighlyPrivilegedOnly |
             Where-Object IsTenantScoped
 
     .EXAMPLE
         # Distinct humans who can administer the tenant. Count holders, not rows: one
         # person inheriting a role through two groups is one administrator.
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly |
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly |
             Where-Object { $_.EffectiveType -eq 'user' -and $_.IsResolved } |
             Sort-Object EffectiveId -Unique
 
     .EXAMPLE
         # External identities holding privileged roles, and privileged accounts synced
         # from on-premises AD. Both should be short, deliberate lists.
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly | Where-Object UserType -eq 'Guest'
-        Get-MsecEntraPrivilegedPrincipal -HighlyPrivilegedOnly | Where-Object IsDirectorySynced
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly | Where-Object UserType -eq 'Guest'
+        Get-MsecEntraRoleHolder -HighlyPrivilegedOnly | Where-Object IsDirectorySynced
 
     .OUTPUTS
         PSCustomObject per (role, principal, assignment type). See .NOTES.
 
     .NOTES
-        Each row is a [PSCustomObject] with PSTypeName 'MsecEntraPrivilegedPrincipal',
+        Each row is a [PSCustomObject] with PSTypeName 'MsecEntraRoleHolder',
         whose DefaultDisplayPropertySet (EffectiveName, EffectiveType, RoleName,
         AssignmentType, PrincipalName) is registered in msec.psm1. The holder leads,
         because that is who a review is about; the assignee trails, so an inherited role
@@ -254,17 +317,86 @@ function Get-MsecEntraPrivilegedPrincipal {
         no reliable way to score their permission sets.
 
         Graph has historically required a $filter on the directory provider's
-        assignment collections. The unfiltered list is attempted first and, only if
-        Graph rejects it, the query fans out to one call per role definition - correct
-        either way, one round trip in the common case.
+        assignment collections. Without -Role the unfiltered list is attempted first
+        and, only if Graph rejects it, the query fans out to one call per role
+        definition - correct either way, one round trip in the common case. With -Role
+        the fan-out is taken deliberately and narrowed to the named roles, which is
+        cheaper than the unfiltered sweep rather than a fallback from it.
+
+        Each run caches the tenant's role definitions (id, templateId, displayName,
+        isBuiltIn) so the -Role completer has real names to offer without ever calling
+        Graph from the prompt. Nothing sensitive: role names and ids only.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'AllRoles')]
     param(
+        # Names or roleTemplateIds, or a mix - see .PARAMETER Role for why both, and why
+        # a name is matched against more than one thing.
+        [Parameter(ParameterSetName = 'ByRole', Position = 0)]
+        [ArgumentCompleter({
+            param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
+            try {
+                $module = Get-Module msec
+                if (-not $module) { return }
+                $word = ([string]$wordToComplete).Trim("'`"")
+
+                # Two sources, so completion works before this command has ever run: the
+                # curated privileged names are static, and the tenant's own roles come from
+                # the cache the last run wrote. NEVER a Graph call - the prompt would block
+                # on every Tab, and when Graph is unhealthy it does not fail fast, it hangs.
+                #
+                # Read-MsecCache and Get-MsecPrivilegedRoleTemplate are private, and
+                # completers run outside module scope; invoking the scriptblock against the
+                # module object runs it where private functions resolve.
+                $candidates = & $module {
+                    $canonical = Get-MsecPrivilegedRoleTemplate
+                    $byName = [ordered]@{}
+
+                    foreach ($c in @(Read-MsecCache -Name 'directory-roles')) {
+                        $templateId = [string]$c.TemplateId
+                        $directory  = [string]$c.DisplayName
+                        # Prefer the canonical name for a role msec knows: it is what
+                        # someone will type, and it is stable across tenants.
+                        $name = if ($canonical.ContainsKey($templateId)) { $canonical[$templateId] } else { $directory }
+                        if (-not $name) { continue }
+
+                        # Surfacing both names where they differ turns the legacy-name
+                        # surprise ('Company Administrator') into something you can see.
+                        $byName[$name] = if ($directory -and $directory -ne $name) {
+                            "$name  -  the directory calls this '$directory'"
+                        }
+                        else { $name }
+                    }
+
+                    # A role nobody holds may have no cached row, and asking about it is a
+                    # legitimate question with a legitimate empty answer - so the curated
+                    # names complete regardless of what the cache saw.
+                    foreach ($kv in $canonical.GetEnumerator()) {
+                        if (-not $byName.Contains($kv.Value)) { $byName[$kv.Value] = "$($kv.Value)  -  highly privileged" }
+                    }
+
+                    $byName.GetEnumerator() | ForEach-Object {
+                        [pscustomobject]@{ Name = $_.Key; Detail = $_.Value }
+                    }
+                }
+
+                $candidates | Where-Object { $_.Name -like "$word*" } | Sort-Object Name |
+                    ForEach-Object {
+                        $insert = if ($_.Name -match "[\s']") { "'" + ($_.Name -replace "'", "''") + "'" } else { $_.Name }
+                        [System.Management.Automation.CompletionResult]::new(
+                            $insert, $_.Name, 'ParameterValue', $_.Detail)
+                    }
+            }
+            catch {
+                # A completer must never throw or the prompt breaks.
+            }
+        })]
+        [string[]] $Role,
+
         [Parameter()]
         [ValidateSet('All', 'Active', 'Eligible')]
         [string] $AssignmentType = 'All',
 
-        [Parameter()]
+        [Parameter(ParameterSetName = 'AllRoles')]
         [switch] $HighlyPrivilegedOnly,
 
         [Parameter()]
@@ -293,28 +425,118 @@ function Get-MsecEntraPrivilegedPrincipal {
     $definitionById = @{}
     foreach ($d in $definitions) { $definitionById[[string]$d.id] = $d }
 
+    # Feeds the -Role completer on the next run. Never fatal: without an Azure context
+    # there is no tenant to scope a cache to, and Save-MsecCache degrades to verbose.
+    Save-MsecCache -Name 'directory-roles' -Item @(
+        $definitions | ForEach-Object {
+            [pscustomobject]@{
+                Id          = [string]$_.id
+                TemplateId  = [string]$_.templateId
+                DisplayName = [string]$_.displayName
+                IsBuiltIn   = [bool]$_.isBuiltIn
+            }
+        }
+    )
+
+    # ---- -Role resolution ---------------------------------------------------------
+    # $null means every role; otherwise the definitions to query, which the assignment
+    # reader turns into one filtered call each rather than a full-tenant sweep.
+    $targetDefinitions = $null
+    $selectedIds = $null
+
+    if ($PSCmdlet.ParameterSetName -eq 'ByRole') {
+        $byTemplateId = @{}; $byId = @{}; $byDisplayName = @{}
+        foreach ($d in $definitions) {
+            if ($d.templateId)  { $byTemplateId[([string]$d.templateId).ToLowerInvariant()]   = $d }
+            if ($d.id)          { $byId[([string]$d.id).ToLowerInvariant()]                   = $d }
+            if ($d.displayName) { $byDisplayName[([string]$d.displayName).ToLowerInvariant()] = $d }
+        }
+
+        # Canonical name -> roleTemplateId. This is the entry that makes the parameter
+        # worth having: -Role 'Global Administrator' resolves through here to
+        # 62e90394-... and then matches the definition even on a tenant whose directory
+        # calls that role 'Company Administrator'. Matching display names alone would
+        # reproduce exactly the bug this module already had in its Global Admin count.
+        $canonicalToTemplate = @{}
+        foreach ($kv in $highlyPrivileged.GetEnumerator()) {
+            $canonicalToTemplate[([string]$kv.Value).ToLowerInvariant()] = [string]$kv.Key
+        }
+
+        $selected   = @{}
+        $unresolved = [System.Collections.Generic.List[string]]::new()
+
+        foreach ($value in $Role) {
+            $key = ([string]$value).Trim().ToLowerInvariant()
+            if (-not $key) { continue }
+
+            $def = $null
+            if     ($byTemplateId.ContainsKey($key))  { $def = $byTemplateId[$key] }
+            elseif ($byId.ContainsKey($key))          { $def = $byId[$key] }
+            elseif ($byDisplayName.ContainsKey($key)) { $def = $byDisplayName[$key] }
+            elseif ($canonicalToTemplate.ContainsKey($key)) {
+                $templateId = $canonicalToTemplate[$key]
+                if ($byTemplateId.ContainsKey($templateId)) { $def = $byTemplateId[$templateId] }
+                else {
+                    # A name msec knows, with no definition in this tenant. The role is
+                    # real and simply has nobody in it: an empty answer, not an error.
+                    Write-Verbose "Role '$value' has no roleDefinition in this tenant, so nothing holds it."
+                    continue
+                }
+            }
+
+            if ($def) { $selected[[string]$def.id] = $def }
+            else      { $unresolved.Add([string]$value) }
+        }
+
+        # A misspelled role that quietly returned nothing would be indistinguishable from
+        # a role nobody holds - which is the single most dangerous way for this command to
+        # be wrong. So an unrecognised value is fatal, and says what it would have taken.
+        if ($unresolved.Count) {
+            $plural = if ($unresolved.Count -gt 1) { 's' } else { '' }
+            $known = (@($definitions | ForEach-Object { $_.displayName } | Where-Object { $_ } | Sort-Object -Unique) -join ', ')
+            throw ("Unrecognised role$plural`: $($unresolved -join ', '). Pass a role's display name as this tenant reports it, its roleTemplateId, or one of the canonical names msec knows (Global Administrator, User Administrator, ...) - matching is case-insensitive, and Tab completes. Roles in this tenant: $known")
+        }
+
+        $targetDefinitions = @($selected.Values)
+        $selectedIds = $selected
+
+        # Every named role resolved to something with no definition here. Nothing to ask
+        # Graph about, and no rows to emit.
+        if (-not $targetDefinitions.Count) { return }
+    }
+
     # ---- Assignment collections ---------------------------------------------------
     # Nested so it closes over $definitions; the retry-with-filter shape is identical
     # for the active and the eligible endpoint and shouldn't be written twice.
     function Get-MsecRoleAssignmentCollection {
-        param([Parameter(Mandatory)][string] $Segment)
+        param(
+            [Parameter(Mandatory)][string] $Segment,
+
+            # When supplied, go straight to one filtered call per definition instead of
+            # pulling every assignment in the tenant and discarding most of it. -Role
+            # takes this path deliberately: asking who holds one role should cost one
+            # request, not a full sweep of a large directory.
+            [object[]] $Definition
+        )
 
         $collection = "/v1.0/roleManagement/directory/$Segment"
 
-        try {
-            return @(Invoke-MsecGraphRequest -Path ($collection + '?$expand=principal') -All)
-        }
-        catch {
-            $detail = Get-MsecGraphErrorMessage $_
-            # Only a "you must filter this" rejection is retryable. A 403 or a
-            # licensing error must propagate to the caller, which knows how to
-            # describe it.
-            if ($detail -notmatch 'filter|not supported|Unsupported|BadRequest') { throw }
-            Write-Verbose "Unfiltered $Segment list rejected ($detail); falling back to one call per role definition."
+        if (-not $Definition) {
+            try {
+                return @(Invoke-MsecGraphRequest -Path ($collection + '?$expand=principal') -All)
+            }
+            catch {
+                $detail = Get-MsecGraphErrorMessage $_
+                # Only a "you must filter this" rejection is retryable. A 403 or a
+                # licensing error must propagate to the caller, which knows how to
+                # describe it.
+                if ($detail -notmatch 'filter|not supported|Unsupported|BadRequest') { throw }
+                Write-Verbose "Unfiltered $Segment list rejected ($detail); falling back to one call per role definition."
+            }
         }
 
         $rows = [System.Collections.Generic.List[object]]::new()
-        foreach ($def in $definitions) {
+        foreach ($def in @(if ($Definition) { $Definition } else { $definitions })) {
             $filter = [uri]::EscapeDataString("roleDefinitionId eq '$($def.id)'")
             try {
                 $page = @(Invoke-MsecGraphRequest -All `
@@ -331,14 +553,14 @@ function Get-MsecEntraPrivilegedPrincipal {
     $assignments = [System.Collections.Generic.List[object]]::new()
 
     if ($AssignmentType -in @('All', 'Active')) {
-        foreach ($a in (Get-MsecRoleAssignmentCollection -Segment 'roleAssignments')) {
+        foreach ($a in (Get-MsecRoleAssignmentCollection -Segment 'roleAssignments' -Definition $targetDefinitions)) {
             $assignments.Add([pscustomobject]@{ Kind = 'Active'; Item = $a })
         }
     }
 
     if ($AssignmentType -in @('All', 'Eligible')) {
         try {
-            foreach ($e in (Get-MsecRoleAssignmentCollection -Segment 'roleEligibilityScheduleInstances')) {
+            foreach ($e in (Get-MsecRoleAssignmentCollection -Segment 'roleEligibilityScheduleInstances' -Definition $targetDefinitions)) {
                 $assignments.Add([pscustomobject]@{ Kind = 'Eligible'; Item = $e })
             }
         }
@@ -448,130 +670,28 @@ function Get-MsecEntraPrivilegedPrincipal {
     }
 
     # ---- Projection ---------------------------------------------------------------
-    # Mutated by the nested row builder, which cannot assign to an outer scalar.
+    # Mutated in place by ConvertTo-MsecRolePrincipalRow so the totals can be reported
+    # once at the end of the run rather than warned about per row.
     $stats = @{ UnreadablePrincipals = 0; UnknownHolders = 0 }
 
-    # '@odata.type' arrives as '#microsoft.graph.user'; keep just the type.
-    function Get-MsecPrincipalObjectType {
-        param($Principal)
-        if ($Principal -and $Principal.'@odata.type') {
-            return ($Principal.'@odata.type' -replace '^#?microsoft\.graph\.', '')
+    # The row shape lives in ConvertTo-MsecRolePrincipalRow, with the principal helpers
+    # it uses - Get-MsecPrincipalObjectType, Get-MsecPrincipalDisplayKey,
+    # Test-MsecPrincipalUnnamed. Kept out of here so every column of a privileged-access
+    # row can be tested without mocking a tenant's worth of Graph endpoints.
+    $row = {
+        param($Context, $Assignee, $Effective, [string] $MembershipType)
+
+        $params = @{
+            Context   = $Context
+            Assignee  = $Assignee
+            Effective = $Effective
+            Stats     = $stats
         }
-        return $null
-    }
+        # -MembershipType is ValidateSet'd, so an empty string cannot be bound: a
+        # direct assignment must omit the parameter rather than pass $null through.
+        if ($MembershipType) { $params['MembershipType'] = $MembershipType }
 
-    # The identifier, resolved by type - a UPN for a user, a name for anything else,
-    # which has none. The matching *Type column says which you are reading, so one
-    # column can carry both without ambiguity.
-    function Get-MsecPrincipalDisplayKey {
-        param($Principal, [string] $FallbackId)
-        if ($Principal.userPrincipalName) { return $Principal.userPrincipalName }
-        if ($Principal.displayName)       { return $Principal.displayName }
-        return $FallbackId
-    }
-
-    # Graph answers a read the caller isn't entitled to by returning the object's full
-    # property SCHEMA with every value null - id and @odata.type only. Privilege held
-    # by an identity this app cannot name is not something an access review may present
-    # as a blank cell: an unnamed administrator has to read as an unknown.
-    function Test-MsecPrincipalUnnamed {
-        param($Principal)
-        if (-not $Principal) { return $true }
-        switch (Get-MsecPrincipalObjectType $Principal) {
-            'user'  { return (-not $Principal.userPrincipalName) }
-            default { return (-not $Principal.displayName) }
-        }
-    }
-
-    function ConvertTo-MsecPrincipalRow {
-        param(
-            $Context,
-            # What the role is assigned to - Graph's principalId. A group when a group
-            # holds the role.
-            $Assignee,
-            # Who ends up holding it. The same object as $Assignee for a direct
-            # assignment; a member for a group assignment; $null when the members of an
-            # assigned group could not be determined.
-            $Effective,
-            [ValidateSet('Active', 'Eligible')] [string] $MembershipType
-        )
-
-        $assigneeType = Get-MsecPrincipalObjectType $Assignee
-        $assigneeId   = if ($Assignee -and $Assignee.id) { $Assignee.id } else { $Context.PrincipalId }
-        $assigneeName = Get-MsecPrincipalDisplayKey -Principal $Assignee -FallbackId $assigneeId
-
-        $effectiveType = Get-MsecPrincipalObjectType $Effective
-        $effectiveId   = if ($Effective) { $Effective.id } else { $null }
-        $effectiveName = if ($Effective) { Get-MsecPrincipalDisplayKey -Principal $Effective -FallbackId $effectiveId } else { $null }
-
-        # Resolved means we know who ends up with the privilege. An assigned group whose
-        # membership could not be determined fails this, and so does a principal Graph
-        # returned as an id-only shell - two different causes, one honest verdict.
-        $unnamed    = ($null -ne $Effective) -and (Test-MsecPrincipalUnnamed $Effective)
-        $isResolved = ($null -ne $Effective) -and -not $unnamed
-        if ($unnamed) { $stats.UnreadablePrincipals++ }
-
-        # Counted separately from an unnamed principal, because the fix is different:
-        # this is an assigned group we could not see inside, not an identity we could
-        # not name. Both leave a blank cell in the table, and a blank cell reads as a
-        # broken report rather than as 'unknown' - so the count is reported at the end.
-        if ($null -eq $Effective) { $stats.UnknownHolders++ }
-
-        # The detail columns describe the EFFECTIVE principal - the identity that holds
-        # the role and would be remediated - not the group it came through.
-        $userType = if ($effectiveType -eq 'user' -and -not $unnamed) { $Effective.userType } else { $null }
-
-        # Graph reports cloud-only objects as null here rather than false, so the two
-        # cases have to be told apart deliberately. A synced privileged account means
-        # on-premises Active Directory is a path to tenant admin, which is why
-        # Microsoft's own guidance is that admin accounts be cloud-only.
-        $isSynced = if ($effectiveType -ne 'user' -or $unnamed) { $null }
-                    else { [bool]$Effective.onPremisesSyncEnabled }
-
-        # Two links must both be active to use a role held through a group: the role ->
-        # principal assignment, and the effective principal's membership of it.
-        # AssignmentType and MembershipType each stay faithful to their own link; this
-        # is the answer to "can this identity use the role right now", which neither
-        # column can give alone. $null where nobody is known to hold it.
-        $isActiveNow = if (-not $isResolved) { $null }
-                       else { ($Context.AssignmentType -eq 'Active') -and ($MembershipType -ne 'Eligible') }
-
-        [PSCustomObject]@{
-            PSTypeName         = 'MsecEntraPrivilegedPrincipal'
-
-            RoleName           = $Context.RoleName
-            RoleTemplateId     = $Context.RoleTemplateId
-            IsHighlyPrivileged = $Context.IsHighlyPrivileged
-
-            # Who ends up with the privilege.
-            EffectiveName      = $effectiveName
-            EffectiveType      = $effectiveType
-            EffectiveId        = $effectiveId
-
-            # What the role is assigned to.
-            PrincipalName      = $assigneeName
-            PrincipalType      = $assigneeType
-            PrincipalId        = $assigneeId
-
-            AssignmentType     = $Context.AssignmentType
-            MembershipType     = if ($MembershipType) { $MembershipType } else { $null }
-            IsActiveNow        = $isActiveNow
-
-            DisplayName        = $Effective.displayName
-            UserPrincipalName  = $Effective.userPrincipalName
-            AccountEnabled     = $Effective.accountEnabled
-            UserType           = $userType
-            IsDirectorySynced  = $isSynced
-
-            Scope              = $Context.Scope
-            DirectoryScopeId   = $Context.DirectoryScopeId
-            IsTenantScoped     = $Context.IsTenantScoped
-            EndDateTime        = $Context.EndDateTime
-
-            IsResolved         = $isResolved
-
-            Raw                = $Context.Raw
-        }
+        ConvertTo-MsecRolePrincipalRow @params
     }
 
     # Several roles are routinely assigned to the same group; expand each group once.
@@ -611,6 +731,12 @@ function Get-MsecEntraPrivilegedPrincipal {
         $isPriv = $highlyPrivileged.ContainsKey($templateId)
         if ($HighlyPrivilegedOnly -and -not $isPriv) { continue }
 
+        # -Role already filtered server-side, one request per named role. Re-checked here
+        # so a Graph that ignored the $filter cannot widen the answer past what was asked
+        # for - a role holder appearing in output nobody requested would be read as a
+        # finding about that role.
+        if ($selectedIds -and -not $selectedIds.ContainsKey($definitionId)) { continue }
+
         $scopeId = [string]$item.directoryScopeId
         $scope = if (-not $scopeId -or $scopeId -eq '/') { 'Tenant' }
                  elseif ($scopeId -match '^/administrativeUnits/(?<id>.+)$') { "AdministrativeUnit:$($Matches['id'])" }
@@ -639,14 +765,14 @@ function Get-MsecEntraPrivilegedPrincipal {
         # A user or service principal is both the assignee and the holder: one row where
         # the two coincide.
         if ($principalType -ne 'group') {
-            ConvertTo-MsecPrincipalRow -Context $context -Assignee $principal -Effective $principal
+            & $row $context $principal $principal
             continue
         }
 
         if ($NoGroupExpansion) {
             # Asked for the assignment-level view. The assignee is known, the holders
             # are deliberately not looked up, so the effective principal is unknown.
-            ConvertTo-MsecPrincipalRow -Context $context -Assignee $principal -Effective $null
+            & $row $context $principal $null
             continue
         }
 
@@ -659,8 +785,7 @@ function Get-MsecEntraPrivilegedPrincipal {
         # rows, so counting holders never double-counts the group itself.
         $emitted = 0
         foreach ($member in $groupCache[$groupId]) {
-            ConvertTo-MsecPrincipalRow -Context $context -Assignee $principal `
-                -Effective $member.Principal -MembershipType $member.Membership
+            & $row $context $principal $member.Principal $member.Membership
             $emitted++
         }
 
@@ -670,7 +795,7 @@ function Get-MsecEntraPrivilegedPrincipal {
         # can take the role tomorrow without touching a role assignment. So the
         # assignment is reported with its holder unknown rather than not reported.
         if ($emitted -eq 0) {
-            ConvertTo-MsecPrincipalRow -Context $context -Assignee $principal -Effective $null
+            & $row $context $principal $null
         }
     }
 

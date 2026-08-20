@@ -65,7 +65,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
                 ) }
             }
 
-            Get-MsecIntuneConfigurationProfile
+            Get-MsecIntuneConfigurationProfile -NoGroupNameLookup
         }
 
         $rows.Count | Should -Be 3
@@ -138,7 +138,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
                 [pscustomobject]@{ value = @() }
             }
 
-            Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -IncludeSettings
+            Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -IncludeSettings -NoGroupNameLookup
         }
 
         $rows.Count | Should -Be 1
@@ -189,7 +189,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
                 }
             }
 
-            Get-MsecIntuneConfigurationProfile -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus -NoGroupNameLookup
         }
 
         # Templates: real counts from deviceStatusOverview
@@ -235,7 +235,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
             }
             Mock Get-MsecSettingsCatalogStatusReport -MockWith { @{} }
 
-            Get-MsecIntuneConfigurationProfile -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus -NoGroupNameLookup
         }
 
         foreach ($r in $rows) {
@@ -270,7 +270,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
             }
             Mock Get-MsecSettingsCatalogStatusReport -MockWith { @{} }  # empty report
 
-            Get-MsecIntuneConfigurationProfile -IncludeStatus
+            Get-MsecIntuneConfigurationProfile -IncludeStatus -NoGroupNameLookup
         }
 
         $r = $rows[0]
@@ -285,4 +285,230 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
         $r.PendingCount       | Should -Be 0
         $r.SuccessPercent     | Should -Be 0
     }
+
+    Context 'assignment targets' {
+        BeforeAll {
+            # One policy per interesting target shape. Note sc-excl: tenant-wide with a
+            # carve-out, which AssignmentCount alone reports identically to sc-two-groups.
+            $script:ProfileMockText = @'
+Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
+Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
+    [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
 }
+Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/beta/deviceManagement/configurationPolicies\?' } -MockWith {
+    $t = { param($Type, $GroupId, $FilterType)
+        $o = @{ '@odata.type' = "#microsoft.graph.$Type" }
+        if ($GroupId)    { $o['groupId'] = $GroupId }
+        if ($FilterType) { $o['deviceAndAppManagementAssignmentFilterType'] = $FilterType
+                           $o['deviceAndAppManagementAssignmentFilterId']   = 'flt-1' }
+        [pscustomobject]@{ target = [pscustomobject]$o } }
+
+    [pscustomobject]@{ value = @(
+        [pscustomobject]@{ id = 'sc-allusers'; name = 'Baseline'; platforms = 'windows10'
+                           assignments = @((& $t 'allLicensedUsersAssignmentTarget')) }
+        [pscustomobject]@{ id = 'sc-excl'; name = 'Everyone But VIPs'; platforms = 'windows10'
+                           assignments = @((& $t 'allLicensedUsersAssignmentTarget'),
+                                           (& $t 'exclusionGroupAssignmentTarget' 'g-vip')) }
+        [pscustomobject]@{ id = 'sc-two-groups'; name = 'Two Rings'; platforms = 'windows10'
+                           assignments = @((& $t 'groupAssignmentTarget' 'g-ring1'),
+                                           (& $t 'groupAssignmentTarget' 'g-ring2')) }
+        [pscustomobject]@{ id = 'sc-filtered'; name = 'Filtered Devices'; platforms = 'windows10'
+                           assignments = @((& $t 'allDevicesAssignmentTarget' $null 'include')) }
+        [pscustomobject]@{ id = 'sc-none'; name = 'Orphan'; platforms = 'windows10'
+                           assignments = @() }
+    ) }
+}
+Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/deviceConfigurations\?' } -MockWith {
+    [pscustomobject]@{ value = @() }
+}
+'@
+        }
+
+        It 'reports the target type with no group call at all under -NoGroupNameLookup' {
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                # The switch must mean PROVABLY no per-group calls, not merely fewer.
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    throw 'no group lookup may happen under -NoGroupNameLookup'
+                }
+                @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -NoGroupNameLookup)
+            }
+
+            ($out | Where-Object Id -eq 'sc-allusers').AssignmentType     | Should -Be @('AllUsers')
+            ($out | Where-Object Id -eq 'sc-filtered').AssignmentType     | Should -Be @('AllDevices')
+            ($out | Where-Object Id -eq 'sc-filtered').HasAssignmentFilter | Should -BeTrue
+
+            # An unassigned policy gets empty arrays, not $null, so -contains and .Count
+            # work at the call site without a null check first.
+            ($out | Where-Object Id -eq 'sc-none').AssignmentType          | Should -BeNullOrEmpty
+            @(($out | Where-Object Id -eq 'sc-none').AssignmentGroup).Count | Should -Be 0
+
+            # Ids stand in for names because the lookup was skipped.
+            ($out | Where-Object Id -eq 'sc-two-groups').AssignmentType  | Should -Be @('Group')
+            ($out | Where-Object Id -eq 'sc-two-groups').AssignmentGroup | Should -Be @('g-ring1', 'g-ring2')
+
+            ($out | Where-Object Id -eq 'sc-excl').AssignmentType          | Should -Be @('AllUsers', 'ExclusionGroup')
+            ($out | Where-Object Id -eq 'sc-excl').AssignmentExcludedGroup | Should -Be @('g-vip')
+            # The carve-out must not leak into the INCLUDED groups column.
+            @(($out | Where-Object Id -eq 'sc-excl').AssignmentGroup).Count | Should -Be 0
+        }
+
+        It 'distinguishes an exclusion from a second group, which AssignmentCount cannot' {
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -NoGroupNameLookup)
+            }
+
+            $excl = $out | Where-Object Id -eq 'sc-excl'
+            $two  = $out | Where-Object Id -eq 'sc-two-groups'
+
+            # Identical counts...
+            $excl.AssignmentCount | Should -Be 2
+            $two.AssignmentCount  | Should -Be 2
+            # ...entirely different deployments.
+            $excl.AssignmentType          | Should -Be @('AllUsers', 'ExclusionGroup')
+            $two.AssignmentType           | Should -Be @('Group')
+            $excl.AssignmentExcludedGroup | Should -Be @('g-vip')
+            @($two.AssignmentExcludedGroup).Count | Should -Be 0
+            @($excl.AssignmentDetail | Where-Object IsExclusion).Count | Should -Be 1
+            @($two.AssignmentDetail  | Where-Object IsExclusion).Count | Should -Be 0
+        }
+
+        It 'resolves group names by default, one call per distinct group' {
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    $id = ([regex]::Match([string]$Uri, '/groups/(?<id>[^?]+)')).Groups['id'].Value
+                    $script:GroupCalls.Add($id)
+                    [pscustomobject]@{ id = $id; displayName = "name-of-$id" }
+                }
+                [pscustomobject]@{
+                    Rows  = @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog)
+                    Calls = @($script:GroupCalls)
+                }
+            }
+
+            ($out.Rows | Where-Object Id -eq 'sc-two-groups').AssignmentGroup |
+                Should -Be @('name-of-g-ring1', 'name-of-g-ring2')
+            ($out.Rows | Where-Object Id -eq 'sc-excl').AssignmentExcludedGroup |
+                Should -Be @('name-of-g-vip')
+            ($out.Rows | Where-Object Id -eq 'sc-two-groups').AssignmentDetail.GroupName |
+                Should -Be @('name-of-g-ring1', 'name-of-g-ring2')
+            # Same names, reached the other way - the column is derived from the detail.
+
+            # Three distinct groups across the policies, three lookups - no duplicates.
+            @($out.Calls).Count            | Should -Be 3
+            @($out.Calls | Sort-Object -Unique).Count | Should -Be 3
+        }
+
+        It 'labels a deleted group instead of leaving it blank' {
+            # A policy assigned only to a group that no longer exists is deployed to
+            # nobody. That is a finding, so it has to be legible rather than empty.
+            $row = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    throw 'Response status code does not indicate success: 404 (Not Found).'
+                }
+                @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog) |
+                    Where-Object Id -eq 'sc-excl'
+            }
+
+            $row.AssignmentExcludedGroup | Should -Be @('<deleted group g-vip>')
+        }
+
+        It 'warns once and falls back to ids when Group.Read.All is missing' {
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    $script:GroupCalls.Add('call')
+                    throw 'Response status code does not indicate success: 403 (Forbidden).'
+                }
+                $rows = Get-MsecIntuneConfigurationProfile -Source SettingsCatalog `
+                            -WarningVariable w -WarningAction SilentlyContinue
+                [pscustomobject]@{ Rows = @($rows); Warnings = @($w); Calls = @($script:GroupCalls) }
+            }
+
+            ($out.Warnings -join "`n") | Should -Match 'Group\.Read\.All'
+            # One warning for the run, not one per assigned group.
+            @($out.Warnings).Count     | Should -Be 1
+            # And it stops asking after the first refusal.
+            @($out.Calls).Count        | Should -Be 1
+            # The target TYPE is unaffected by a failed name lookup.
+            ($out.Rows | Where-Object Id -eq 'sc-allusers').AssignmentType     | Should -Be @('AllUsers')
+            ($out.Rows | Where-Object Id -eq 'sc-excl').AssignmentType          | Should -Be @('AllUsers', 'ExclusionGroup')
+            ($out.Rows | Where-Object Id -eq 'sc-excl').AssignmentExcludedGroup | Should -Be @('g-vip')
+        }
+
+        It 'gives up after one auth failure instead of warning per group' {
+            # A 401 is not about this group - it will be true of the next one too. Warning
+            # per group would bury the output of a tenant with hundreds of profiles.
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    $script:GroupCalls.Add('call')
+                    throw 'Response status code does not indicate success: 401 (Unauthorized).'
+                }
+                $rows = Get-MsecIntuneConfigurationProfile -Source SettingsCatalog `
+                            -WarningVariable w -WarningAction SilentlyContinue
+                [pscustomobject]@{ Rows = @($rows); Warnings = @($w); Calls = @($script:GroupCalls) }
+            }
+
+            @($out.Warnings).Count | Should -Be 1
+            @($out.Calls).Count    | Should -Be 1
+            # A 401 must NOT be described as a missing permission - the fixes are opposite.
+            ($out.Warnings -join "`n") | Should -Match 'Connect-Msec'
+            ($out.Warnings -join "`n") | Should -Not -Match 'Group\.Read\.All'
+            # Target types survive a failed name lookup untouched.
+            ($out.Rows | Where-Object Id -eq 'sc-excl').AssignmentType | Should -Be @('AllUsers', 'ExclusionGroup')
+        }
+
+        It 'warns per group for a failure that really is per group' {
+            # A transient failure on one group says nothing about the next, so it keeps
+            # going - and each warning names a different id rather than repeating.
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
+                    throw 'Response status code does not indicate success: 500 (Internal Server Error).'
+                }
+                $rows = Get-MsecIntuneConfigurationProfile -Source SettingsCatalog `
+                            -WarningVariable w -WarningAction SilentlyContinue
+                [pscustomobject]@{ Rows = @($rows); Warnings = @($w) }
+            }
+
+            # Three distinct groups across the fixture, so three warnings - bounded by
+            # distinct groups, not by policy count.
+            @($out.Warnings).Count | Should -Be 3
+            ($out.Warnings -join "`n") | Should -Match 'g-vip'
+            ($out.Warnings -join "`n") | Should -Match 'g-ring1'
+            # Ids stand in for the names that could not be read.
+            ($out.Rows | Where-Object Id -eq 'sc-excl').AssignmentExcludedGroup | Should -Be @('g-vip')
+        }
+
+        It 'keeps AssignmentCount as the raw number of assignments' {
+            # AssignmentType is DISTINCT, so it collapses three groups into one entry.
+            # AssignmentDetail must still account for every assignment, or the columns
+            # and the count would disagree.
+            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -NoGroupNameLookup)
+            }
+
+            foreach ($row in $out) {
+                @($row.AssignmentDetail).Count | Should -Be $row.AssignmentCount `
+                    -Because "AssignmentDetail must account for every assignment on $($row.Id)"
+            }
+        }
+    }
+}
+

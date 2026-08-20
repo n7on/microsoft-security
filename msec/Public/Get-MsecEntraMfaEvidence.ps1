@@ -258,7 +258,7 @@ function Get-MsecEntraMfaEvidence {
             # an MFA policy, so this must not be skipped when present.
             if ($null -eq $roleHolderCache) {
                 try {
-                    $roleHolderCache = @(Get-MsecEntraPrivilegedPrincipal -ErrorAction Stop)
+                    $roleHolderCache = @(Get-MsecEntraRoleHolder -ErrorAction Stop)
                 }
                 catch {
                     $roleHolderCache = @()

@@ -1,8 +1,5 @@
 // One row per network security group rule, across every accessible subscription, together
-// with what the NSG is actually attached to. This is the Resource Graph replacement for the
-// old Get-ViedocAzNetworkGroupSecurityRules script - one query instead of a Set-AzContext /
-// Get-AzNetworkSecurityGroup / Get-AzNetworkInterface loop per subscription.
-//
+// with what the NSG is actually attached to.
 // Loaded by Search-MsecAzureResourceGraph -ResourceType NSG -Name SecurityRules.
 //
 // AppliedToType is one of:
@@ -27,9 +24,6 @@
 //   * The plural properties (sourceAddressPrefixes, destinationPortRanges, ...) and
 //     application security group references are rendered. The old script read only the
 //     singular properties and printed an empty cell for multi-value rules.
-//   * '*' renders as 'Any'. Everything else is passed through verbatim - ARG has no
-//     equivalent of the Get-ViedocAzIpTranslation / Get-ViedocAzPortTranslation lookups, so
-//     do any friendly-name mapping in PowerShell on the way out.
 //
 // No filtering here - filter in PowerShell. The one everybody wants, inbound allows
 // reachable from the internet:

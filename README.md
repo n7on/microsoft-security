@@ -57,6 +57,7 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Get-MsecIntuneConfigurationProfile](./docs/commands/Get-MsecIntuneConfigurationProfile.md) - Settings Catalog and classic configuration profiles merged, with assignment targets resolved
 - [Get-MsecIntuneCompliancePolicy](./docs/commands/Get-MsecIntuneCompliancePolicy.md) - Compliance policies: what makes a device compliant, and therefore allowed through Conditional Access
 - [Get-MsecIntuneDevice](./docs/commands/Get-MsecIntuneDevice.md) - Every managed device known to Intune
+- [Get-MsecIntuneScriptResult](./docs/commands/Get-MsecIntuneScriptResult.md) - Per-device results from every kind of Intune script: remediations, platform scripts, macOS custom attributes and custom compliance scripts
 
 ### Azure
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph

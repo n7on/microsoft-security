@@ -450,7 +450,7 @@ Describe 'Kql/Graph/NSG' {
         $names | Should -Contain 'SecurityRules'
     }
 
-    It 'SecurityRules.kql projects the columns the old Get-ViedocAzNetworkGroupSecurityRules printed' {
+    It 'SecurityRules.kql projects every column the old script produced, plus IsDefault, and fan-out is per-rule' {
         $query = InModuleScope msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }

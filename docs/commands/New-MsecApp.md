@@ -57,7 +57,8 @@ Returns an object with TenantId, ClientId, KeyVaultName, CertificateName.
 
 Current required permissions (configured at the top of the function in $resources):
   - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
-                     DeviceManagementManagedDevices.Read.All, ThreatHunting.Read.All,
+                     DeviceManagementManagedDevices.Read.All, DeviceManagementScripts.Read.All,
+                     ThreatHunting.Read.All,
                      SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All,
                      Organization.Read.All, RoleManagement.Read.Directory,
                      User.Read.All, Group.Read.All, Application.Read.All,

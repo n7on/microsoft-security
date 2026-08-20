@@ -32,7 +32,7 @@ See the examples.
 Requires the 'DeviceManagementManagedDevices.Read.All' application
 permission.
 Different from DeviceManagementConfiguration.Read.All (which
-msec already has) - configuration is about POLICIES, this is about
+msec also has) - configuration is about POLICIES, this is about
 DEVICES.
 A clearer error is raised on the typical 403.
 

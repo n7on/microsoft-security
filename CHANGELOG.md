@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `Get-MsecIntuneScriptResult` - per-device results from all five Intune script collections:
+  remediations (deviceHealthScripts), platform scripts (deviceManagementScripts and
+  deviceShellScripts), macOS custom attributes and custom compliance discovery scripts.
+  The data behind the portal's Excel export. Reads deviceRunStates only - per-user results
+  from user-context scripts are not covered.
+
+### Fixed
+- `New-MsecApp` now requests `DeviceManagementScripts.Read.All`. Intune scripts are a
+  separate scope from `DeviceManagementConfiguration.Read.All`, which does not cover
+  deviceHealthScripts or deviceCustomAttributeShellScripts even though both sit under
+  /deviceManagement beside the configuration policies - they answer 403 without it.
+- `New-MsecApp` reported its permission grants only through `Write-Verbose`, so a re-run
+  that added a dozen app roles printed one line about finding the app and nothing about the
+  grants - indistinguishable from having done nothing. It now prints a summary, returns
+  `GrantedNow` / `AlreadyGranted` / `UnavailableRoles`, and says to reconnect: consent does
+  not apply to a token that was already issued, so re-running to fix a 403 and retrying in
+  the same session hits the same 403.
+
 ## [0.1.0] - 2026-08-20
 
 First release.
@@ -19,7 +38,7 @@ First release.
   `Get-MsecEntraMfaRegistration`, `Get-MsecEntraMfaRegistrationStats`,
   `Get-MsecEntraMfaEvidence`, `Convert-MsecEntraSid`.
 - **Intune** - `Get-MsecIntuneConfigurationProfile`, `Get-MsecIntuneCompliancePolicy`,
-  `Get-MsecIntuneDevice`.
+  `Get-MsecIntuneDevice`, `Get-MsecIntuneScriptResult`.
 - **Azure** - `Search-MsecAzureResourceGraph`, `Search-MsecLogAnalytics`,
   `Invoke-MsecAzureVMScript`, `Select-MsecAzureContext`.
 - **Azure DevOps** - `Get-MsecAdoServiceConnection`.

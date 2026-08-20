@@ -29,15 +29,6 @@
     this prints 'None', which reads as "no Entra local admins" when there are some. The
     exit code is still 0 because the collection itself worked. If that distinction ever
     matters, the count in $skipped is the hook to surface it.
-
-    WHY THE NAME IS NOT JUST THE TRANSLATED ONE
-    -------------------------------------------
-    Translating an Entra SID to an NTAccount goes through LSA, which answers with the
-    SAM-compatible name it cached for the account - the UPN's local part, or the UPN cut
-    to the 20-character SAM limit. So it yields 'AzureAD\anton.lindstrom', not
-    'AzureAD\anton.lindstrom@viedoc.com'. The local part is ambiguous across domains and
-    a truncation is not a usable identity at all, so the full UPN is read from the
-    IdentityStore registry cache and substituted for it.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -151,7 +142,7 @@ try {
         # a UPN never contains one, so the split is unambiguous.
         # The lookup is unconditional, NOT skipped when the translated name already
         # contains an '@': the 20-character SAM truncation can cut mid-domain and leave
-        # 'anton.lindstrom@vied', which looks like a UPN and is not one. The cached UPN is
+        # 'anton@examp', which looks like a UPN and is not one. The cached UPN is
         # authoritative either way, so there is nothing to gain by guessing first.
         if ($name) {
             $upn = Get-EntraUpnFromSid -Sid $sidValue

@@ -104,6 +104,12 @@ Update-TypeData -TypeName 'MsecEntraSidResolved' `
 # This set still governs Format-List and Select-Object, keeping Raw and AssignmentDetail
 # out of a list view - so both are needed, and both list the same columns on purpose.
 #
+# Output last: a script result can be long or multi-line, so it truncates gracefully at
+# the end of the row instead of pushing the identifying columns off the terminal.
+Update-TypeData -TypeName 'MsecIntuneScriptResult' `
+    -DefaultDisplayPropertySet 'ScriptName', 'Source', 'DeviceName', 'State', 'Output' `
+    -Force
+
 # AssignmentType + AssignmentGroup rather than AssignmentCount: the count cannot tell 'All
 # Users plus an exclusion group' from 'two unrelated groups', and which of those it is
 # decides whether a row needs looking at. ExclusionGroup shows up in AssignmentType, so a

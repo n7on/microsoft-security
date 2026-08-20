@@ -6,7 +6,7 @@
 #   Runs as   : root, every 8 hours, by the Intune management agent
 #   Output    : comma-separated, qualified admin accounts, or "none"
 #
-#     AzureAD\anton.lindstrom@viedoc.com,Local\localadmin
+#     AzureAD\user@company.com,Local\localadmin
 #
 # v2: output is now qualified per account source so it lines up with the
 # Windows report, which shows Entra accounts as AzureAD\<name>.
@@ -79,7 +79,7 @@ for user in $users; do
 done
 
 # printf, not echo: /bin/sh interprets backslash escapes in echo, which would
-# eat the separator in "AzureAD\anton..." (\a becomes a bell character).
+# eat the separator in "AzureAD\user..." (\a becomes a bell character).
 if [ -z "$admins" ]; then
     printf 'none\n'
 else

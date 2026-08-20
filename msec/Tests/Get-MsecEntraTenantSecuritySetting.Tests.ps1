@@ -135,8 +135,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
             }
             # An Azure-infrastructure tenant: a couple of unrelated SKUs, no premium.
             # EXCHANGE_S_FOUNDATION rides along with Power BI Standard and must NOT be
-            # read as a mail estate - it grants no mailboxes. This is the real shape of
-            # the ViedocProd tenant.
+            # read as a mail estate - it grants no mailboxes.
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/subscribedSkus' } -MockWith {
                 [pscustomobject]@{ value = @(
                     [pscustomobject]@{

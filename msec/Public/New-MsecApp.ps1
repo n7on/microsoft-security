@@ -29,7 +29,8 @@ function New-MsecApp {
 
         Current required permissions (configured at the top of the function in $resources):
           - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
-                             DeviceManagementManagedDevices.Read.All, ThreatHunting.Read.All,
+                             DeviceManagementManagedDevices.Read.All, DeviceManagementScripts.Read.All,
+                             ThreatHunting.Read.All,
                              SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All,
                              Organization.Read.All, RoleManagement.Read.Directory,
                              User.Read.All, Group.Read.All, Application.Read.All,
@@ -120,6 +121,12 @@ function New-MsecApp {
                 'SecurityEvents.Read.All',                # Microsoft Secure Score (Graph)
                 'DeviceManagementConfiguration.Read.All', # Intune configurations / compliance policies
                 'DeviceManagementManagedDevices.Read.All',# Intune managed devices (Get-MsecIntuneDevice)
+                # Intune SCRIPTS are a separate scope from Intune configuration, which is not
+                # obvious from the endpoint paths: deviceHealthScripts and
+                # deviceCustomAttributeShellScripts both sit under /deviceManagement alongside
+                # the configuration policies, but DeviceManagementConfiguration.Read.All does
+                # not cover them and they 403 without this (Get-MsecIntuneScriptResult).
+                'DeviceManagementScripts.Read.All',
                 'ThreatHunting.Read.All',                 # Advanced hunting / EmailEvents (Get-MsecDefenderEmailStats)
                 'SecurityIncident.Read.All',              # Defender XDR incidents (Get-MsecDefenderIncidentStats)
                 'Policy.Read.All',                        # CA policies + tenant security settings (Get-MsecEntraConditionalAccessPolicy, Get-MsecEntraTenantSecuritySetting)
@@ -322,25 +329,52 @@ function New-MsecApp {
     }
 
     # ---- 7. Grant admin consent for any (resource, role) pair not already assigned ----
+    # NB: this GET is not paged. Graph returns up to 100 assignments by default and msec asks
+    # for around fifteen, so a second page would mean the app had been granted a great deal
+    # more than this module needs - worth knowing if that ever becomes true.
     $existingAssignments = & $graph GET "/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments"
     $existingPairs = @{}
     foreach ($a in @($existingAssignments.value)) {
         $existingPairs["$($a.resourceId)|$($a.appRoleId)"] = $true
     }
+
+    # Tracked rather than merely logged. This step used to report only through
+    # Write-Verbose, which meant a re-run that added a dozen permissions printed one line
+    # about finding the app and nothing whatsoever about the grants - indistinguishable,
+    # from the outside, from having done nothing at all.
+    $grantedNow     = [System.Collections.Generic.List[string]]::new()
+    $alreadyGranted = [System.Collections.Generic.List[string]]::new()
+
     foreach ($r in $resources) {
         foreach ($role in $r.Roles) {
-            $pair = "$($r.ResourceSpId)|$($role.Id)"
+            $label = "$($r.Name): $($role.Value)"
+            $pair  = "$($r.ResourceSpId)|$($role.Id)"
             if ($existingPairs.ContainsKey($pair)) {
-                Write-Verbose "Already consented: $($r.Name) -> $($role.Value)"
+                Write-Verbose "Already consented: $label"
+                $alreadyGranted.Add($label)
                 continue
             }
-            Write-Verbose "Granting admin consent: $($r.Name) -> $($role.Value)"
+            Write-Verbose "Granting admin consent: $label"
             & $graph POST "/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments" @{
                 principalId = $appSp.id
                 resourceId  = $r.ResourceSpId
                 appRoleId   = $role.Id
             } | Out-Null
+            $grantedNow.Add($label)
         }
+    }
+
+    # ---- 8. Say what happened ----------------------------------------------------------
+    Write-Host "Permissions: $($grantedNow.Count) granted now, $($alreadyGranted.Count) already present$(if ($missingRoles) { ", $(@($missingRoles).Count) unavailable in this cloud" })."
+    foreach ($g in $grantedNow) { Write-Host "  + $g" }
+
+    if ($grantedNow.Count) {
+        # The grant is immediate, but a token already issued does not carry it - consent
+        # applies to tokens minted afterwards. Anyone who re-runs this to fix a 403 and then
+        # retries the same command in the same session hits the identical 403 and concludes
+        # the grant did not work, so this is the one instruction that has to be loud.
+        Write-Host ''
+        Write-Host 'Run Disconnect-Msec then Connect-Msec to pick up the new permissions - a cached token predates the grant and will still be refused.' -ForegroundColor Yellow
     }
 
     [PSCustomObject]@{
@@ -350,5 +384,11 @@ function New-MsecApp {
         CertificateName = $CertificateName
         AppObjectId     = $app.id
         DisplayName     = $app.displayName
+
+        # Returned as well as printed, so a caller can assert on them rather than scrape
+        # the console - and so the tests can pin this behaviour.
+        GrantedNow      = $grantedNow.ToArray()
+        AlreadyGranted  = $alreadyGranted.ToArray()
+        UnavailableRoles = @($missingRoles)
     }
 }

@@ -51,7 +51,7 @@ jobs:
       - name: Sync manifest version
         shell: pwsh
         run: |
-          $path = 'msec/msec.psd1'
+          $path = 'Msec/Msec.psd1'
           $current = (Import-PowerShellDataFile $path).ModuleVersion
           $target  = '${{ steps.version.outputs.VERSION }}'
 
@@ -98,7 +98,7 @@ jobs:
         env:
           MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
         run: |
-          $result = Invoke-Pester -Path ./msec/Tests -Output Detailed -PassThru
+          $result = Invoke-Pester -Path ./Msec/Tests -Output Detailed -PassThru
           if ($result.FailedCount -gt 0) {
             throw "$($result.FailedCount) test(s) failed - refusing to publish."
           }
@@ -109,11 +109,11 @@ jobs:
           # Catches manifest problems before they become a published version. A release on
           # the Gallery cannot be replaced, only superseded, so this is the last cheap
           # place to fail.
-          Test-ModuleManifest ./msec/msec.psd1 | Format-List Name, Version, RequiredModules
+          Test-ModuleManifest ./Msec/Msec.psd1 | Format-List Name, Version, RequiredModules
 
-          Import-Module ./msec/msec.psd1 -Force
-          $manifest = Import-PowerShellDataFile ./msec/msec.psd1
-          $exported = (Get-Module msec).ExportedFunctions.Keys
+          Import-Module ./Msec/Msec.psd1 -Force
+          $manifest = Import-PowerShellDataFile ./Msec/Msec.psd1
+          $exported = (Get-Module Msec).ExportedFunctions.Keys
 
           $missing = $manifest.FunctionsToExport | Where-Object { $_ -notin $exported }
           if ($missing) { throw "Manifest exports commands that do not exist: $($missing -join ', ')" }
@@ -129,13 +129,13 @@ jobs:
           if (-not $env:PSGALLERY_API_KEY) {
             throw "PSGALLERY_API_KEY secret is not set."
           }
-          Publish-Module -Path ./msec -NuGetApiKey $env:PSGALLERY_API_KEY -Repository PSGallery -Verbose
+          Publish-Module -Path ./Msec -NuGetApiKey $env:PSGALLERY_API_KEY -Repository PSGallery -Verbose
 
       - name: Dry run - validate only
         if: ${{ github.event.inputs.dryRun == 'true' }}
         shell: pwsh
         run: |
-          Publish-Module -Path ./msec -NuGetApiKey 'dry-run' -Repository PSGallery -WhatIf -Verbose
+          Publish-Module -Path ./Msec -NuGetApiKey 'dry-run' -Repository PSGallery -WhatIf -Verbose
           Write-Host 'Dry run complete - nothing was pushed.'
 
       - name: Create GitHub release

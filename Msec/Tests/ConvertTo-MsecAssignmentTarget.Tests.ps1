@@ -9,7 +9,7 @@
 # values - which is the property that lets callers use -contains instead of -match.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Builds one assignment the way Graph expands it onto a policy. Passed to
@@ -30,14 +30,14 @@ $script:MkTarget = {
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'ConvertTo-MsecAssignmentTarget' {
 
     It 'returns empty arrays, not $null, for an unassigned policy' {
         # So a caller can pipe straight into -contains or .Count without a null check.
-        $r = InModuleScope msec { ConvertTo-MsecAssignmentTarget @() }
+        $r = InModuleScope Msec { ConvertTo-MsecAssignmentTarget @() }
 
         @($r.Type).Count          | Should -Be 0
         @($r.Group).Count         | Should -Be 0
@@ -48,13 +48,13 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
 
     It 'treats $null assignments the same as an empty collection' {
         # Graph omits the property rather than sending [] in some responses.
-        $r = InModuleScope msec { ConvertTo-MsecAssignmentTarget $null }
+        $r = InModuleScope Msec { ConvertTo-MsecAssignmentTarget $null }
         @($r.Type).Count | Should -Be 0
         $r.HasFilter     | Should -BeFalse
     }
 
     It 'names the two tenant-wide targets and orders them predictably' {
-        $out = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $out = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             [pscustomobject]@{
@@ -77,7 +77,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     }
 
     It 'lists every included group, and reports the type once' {
-        $out = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $out = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             ConvertTo-MsecAssignmentTarget -GroupName @{ 'g1' = 'sg-pilot'; 'g2' = 'sg-broad' } -Assignment @(
@@ -96,7 +96,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     It 'falls back to the group id when no name was supplied' {
         # -IncludeAssignmentGroup was not used, or the lookup was forbidden. A target must
         # never be nameless: the id is what you would act on.
-        $r = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $r = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             ConvertTo-MsecAssignmentTarget @((& $script:MkTarget 'groupAssignmentTarget' 'g-unknown'))
@@ -111,7 +111,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
         # THE case a count cannot express: this is 2 assignments, and so is a pair of
         # unrelated groups. Two parallel lists would also leave the reader guessing which
         # name was the carve-out - hence a separate column rather than a shared one.
-        $out = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $out = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             $names = @{ 'g9' = 'sg-vips'; 'g8' = 'sg-execs' }
@@ -136,7 +136,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     }
 
     It 'separates included from excluded when a policy has both' {
-        $r = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $r = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             ConvertTo-MsecAssignmentTarget -GroupName @{ 'g1' = 'sg-pilot'; 'g9' = 'sg-vips' } -Assignment @(
@@ -151,7 +151,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     }
 
     It 'flags a filtered assignment, whose stated target overstates its reach' {
-        $out = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $out = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             [pscustomobject]@{
@@ -177,7 +177,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     It 'keeps an unrecognised target type rather than flattening it' {
         # Intune has added target types before. A name you can look up beats a label that
         # hides one, and it sorts after the kinds msec does know.
-        $r = InModuleScope msec {
+        $r = InModuleScope Msec {
             ConvertTo-MsecAssignmentTarget @(
                 [pscustomobject]@{ target = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.allDevicesAssignmentTarget' } },
                 [pscustomobject]@{ target = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.futureThingTarget' } })
@@ -191,7 +191,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
         # Here 'Unknown' is the accurate description rather than a shrug - and the
         # assignment is still counted, so the columns cannot disagree with
         # AssignmentCount.
-        $r = InModuleScope msec {
+        $r = InModuleScope Msec {
             ConvertTo-MsecAssignmentTarget @([pscustomobject]@{ target = [pscustomobject]@{} })
         }
 
@@ -201,7 +201,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     }
 
     It 'maps a ConfigMgr collection target, which has no group' {
-        $r = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $r = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             ConvertTo-MsecAssignmentTarget @((& $script:MkTarget 'configurationManagerCollectionAssignmentTarget'))
@@ -212,7 +212,7 @@ Describe 'ConvertTo-MsecAssignmentTarget' {
     }
 
     It 'keeps the verbatim assignment on every detail row' {
-        $r = InModuleScope msec -Parameters @{ MakeText = $script:MakeText } {
+        $r = InModuleScope Msec -Parameters @{ MakeText = $script:MakeText } {
             param($MakeText)
             & ([scriptblock]::Create($MakeText))
             ConvertTo-MsecAssignmentTarget @((& $script:MkTarget 'groupAssignmentTarget' 'g1'))

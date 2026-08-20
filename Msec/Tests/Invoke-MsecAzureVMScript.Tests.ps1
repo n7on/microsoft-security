@@ -8,17 +8,17 @@
 # validation, and tab completion.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Invoke-MsecAzureVMScript' {
     It '-Os Linux runs the bundled .sh via RunShellScript and projects the response' {
-        $results = InModuleScope msec {
+        $results = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             $script:CapturedScriptPath = $null
             $script:CapturedCommandId  = $null
@@ -52,7 +52,7 @@ Describe 'Invoke-MsecAzureVMScript' {
     }
 
     It '-Os Windows runs the bundled .ps1 via RunPowerShellScript and projects the response' {
-        $results = InModuleScope msec {
+        $results = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             $script:CapturedScriptPath = $null
             $script:CapturedCommandId  = $null
@@ -85,7 +85,7 @@ Describe 'Invoke-MsecAzureVMScript' {
         # Reproduces the user-reported case: Linux RunShellScript returns a single Value
         # entry whose Message is "Enable succeeded:\n[stdout]\n<actual>\n[stderr]\n<err>".
         # The runner must strip that wrapper so ConvertFrom-Json on $_.Output works.
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
@@ -127,7 +127,7 @@ Enable succeeded:
     It 'falls back to concatenating Value[].Message when the StdOut/StdErr Code filter misses' {
         # Reproduces the user-reported case: script succeeded, took ~30s, but Output came
         # back blank because Az.Compute's Code field didn't contain 'StdOut'.
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{
@@ -148,7 +148,7 @@ Enable succeeded:
     }
 
     It 'throws a clear "<Os> script not found" error at runtime when the script does not exist' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext         -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith { throw 'should not be called' }
 
@@ -165,7 +165,7 @@ Enable succeeded:
         # Single-context model: with the active context on sub-A, a VM in sub-A dispatches
         # normally; a VM in sub-B is NOT dispatched - it comes back as a Failed row
         # explaining the mismatch. No per-VM context switching, no -DefaultProfile.
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext -MockWith {
                 [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' }
             }
@@ -195,7 +195,7 @@ Enable succeeded:
     It 'returns a Failed row (rather than throwing or dispatching) when a VMs subscription differs from the active context' {
         # Surfacing the gap in the report - with the remedy - is more useful than silently
         # dropping the VM, dispatching to the wrong sub, or aborting the whole batch.
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             # Active context is sub-A; the VM lives in sub-B.
             Mock Get-AzContext -MockWith {
                 [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-A' }; Name = 'ctx-A' }
@@ -217,7 +217,7 @@ Enable succeeded:
         # The whole point: no upstream ForEach-Object or OS-split needed - the caller
         # pipes rows that carry their own Os, and each row is dispatched against the
         # right Scripts/<Os>/ folder.
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 # Echo the CommandId so the test can prove the per-row dispatch picked
@@ -287,7 +287,7 @@ Enable succeeded:
     It 'with -ThrottleLimit 1 (default) still streams results through the sequential path' {
         # The sequential path is what we can actually mock - this verifies the refactor
         # to a worker-scriptblock didn't change observable behaviour at ThrottleLimit=1.
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Invoke-AzVMRunCommand -MockWith {
                 [pscustomobject]@{

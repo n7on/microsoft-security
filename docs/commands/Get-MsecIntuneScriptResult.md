@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -242,7 +242,7 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ### PSCustomObject per (script, device), PSTypeName 'MsecIntuneScriptResult'. See .NOTES.
 ## NOTES
-Default table view (registered in msec.psm1): ScriptName, Source, DeviceName, State,
+Default table view (registered in Msec.psm1): ScriptName, Source, DeviceName, State,
 Output.
 Output is last so a long script result truncates gracefully rather than
 pushing other columns off the terminal.

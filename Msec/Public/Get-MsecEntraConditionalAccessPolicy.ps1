@@ -136,7 +136,7 @@ function Get-MsecEntraConditionalAccessPolicy {
 
             # Raw - the full nested Graph object. Useful for audit dives /
             # JSON backup / change-diff. Hidden from default Format-Table view
-            # by the DefaultDisplayPropertySet registered in msec.psm1.
+            # by the DefaultDisplayPropertySet registered in Msec.psm1.
             Raw                 = $p
         }
         $row

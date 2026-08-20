@@ -7,18 +7,18 @@
 # being mistaken for a sign-in that skipped MFA.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEntraMfaEvidence' {
 
     It 'assigns each user the right evidence bucket and resolves group-based exclusions' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             # The three underlying commands are mocked directly: this function's job is
             # the JOIN, and mocking Graph three times over would test their parsing again
             # rather than the logic under test here.
@@ -138,7 +138,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
     }
 
     It 'does not mistake a FAILED MFA challenge for a sign-in that skipped MFA' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @([pscustomobject]@{ UserId = 'u1'; UserPrincipalName = 'u1@example.com'
@@ -171,7 +171,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
     }
 
     It 'does not count a FAILED sign-in as single-factor access, and surfaces legacy auth' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @(
@@ -230,7 +230,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
         # The reason a tenant-wide run looks like a hang: without a userId filter this
         # pages every sign-in in the window. For a handful of users Graph can do the
         # filtering, so the query must actually ask it to.
-        $passed = InModuleScope msec {
+        $passed = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @(
@@ -257,7 +257,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
     It 'warns when the window contains no interactive sign-ins at all' {
         # Every row reading NoSignInInWindow is indistinguishable from a broken query,
         # so an empty window says so rather than presenting itself as a finding.
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @([pscustomobject]@{ UserId = 'u1'; UserPrincipalName = 'a@example.com'; UserType = 'member'
@@ -281,7 +281,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
     }
 
     It 'warns and reports every user as unevidenced when sign-in logs cannot be read' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @([pscustomobject]@{ UserId = 'u1'; UserPrincipalName = 'u1@example.com'
@@ -309,7 +309,7 @@ Describe 'Get-MsecEntraMfaEvidence' {
     }
 
     It 'warns rather than overstating coverage when an exclusion group cannot be expanded' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Assert-MsecSession -MockWith { }
             Mock Get-MsecEntraMfaRegistration -MockWith {
                 @([pscustomobject]@{ UserId = 'u1'; UserPrincipalName = 'u1@example.com'

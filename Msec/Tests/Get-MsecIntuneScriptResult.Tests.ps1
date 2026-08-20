@@ -12,7 +12,7 @@
 # -Source.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
@@ -129,12 +129,12 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/deviceComplianceScripts/
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecIntuneScriptResult' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId = 'tenant'; ClientId = 'client'; KeyVaultName = 'kv-test'
@@ -164,7 +164,7 @@ Describe 'Get-MsecIntuneScriptResult' {
     Context 'Remediation - deviceHealthScriptDeviceState' {
 
         It 'keeps both detection outputs' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source Remediation -WarningAction SilentlyContinue)
@@ -189,7 +189,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         }
 
         It 'falls back to the pre-remediation output when no remediation has run' {
-            $row = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $row = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source Remediation -WarningAction SilentlyContinue) |
@@ -209,7 +209,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         It 'reads Windows and macOS platform scripts under one -Source' {
             # One blade in the portal, two collections in Graph. The Platform column tells
             # them apart, which is why they do not need separate -Source values.
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source PlatformScript)
@@ -236,7 +236,7 @@ Describe 'Get-MsecIntuneScriptResult' {
     Context 'CustomAttribute - the attribute value' {
 
         It 'puts resultMessage in Output' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source CustomAttribute)
@@ -263,7 +263,7 @@ Describe 'Get-MsecIntuneScriptResult' {
             # Its own field names: scriptOutput / scriptError / detectionState, none of which
             # the other two shapes use. A custom compliance policy is only as trustworthy as
             # this output.
-            $row = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $row = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source ComplianceScript)
@@ -284,7 +284,7 @@ Describe 'Get-MsecIntuneScriptResult' {
     Context '-Source All' {
 
         It 'means all five collections, not merely the ones it used to mean' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source All -WarningAction SilentlyContinue)
@@ -303,7 +303,7 @@ Describe 'Get-MsecIntuneScriptResult' {
     Context '-Name' {
 
         It 'reads only the named script, and only that script''s run states' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 # A run-states call for the other script would be wasted work on a tenant
@@ -319,7 +319,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         }
 
         It 'matches case-insensitively, ignores whitespace, and accepts an id' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 [pscustomobject]@{
@@ -333,7 +333,7 @@ Describe 'Get-MsecIntuneScriptResult' {
 
         It 'throws on an unrecognised name, listing what the tenant has' {
             # A typo returning zero rows would read as "that script has never run".
-            $message = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $message = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 try { Get-MsecIntuneScriptResult -Source Remediation -Name 'Check-Bitlockr' | Out-Null; '' }
@@ -348,7 +348,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         It 'throws before emitting anything when one of several names is wrong' {
             # Names are resolved in a first pass precisely so a partial stream is impossible -
             # a truncated result that looks complete is worse than an error.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $rows = @()
@@ -363,7 +363,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         It 'accepts a name that matches only one of the five under -Source All' {
             # A Windows remediation name is not expected among the macOS scripts, so a miss is
             # only fatal when nothing matched it anywhere.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneScriptResult -Source All -Name 'FileVault-Status')
@@ -374,7 +374,7 @@ Describe 'Get-MsecIntuneScriptResult' {
         }
 
         It 'warns for a named script with no results, but stays quiet when sweeping' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $named = Get-MsecIntuneScriptResult -Source Remediation -Name 'Never-Ran' `
@@ -399,7 +399,7 @@ Describe 'Get-MsecIntuneScriptResult' {
     Context 'degradation' {
 
         It 'retries without the expand when Graph rejects it, warning once' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
 
@@ -433,7 +433,7 @@ Describe 'Get-MsecIntuneScriptResult' {
             # Intune scripts need DeviceManagementScripts.Read.All. Naming the Configuration
             # scope - which the app already holds - sent a real user looking in exactly the
             # wrong place.
-            InModuleScope msec {
+            InModuleScope Msec {
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                     [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }

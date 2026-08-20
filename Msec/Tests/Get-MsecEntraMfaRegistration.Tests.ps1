@@ -6,19 +6,19 @@
 # that cannot help.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEntraMfaRegistration' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -32,7 +32,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
     }
 
     It 'projects each user, keeping IsMfaRegistered and IsMfaCapable distinct' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -138,7 +138,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
     }
 
     It 'reads legacy per-user MFA state only when asked, and never touches beta otherwise' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -194,7 +194,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
         # was caught and turned into $null - so a large tenant came back with mostly
         # empty states and a warning, which reads as a missing permission rather than
         # as backpressure.
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -229,7 +229,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
     }
 
     It 'gives up on a persistently throttled call rather than retrying forever' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -259,7 +259,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
     }
 
     It 'rewrites a bare 403 to mention the missing AuditLog.Read.All permission' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -273,7 +273,7 @@ Describe 'Get-MsecEntraMfaRegistration' {
     }
 
     It 'identifies the premium-licensing 403 and does NOT blame the permission' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }

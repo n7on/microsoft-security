@@ -11,7 +11,7 @@
 # exactly that.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Passed as TEXT and rebuilt inside InModuleScope - a scriptblock stays bound to the
@@ -81,7 +81,7 @@ Mock Invoke-RestMethod -MockWith {
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'New-MsecApp' {
@@ -89,7 +89,7 @@ Describe 'New-MsecApp' {
     Context 're-run against an app missing most permissions' {
 
         BeforeEach {
-            InModuleScope msec {
+            InModuleScope Msec {
                 $script:GraphRoleValues = @(
                     'SecurityEvents.Read.All', 'DeviceManagementConfiguration.Read.All',
                     'DeviceManagementManagedDevices.Read.All', 'DeviceManagementScripts.Read.All',
@@ -117,7 +117,7 @@ Describe 'New-MsecApp' {
         }
 
         It 'grants every missing permission and leaves the present ones alone' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $result = New-MsecApp -KeyVaultName 'kv-test' -InformationAction SilentlyContinue 6>$null
@@ -141,7 +141,7 @@ Describe 'New-MsecApp' {
         }
 
         It 'merges requiredResourceAccess instead of clobbering it' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 New-MsecApp -KeyVaultName 'kv-test' 6>$null | Out-Null
@@ -168,7 +168,7 @@ Describe 'New-MsecApp' {
 
         It 'reports the grants on stdout, not only through -Verbose' {
             # THE regression. Silence here was reported as "it does not add the grants".
-            $text = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $text = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 New-MsecApp -KeyVaultName 'kv-test' 6>&1 | Out-String
@@ -186,7 +186,7 @@ Describe 'New-MsecApp' {
     Context 'a fully consented app' {
 
         BeforeEach {
-            InModuleScope msec {
+            InModuleScope Msec {
                 $script:GraphRoleValues = @('SecurityEvents.Read.All')
                 $script:ExistingRRA = @(
                     [pscustomobject]@{
@@ -208,7 +208,7 @@ Describe 'New-MsecApp' {
         It 'grants nothing and does not tell you to reconnect' {
             # Idempotence: a no-op re-run must be visibly a no-op, or the reconnect notice
             # becomes noise that gets ignored on the run where it matters.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $text = New-MsecApp -KeyVaultName 'kv-test' 6>&1 | Out-String
@@ -225,7 +225,7 @@ Describe 'New-MsecApp' {
     Context 'a cloud that does not offer every role' {
 
         BeforeEach {
-            InModuleScope msec {
+            InModuleScope Msec {
                 # Azure China exposes a reduced set of Graph app roles.
                 $script:GraphRoleValues = @('SecurityEvents.Read.All', 'Policy.Read.All')
                 $script:ExistingRRA = @()
@@ -234,7 +234,7 @@ Describe 'New-MsecApp' {
         }
 
         It 'skips unavailable roles, reports them, and still configures the rest' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:MockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $result = New-MsecApp -KeyVaultName 'kv-test' -WarningVariable w -WarningAction SilentlyContinue 6>$null

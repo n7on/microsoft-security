@@ -8,7 +8,7 @@
 # either failing or silently reporting a short list.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
@@ -26,12 +26,12 @@ AfterAll {
         Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
     }
     $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEntraRoleHolder' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -45,7 +45,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'merges active and eligible assignments, expands groups, and flags privileged roles by template id' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -222,7 +222,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'projects administrative-unit scope and does not read it as tenant-wide' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -274,7 +274,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'warns about the missing licence and still returns active assignments when the tenant has no Entra ID P2' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -324,7 +324,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'skips the eligibility call entirely with -AssignmentType Active' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -362,7 +362,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'fetches a role definition the collection omits rather than reporting a bare GUID' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -416,7 +416,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'flags and counts principals Graph returns as id-only shells instead of emitting blank rows' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -493,7 +493,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         # carries, with an empty membership and a queue of people eligible to activate
         # into it. /transitiveMembers reports nothing, so without the PIM-for-Groups
         # endpoint the tenant looks like it has nobody in the role.
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -578,7 +578,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'keeps a role assigned to an EMPTY group as an unresolved row rather than dropping the assignment' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -646,7 +646,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'leaves groups unexpanded with -NoGroupExpansion' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -691,7 +691,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'warns and keeps the group row when the group cannot be expanded' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -740,7 +740,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'falls back to per-role-definition filtering when Graph rejects the unfiltered list' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -783,7 +783,7 @@ Describe 'Get-MsecEntraRoleHolder' {
     }
 
     It 'rewrites a 403 on roleDefinitions to name the missing permission' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -803,7 +803,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         # observed to return - so every "by name" case here is also a test that the
         # canonical map is doing its job.
         BeforeEach {
-            InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+            InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
                 param($Thumb)
                 $script:MsecSession = @{
                     TenantId        = 'tenant'
@@ -888,7 +888,7 @@ Describe 'Get-MsecEntraRoleHolder' {
             # THE case this parameter exists for. The tenant calls the role 'Company
             # Administrator'; nobody types that. Matching display names only would return
             # nothing here and read as "no Global Admins".
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -901,7 +901,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'is case-insensitive and tolerates surrounding whitespace' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -911,7 +911,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'resolves a roleTemplateId' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -921,7 +921,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'resolves the display name this tenant actually reports' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -931,7 +931,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'resolves a custom role by its definition id, which has no template id' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -946,7 +946,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'accepts several roles, mixing names and template ids' {
-            $rows = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $rows = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -964,7 +964,7 @@ Describe 'Get-MsecEntraRoleHolder' {
             # Wrapped in an object because InModuleScope unrolls a single-element
             # collection to the string inside it, and $uris[0] would then index a
             # character rather than a uri.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -980,7 +980,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'sends one filtered request per role when several are named' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -999,7 +999,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         It 'reads every assignment in one request when -Role is omitted' {
             # The unfiltered path must survive: it is one round trip for the whole tenant,
             # which is the right shape when you want the whole tenant.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -1013,7 +1013,7 @@ Describe 'Get-MsecEntraRoleHolder' {
 
         It 'throws on an unrecognised role and names the tenant''s roles' {
             # A typo that returned zero rows would read as a clean bill of health.
-            InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -1023,7 +1023,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'lists the available roles in the error, so the fix is in the message' {
-            $message = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $message = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -1039,7 +1039,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         It 'fails the whole call when only one of several roles is unrecognised' {
             # Returning the roles that DID resolve would hand back a partial answer that
             # looks complete - worse than failing, for an access review.
-            InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))
@@ -1051,7 +1051,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         It 'returns nothing, without error, for a known role absent from this tenant' {
             # Distinct from a typo: msec knows this name, the tenant has no definition for
             # it, so nobody holds it. An empty answer is the correct answer.
-            $rows = InModuleScope msec {
+            $rows = InModuleScope Msec {
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                     [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -1081,7 +1081,7 @@ Describe 'Get-MsecEntraRoleHolder' {
         }
 
         It 'caches the tenant''s role definitions for the completer' {
-            $cached = InModuleScope msec -Parameters @{ MockText = $script:RoleMockText } {
+            $cached = InModuleScope Msec -Parameters @{ MockText = $script:RoleMockText } {
                 param($MockText)
                 $script:RequestedUris = [System.Collections.Generic.List[string]]::new()
                 & ([scriptblock]::Create($MockText))

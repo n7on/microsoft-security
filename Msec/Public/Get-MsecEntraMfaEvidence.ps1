@@ -127,7 +127,7 @@ function Get-MsecEntraMfaEvidence {
     .NOTES
         Each row is a [PSCustomObject] with PSTypeName 'MsecEntraMfaEvidence', whose
         DefaultDisplayPropertySet (UserPrincipalName, EvidenceStatus, IsMfaCapable,
-        DefaultMfaMethod, IsAdmin) is registered in msec.psm1.
+        DefaultMfaMethod, IsAdmin) is registered in Msec.psm1.
 
         Projection:
           UserPrincipalName, UserId, DisplayName, UserType, IsAdmin

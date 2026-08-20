@@ -7,7 +7,7 @@
 # for the ARM calls themselves.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Get-MsecAzureSecureScore enumerates subscriptions through Get-MsecSubscriptionList, which
@@ -24,13 +24,13 @@ AfterAll {
         Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
     }
     $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecAzureSecureScore' {
 
     It 'returns one Overall row per subscription with correct percent (current / max * 100)' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith {
                 @(
@@ -81,7 +81,7 @@ Describe 'Get-MsecAzureSecureScore' {
     }
 
     It '-IncludeControls emits one row per (subscription, control) in addition to Overall' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-A'; Name = 'we-dev-sub' }) }
             Mock Get-AzAccessToken  -MockWith { [pscustomobject]@{ Token = 'mock-arm-token'; ExpiresOn = (Get-Date).AddHours(1) } }
@@ -137,7 +137,7 @@ Describe 'Get-MsecAzureSecureScore' {
     }
 
     It 'warns and skips a single failing subscription rather than aborting the whole batch' {
-        $output = InModuleScope msec {
+        $output = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-A' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith {
                 @(

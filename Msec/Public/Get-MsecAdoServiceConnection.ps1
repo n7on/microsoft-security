@@ -59,7 +59,7 @@ function Get-MsecAdoServiceConnection {
 
         Each row is a [PSCustomObject] with PSTypeName 'MsecAdoServiceConnection'.
         Default Format-Table view: Name, Type, AuthScheme, IsShared - registered
-        in msec.psm1. Raw and other columns remain accessible via property
+        in Msec.psm1. Raw and other columns remain accessible via property
         access or Format-List.
     #>
     [CmdletBinding()]

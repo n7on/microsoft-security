@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -42,7 +42,7 @@ Each row also carries:
     All of the collection columns are ARRAYS, not joined strings, so they can be
     tested exactly - \`Where-Object AssignmentGroup -contains 'sg-pilot-ring'\`.
 The
-    default table renders them comma-separated via msec.format.ps1xml, so the
+    default table renders them comma-separated via Msec.format.ps1xml, so the
     display is flat while the data is not; a joined property would force
     -like '*sg-pilot-ring*' and match 'sg-pilot' too.
 

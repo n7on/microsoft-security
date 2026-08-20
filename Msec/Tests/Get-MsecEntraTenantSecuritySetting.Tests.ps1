@@ -8,19 +8,19 @@
 # assert something unmeasured.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEntraTenantSecuritySetting' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant-abc'
@@ -34,7 +34,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
     }
 
     It 'summarises a premium tenant: CA available, security defaults off, admins counted' {
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -122,7 +122,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
     }
 
     It 'reports an unlicensed tenant as a real answer: CA unavailable, not unknown' {
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -186,7 +186,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
     }
 
     It 'degrades a failed section to $null + a Notes reason instead of throwing' {
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -238,7 +238,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
         # great many tenants, and this count used to be `RoleName -eq 'Global
         # Administrator'` - which reported ZERO Global Admins on every one of them, in
         # the headline column of this report. The template id is identical everywhere.
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -288,7 +288,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
         # /directoryRoles does not expand groups, so the group is the assignee and the
         # holder is unknown. The count must come from PrincipalId - EffectiveId is $null
         # on exactly these rows and would silently drop them.
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -347,7 +347,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
     It 'counts an unexpandable group as one principal rather than dropping it' {
         # Whoever can write that group's membership can take the role tomorrow, so the
         # assignment must survive into the count even with no holder resolved.
-        $s = InModuleScope msec {
+        $s = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -392,7 +392,7 @@ Describe 'Get-MsecEntraTenantSecuritySetting' {
     }
 
     It 'rethrows the annotated error under -Strict' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }

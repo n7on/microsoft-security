@@ -10,19 +10,19 @@
 #     the max comes from secureScoreControlProfiles, not from the snapshot.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecSecureScore' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -36,7 +36,7 @@ Describe 'Get-MsecSecureScore' {
     }
 
     It 'no -Category: emits one Overall row plus one row per category, per snapshot' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -79,7 +79,7 @@ Describe 'Get-MsecSecureScore' {
     }
 
     It '-Category Overall skips the profile fetch and returns only the Overall rows' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -111,7 +111,7 @@ Describe 'Get-MsecSecureScore' {
     }
 
     It '-Category Identity emits only Identity rows but still computes from the profile maxima' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -144,7 +144,7 @@ Describe 'Get-MsecSecureScore' {
     }
 
     It '-Top N passes through to the Graph $top query parameter' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }

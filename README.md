@@ -1,8 +1,8 @@
-# msec
+# Msec
 
 [![CI](https://github.com/n7on/microsoft-security/actions/workflows/ci.yml/badge.svg)](https://github.com/n7on/microsoft-security/actions/workflows/ci.yml)
-[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/msec)](https://www.powershellgallery.com/packages/msec)
-[![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/msec)](https://www.powershellgallery.com/packages/msec)
+[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Msec)](https://www.powershellgallery.com/packages/Msec)
+[![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/Msec)](https://www.powershellgallery.com/packages/Msec)
 [![License](https://img.shields.io/github/license/n7on/microsoft-security)](https://github.com/n7on/microsoft-security/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#)
 
@@ -11,7 +11,7 @@ A PowerShell module for reading Microsoft security posture - Secure Score, Defen
 ## Install
 
 ```powershell
-Install-Module msec
+Install-Module Msec
 
 # One-time setup: creates the app registration, its certificate in Key Vault, and
 # consents the read permissions. Safe to re-run - it updates rather than duplicates.

@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -83,7 +83,7 @@ Accept wildcard characters: False
 ```
 
 ### -ScriptName
-Base name (no extension) of the script under msec/Scripts/\<Os\>/.
+Base name (no extension) of the script under Msec/Scripts/\<Os\>/.
 Must exist for
 every OS that comes down the pipeline - missing scripts produce a clear
 "\<Os\> script not found" error at first encounter.

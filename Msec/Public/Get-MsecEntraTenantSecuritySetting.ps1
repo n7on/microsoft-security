@@ -74,7 +74,7 @@ function Get-MsecEntraTenantSecuritySetting {
     .NOTES
         PSTypeName 'MsecEntraTenantSecuritySetting'; DefaultDisplayPropertySet
         (SecurityDefaultsEnabled, ConditionalAccessAvailable,
-        GlobalAdministratorCount, EntraIdPremium) is registered in msec.psm1.
+        GlobalAdministratorCount, EntraIdPremium) is registered in Msec.psm1.
 
         Properties:
           TenantId                        the session's tenant

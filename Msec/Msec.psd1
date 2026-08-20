@@ -1,5 +1,5 @@
 @{
-    RootModule        = 'msec.psm1'
+    RootModule        = 'Msec.psm1'
     ModuleVersion     = '0.1.0'
     GUID              = '5a8c1f2b-9d4e-4b7c-8a3f-1e6d2b9c4a7f'
     Author            = 'Anton Lindstrom'
@@ -28,12 +28,12 @@
     # Table views for the types whose columns are collections - a DefaultDisplayPropertySet
     # can pick columns but not render them, so a string[] would print as '{a, b}'.
     #
-    # Belt and braces: msec.psm1 loads this itself with Update-FormatData, because the test
+    # Belt and braces: Msec.psm1 loads this itself with Update-FormatData, because the test
     # suite imports the .psm1 directly and would skip a manifest key entirely. Declaring it
-    # here as well is what a consumer who does `Import-Module msec` by name gets, and the
+    # here as well is what a consumer who does `Import-Module Msec` by name gets, and the
     # double load is harmless - the second registration replaces the first for the same
     # type names.
-    FormatsToProcess  = 'msec.format.ps1xml'
+    FormatsToProcess  = 'Msec.format.ps1xml'
 
     FunctionsToExport = @(
         'New-MsecApp',

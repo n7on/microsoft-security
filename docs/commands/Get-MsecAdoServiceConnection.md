@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -120,7 +120,7 @@ A clearer error is raised on the typical 401/403.
 
 Each row is a \[PSCustomObject\] with PSTypeName 'MsecAdoServiceConnection'.
 Default Format-Table view: Name, Type, AuthScheme, IsShared - registered
-in msec.psm1.
+in Msec.psm1.
 Raw and other columns remain accessible via property
 access or Format-List.
 

@@ -5,19 +5,19 @@
 # is still fresh.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecAccessToken caching' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -31,7 +31,7 @@ Describe 'Get-MsecAccessToken caching' {
     }
 
     It 'hits /token only once across multiple Get-MsecAccessToken calls for the same resource' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'cached'; expires_in = 3600 }
@@ -46,7 +46,7 @@ Describe 'Get-MsecAccessToken caching' {
     }
 
     It 'posts to the China AAD authority and stamps a matching aud when the session is Azure China' {
-        InModuleScope msec {
+        InModuleScope Msec {
             # Pin the session to Azure China endpoints.
             $script:MsecSession.Endpoints = [pscustomobject]@{
                 EnvironmentName = 'AzureChinaCloud'

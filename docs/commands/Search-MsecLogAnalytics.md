@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -34,7 +34,7 @@ four NB sections below before writing a .kql for this.
 
 The query is loaded by convention from:
 
-    msec/Kql/Law/\<Subject\>/\<Name\>.kql
+    Msec/Kql/Law/\<Subject\>/\<Name\>.kql
 
 For example, Search-MsecLogAnalytics -Subject Waf loads Kql/Law/Waf/All.kql.
 Each

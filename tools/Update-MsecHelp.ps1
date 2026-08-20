@@ -57,7 +57,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$manifest = Join-Path $repoRoot 'msec' 'msec.psd1'
+$manifest = Join-Path $repoRoot 'Msec' 'Msec.psd1'
 if (-not $OutputFolder) { $OutputFolder = Join-Path $repoRoot 'docs' 'commands' }
 
 if (-not (Get-Module -ListAvailable PlatyPS)) {
@@ -82,7 +82,7 @@ $validKeywords = @(
 if (-not $SkipHelpAudit) {
     $problems = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($file in Get-ChildItem (Join-Path $repoRoot 'msec') -Recurse -Filter *.ps1 |
+    foreach ($file in Get-ChildItem (Join-Path $repoRoot 'Msec') -Recurse -Filter *.ps1 |
                         Where-Object { $_.FullName -notmatch [regex]::Escape([IO.Path]::DirectorySeparatorChar + 'Tests' + [IO.Path]::DirectorySeparatorChar) }) {
         $lines  = Get-Content -LiteralPath $file.FullName
         $inHelp = $false
@@ -98,7 +98,7 @@ if (-not $SkipHelpAudit) {
     }
 
     # A command whose Description is empty almost always means the above happened.
-    foreach ($command in (Get-Module msec).ExportedFunctions.Keys | Sort-Object) {
+    foreach ($command in (Get-Module Msec).ExportedFunctions.Keys | Sort-Object) {
         $help = Get-Help $command -ErrorAction SilentlyContinue
         if (-not $help.Description) { $problems.Add("$command has no parsed DESCRIPTION") }
         if ($help.Synopsis -match [regex]::Escape($command) + '\s+(\[|-)') {
@@ -125,7 +125,7 @@ if ($AuditOnly) { return }
 # ---- Generate -----------------------------------------------------------------------
 if ($PSCmdlet.ShouldProcess($OutputFolder, 'Regenerate command markdown')) {
     New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
-    $generated = New-MarkdownHelp -Module msec -OutputFolder $OutputFolder -Force
+    $generated = New-MarkdownHelp -Module Msec -OutputFolder $OutputFolder -Force
 
     # Strip the -ProgressAction section and its mention in every SYNTAX block. It is a
     # common parameter, covered by [<CommonParameters>], and PlatyPS 0.14 does not know it.

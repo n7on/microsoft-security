@@ -26,7 +26,7 @@ function Get-MsecIntuneConfigurationProfile {
 
             All of the collection columns are ARRAYS, not joined strings, so they can be
             tested exactly - `Where-Object AssignmentGroup -contains 'sg-pilot-ring'`. The
-            default table renders them comma-separated via msec.format.ps1xml, so the
+            default table renders them comma-separated via Msec.format.ps1xml, so the
             display is flat while the data is not; a joined property would force
             -like '*sg-pilot-ring*' and match 'sg-pilot' too.
 

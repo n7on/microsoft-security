@@ -5,18 +5,18 @@
 # so the tests are hermetic and don't depend on the installed Az.Accounts data.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEnvironment' {
 
     It 'resolves Azure China endpoints from Get-AzEnvironment' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzEnvironment -MockWith {
                 [pscustomobject]@{
                     Name                                   = 'AzureChinaCloud'
@@ -41,7 +41,7 @@ Describe 'Get-MsecEnvironment' {
     }
 
     It 'populates the Defender endpoint only for commercial AzureCloud' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzEnvironment -MockWith {
                 [pscustomobject]@{
                     Name                                   = 'AzureCloud'
@@ -60,7 +60,7 @@ Describe 'Get-MsecEnvironment' {
     }
 
     It 'defaults to the current Az context environment when -Name is omitted' {
-        $name = InModuleScope msec {
+        $name = InModuleScope Msec {
             Mock Get-AzContext     -MockWith { [pscustomobject]@{ Environment = 'AzureChinaCloud' } }
             Mock Get-AzEnvironment -MockWith {
                 [pscustomobject]@{
@@ -78,7 +78,7 @@ Describe 'Get-MsecEnvironment' {
     }
 
     It 'falls back to a per-cloud Graph URL when ExtendedProperties lacks MicrosoftGraphUrl (older Az)' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzEnvironment -MockWith {
                 [pscustomobject]@{
                     Name                                   = 'AzureChinaCloud'

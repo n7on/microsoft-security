@@ -13,19 +13,19 @@
 #   - 401/403 on the projects call rewrites to a helpful org-membership hint
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecAdoServiceConnection' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -39,7 +39,7 @@ Describe 'Get-MsecAdoServiceConnection' {
     }
 
     It 'walks all projects, dedupes shared endpoints, and projects flat rows with Projects[] populated' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Get-MsecAccessToken -MockWith { 'mock-ado-token' }
 
             # /_apis/projects - org has two projects
@@ -145,7 +145,7 @@ Describe 'Get-MsecAdoServiceConnection' {
         # Regression guard: Get-MsecAccessToken appends /.default itself. Passing
         # '<resource>/.default' to it produces a malformed scope and Entra 400s.
         # This test fails if anyone re-introduces the bug by hardcoding the suffix.
-        InModuleScope msec {
+        InModuleScope Msec {
             $script:CapturedResource = $null
             Mock Get-MsecAccessToken -MockWith {
                 $script:CapturedResource = $Resource
@@ -164,7 +164,7 @@ Describe 'Get-MsecAdoServiceConnection' {
     }
 
     It '-Project restricts to a single project (no /projects call needed)' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-MsecAccessToken -MockWith { 'mock' }
             $script:ProjectsListCalls = 0
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/_apis/projects\?' } -MockWith {
@@ -192,7 +192,7 @@ Describe 'Get-MsecAdoServiceConnection' {
     }
 
     It 'rewrites a 401/403 on the projects-list call to mention ADO org membership' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-MsecAccessToken -MockWith { 'mock' }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/_apis/projects\?' } -MockWith {
                 throw 'Response status code does not indicate success: 401 (Unauthorized).'

@@ -9,7 +9,7 @@
 #   4. The signature bytes returned by KV land verbatim in the JWT.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # A stable fake SHA-1 thumbprint for x5t header tests.
@@ -17,7 +17,7 @@ BeforeAll {
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'New-MsecClientAssertion (Key Vault signing)' {
@@ -27,7 +27,7 @@ Describe 'New-MsecClientAssertion (Key Vault signing)' {
         # outside, so inlining the literal is the most robust pattern.
         $signatureFromKv = [byte[]](100..255)
 
-        $result = InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        $result = InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
 
             $script:CapturedDigest = $null

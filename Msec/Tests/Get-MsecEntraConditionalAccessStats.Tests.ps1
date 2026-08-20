@@ -13,18 +13,18 @@
 #   - Empty result returns zero counts and 0.0 percentages (no divide-by-zero)
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecEntraConditionalAccessStats' {
 
     It 'aggregates volume / CA outcomes / risk / report-only / top failing policies correctly' {
-        $stats = InModuleScope msec {
+        $stats = InModuleScope Msec {
             # Mock the SignInLog so the inner call returns a small, deterministic set.
             Mock Get-MsecEntraConditionalAccessSignInLog -MockWith {
                 @(
@@ -102,7 +102,7 @@ Describe 'Get-MsecEntraConditionalAccessStats' {
     }
 
     It 'returns zero counts and 0.0 percentages when the sign-in log is empty (no divide-by-zero)' {
-        $stats = InModuleScope msec {
+        $stats = InModuleScope Msec {
             Mock Get-MsecEntraConditionalAccessSignInLog -MockWith { @() }
             Get-MsecEntraConditionalAccessStats
         }

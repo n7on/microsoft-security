@@ -5,19 +5,19 @@
 # AssignmentCount via $expand, and optionally adds per-policy status counts.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecIntuneConfigurationProfile' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -31,7 +31,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
     }
 
     It 'merges Settings Catalog policies and classic device configurations into a unified shape' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -112,7 +112,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
     }
 
     It '-IncludeSettings fetches per-policy settings for SC and merges them into Raw' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -148,7 +148,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
     }
 
     It '-IncludeStatus adds check-in counts from the right endpoint per Source' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -211,7 +211,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
     }
 
     It 'NotDeployed policies get zero counts (not nulls) on every status field' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -250,7 +250,7 @@ Describe 'Get-MsecIntuneConfigurationProfile' {
     }
 
     It 'Status is NotReporting when assigned but no status data, and all counts are zero (consistent with NotDeployed)' {
-        $rows = InModuleScope msec {
+        $rows = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -325,7 +325,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         }
 
         It 'reports the target type with no group call at all under -NoGroupNameLookup' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 # The switch must mean PROVABLY no per-group calls, not merely fewer.
@@ -355,7 +355,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         }
 
         It 'distinguishes an exclusion from a second group, which AssignmentCount cannot' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -NoGroupNameLookup)
@@ -377,7 +377,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         }
 
         It 'resolves group names by default, one call per distinct group' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
@@ -408,7 +408,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         It 'labels a deleted group instead of leaving it blank' {
             # A policy assigned only to a group that no longer exists is deployed to
             # nobody. That is a finding, so it has to be legible rather than empty.
-            $row = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $row = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
@@ -422,7 +422,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         }
 
         It 'warns once and falls back to ids when Group.Read.All is missing' {
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
@@ -449,7 +449,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         It 'gives up after one auth failure instead of warning per group' {
             # A 401 is not about this group - it will be true of the next one too. Warning
             # per group would bury the output of a tenant with hundreds of profiles.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 $script:GroupCalls = [System.Collections.Generic.List[string]]::new()
@@ -474,7 +474,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
         It 'warns per group for a failure that really is per group' {
             # A transient failure on one group says nothing about the next, so it keeps
             # going - and each warning names a different id rather than repeating.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/groups/' } -MockWith {
@@ -498,7 +498,7 @@ Mock Invoke-RestMethod -ParameterFilter { $Uri -match '/v1.0/deviceManagement/de
             # AssignmentType is DISTINCT, so it collapses three groups into one entry.
             # AssignmentDetail must still account for every assignment, or the columns
             # and the count would disagree.
-            $out = InModuleScope msec -Parameters @{ MockText = $script:ProfileMockText } {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:ProfileMockText } {
                 param($MockText)
                 & ([scriptblock]::Create($MockText))
                 @(Get-MsecIntuneConfigurationProfile -Source SettingsCatalog -NoGroupNameLookup)

@@ -235,7 +235,7 @@ function Get-MsecEntraRoleHolder {
     .NOTES
         Each row is a [PSCustomObject] with PSTypeName 'MsecEntraRoleHolder',
         whose DefaultDisplayPropertySet (EffectiveName, EffectiveType, RoleName,
-        AssignmentType, PrincipalName) is registered in msec.psm1. The holder leads,
+        AssignmentType, PrincipalName) is registered in Msec.psm1. The holder leads,
         because that is who a review is about; the assignee trails, so an inherited role
         shows the group it came from. On a direct assignment the two hold the same value,
         which is the truth rather than a redundancy: assigned to X, held by X.
@@ -335,7 +335,7 @@ function Get-MsecEntraRoleHolder {
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             try {
-                $module = Get-Module msec
+                $module = Get-Module Msec
                 if (-not $module) { return }
                 $word = ([string]$wordToComplete).Trim("'`"")
 

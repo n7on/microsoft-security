@@ -6,17 +6,17 @@
 # stops a multi-minute call from looking like a hang.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Invoke-MsecGraphRequest' {
     BeforeEach {
-        InModuleScope msec {
+        InModuleScope Msec {
             $script:MsecSession = @{
                 TenantId = 'tenant'; ClientId = 'client'
                 KeyVaultName = 'kv'; KeyName = 'k'
@@ -29,7 +29,7 @@ Describe 'Invoke-MsecGraphRequest' {
     }
 
     It 'follows @odata.nextLink and concatenates every page' {
-        $items = InModuleScope msec {
+        $items = InModuleScope Msec {
             $script:Page = 0
             Mock Invoke-RestMethod -MockWith {
                 $script:Page++
@@ -51,7 +51,7 @@ Describe 'Invoke-MsecGraphRequest' {
     }
 
     It 'reports progress while paging, but stays silent for a single-page response' {
-        $calls = InModuleScope msec {
+        $calls = InModuleScope Msec {
             Mock Write-Progress -MockWith { }
             Mock Invoke-RestMethod -MockWith {
                 [pscustomobject]@{ value = @([pscustomobject]@{ n = 1 }) }
@@ -63,7 +63,7 @@ Describe 'Invoke-MsecGraphRequest' {
         }
         $calls | Should -Be 'quiet'
 
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Write-Progress -MockWith { }
             $script:P = 0
             Mock Invoke-RestMethod -MockWith {
@@ -90,7 +90,7 @@ Describe 'Invoke-MsecGraphRequest' {
     }
 
     It 'retries a 429 with backoff and returns the eventual result' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Start-Sleep -MockWith { }
             $script:Attempt = 0
             Mock Invoke-RestMethod -MockWith {
@@ -111,7 +111,7 @@ Describe 'Invoke-MsecGraphRequest' {
     }
 
     It 'does not retry a 403 - retrying cannot help and would only delay the message' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Start-Sleep -MockWith { }
             $script:Tries = 0
             Mock Invoke-RestMethod -MockWith {

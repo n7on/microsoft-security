@@ -6,12 +6,12 @@
 # principal, an unexpanded group) are the ones hardest to reach through the full stack.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'ConvertTo-MsecRolePrincipalRow' {
@@ -32,7 +32,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'reports a direct assignment with holder and assignee as the same object' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $user = [pscustomobject]@{
                 '@odata.type' = '#microsoft.graph.user'; id = 'u1'
@@ -59,7 +59,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'keeps the assignee and drops the holder for an unexpanded group' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $group = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'sg-admins' }
             ConvertTo-MsecRolePrincipalRow -Context $Ctx -Assignee $group -Effective $null
@@ -77,7 +77,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'distinguishes an eligible holder inside an active assignment' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $group = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'sg-admins' }
             $user  = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u9'; userPrincipalName = 'pim@x.com' }
@@ -95,7 +95,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'treats a principal Graph would not name as unresolved, but keeps its id' {
-        $out = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $out = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             # The id-only shell: full property schema, every value null.
             $shell = [pscustomobject]@{
@@ -121,7 +121,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'counts an absent holder as an unknown holder, not an unreadable principal' {
-        $stats = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $stats = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $group = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.group'; id = 'g1'; displayName = 'sg' }
             $stats = @{ UnreadablePrincipals = 0; UnknownHolders = 0 }
@@ -134,7 +134,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'names a service principal by displayName and leaves user-only columns null' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $sp = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.servicePrincipal'
                                      id = 'sp1'; displayName = 'break-glass'; accountEnabled = $true }
@@ -151,7 +151,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'falls back to the context PrincipalId when the assignee object is absent' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             # Graph omits the expanded principal when the app cannot read it at all.
             ConvertTo-MsecRolePrincipalRow -Context $Ctx -Assignee $null -Effective $null
@@ -164,7 +164,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'carries the context''s assignment facts through unchanged' {
-        $row = InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        $row = InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $Ctx.AssignmentType   = 'Eligible'
             $Ctx.Scope            = 'AdministrativeUnit:au-1'
@@ -187,7 +187,7 @@ Describe 'ConvertTo-MsecRolePrincipalRow' {
     }
 
     It 'rejects a MembershipType outside the two real states' {
-        InModuleScope msec -Parameters @{ Ctx = $script:Context } {
+        InModuleScope Msec -Parameters @{ Ctx = $script:Context } {
             param($Ctx)
             $user = [pscustomobject]@{ '@odata.type' = '#microsoft.graph.user'; id = 'u1'; userPrincipalName = 'a@x.com' }
             { ConvertTo-MsecRolePrincipalRow -Context $Ctx -Assignee $user -Effective $user -MembershipType 'Maybe' } |

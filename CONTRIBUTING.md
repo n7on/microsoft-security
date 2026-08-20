@@ -3,10 +3,10 @@
 ## Layout
 
 ```
-msec/
-  msec.psd1              manifest - FunctionsToExport is the public surface
-  msec.psm1              dot-sources Private/ then Public/, exports Public/ only
-  msec.format.ps1xml     table views for types with collection columns
+Msec/
+  Msec.psd1              manifest - FunctionsToExport is the public surface
+  Msec.psm1              dot-sources Private/ then Public/, exports Public/ only
+  Msec.format.ps1xml     table views for types with collection columns
   Public/                one exported command per file, named after the command
   Private/               one helper per file, not exported
   Tests/                 one <Command>.Tests.ps1 per command
@@ -18,13 +18,13 @@ tools/                   Update-MsecHelp.ps1, the docs generator
 ```
 
 A new command is a file in `Public/`, a matching file in `Tests/`, and a name added to
-`FunctionsToExport` in the manifest. `msec.psm1` picks up the file automatically; the
+`FunctionsToExport` in the manifest. `Msec.psm1` picks up the file automatically; the
 manifest is what makes it visible to a caller, and a test asserts the two agree.
 
 ## Running the tests
 
 ```powershell
-Invoke-Pester -Path ./msec/Tests
+Invoke-Pester -Path ./Msec/Tests
 ```
 
 No tenant, no network, no Azure context is needed - every test mocks
@@ -38,7 +38,7 @@ masks a whole class of failure that CI then finds:
 pwsh -NoProfile -Command {
     Import-Module Az.Accounts
     Clear-AzContext -Scope Process -Force      # process scope only - your saved login is untouched
-    Invoke-Pester -Path ./msec/Tests
+    Invoke-Pester -Path ./Msec/Tests
 }
 ```
 
@@ -49,7 +49,7 @@ hard way; a `BeforeAll` that threw took down the entire container, failing ten t
 including four that only read `.kql` files off disk.
 
 Where the code under test runs OUTSIDE `InModuleScope` - argument completers do, via
-`TabExpansion2` - use `Mock -ModuleName msec Get-AzContext` rather than a mock inside
+`TabExpansion2` - use `Mock -ModuleName Msec Get-AzContext` rather than a mock inside
 `InModuleScope`, so both the setup that writes the cache and the completer that reads it back
 resolve the same tenant folder.
 
@@ -107,7 +107,7 @@ Note that Pester 5 does not set a non-zero exit code by itself. Both workflows c
 
 ## Releasing a new version
 
-1. Bump `ModuleVersion` in `msec/msec.psd1`.
+1. Bump `ModuleVersion` in `Msec/Msec.psd1`.
 2. Update `PrivateData.PSData.ReleaseNotes` in the same file.
 3. Regenerate the docs if any help changed: `./tools/Update-MsecHelp.ps1`.
 4. Commit and push.
@@ -119,7 +119,7 @@ Note that Pester 5 does not set a non-zero exit code by itself. Both workflows c
    ```
 
 The tag triggers `.github/workflows/publish.yml`, which resolves the version from the tag,
-runs the tests, validates the manifest, publishes with `Publish-Module -Path ./msec`, and
+runs the tests, validates the manifest, publishes with `Publish-Module -Path ./Msec`, and
 opens a GitHub release with generated notes.
 
 It needs one repository secret, `PSGALLERY_API_KEY`, from your PowerShell Gallery account's
@@ -172,9 +172,9 @@ tag, which is the usual advice for third-party actions in a security-sensitive r
 ## Things that will catch you out
 
 **Import the `.psm1`, not the manifest.** The tests do
-`Import-Module ./msec/msec.psm1 -Force`, which bypasses `msec.psd1` entirely. Anything the
+`Import-Module ./Msec/Msec.psm1 -Force`, which bypasses `Msec.psd1` entirely. Anything the
 manifest would do - `FormatsToProcess`, `RequiredModules` - does not happen on that path.
-This is why `msec.psm1` loads `msec.format.ps1xml` itself with `Update-FormatData` rather
+This is why `Msec.psm1` loads `Msec.format.ps1xml` itself with `Update-FormatData` rather
 than relying on a manifest key.
 
 **Mocks are matched most-recently-defined first.** With overlapping `-ParameterFilter`
@@ -210,7 +210,7 @@ msec calls privileged.
 
 **Collection columns stay arrays.** A joined string forces callers onto
 `-like '*name*'`, and substring matching reports `sg-pilot` as a hit for `sg-pilot-ring`.
-Flatten for display in `msec.format.ps1xml` instead - the data stays exact, the table
+Flatten for display in `Msec.format.ps1xml` instead - the data stays exact, the table
 still reads well.
 
 **Distinguish "read it, found nothing" from "could not read it".** A failed call must not
@@ -248,7 +248,7 @@ At <https://www.powershellgallery.com/account/apikeys>:
    matters: `Push only new package versions` cannot create a package that does not exist, so
    with that scope the *first* publish fails and every later one works, which is a confusing
    way to find out.
-4. **Select Packages → Glob Pattern** - `msec`. Leave the package checkbox list alone; it is
+4. **Select Packages → Glob Pattern** - `Msec`. Leave the package checkbox list alone; it is
    empty until the first publish. `*` also works but grants more than this repo needs.
 5. Copy the key immediately - it is shown once.
 

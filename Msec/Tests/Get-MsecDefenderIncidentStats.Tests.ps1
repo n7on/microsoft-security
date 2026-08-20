@@ -10,19 +10,19 @@
 # (skip FalsePositive), backlog-includes-old behaviour, and the 403 rewrite.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecDefenderIncidentStats' {
     BeforeEach {
-        InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+        InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
             $script:MsecSession = @{
                 TenantId        = 'tenant'
@@ -36,7 +36,7 @@ Describe 'Get-MsecDefenderIncidentStats' {
     }
 
     It 'buckets severity, classification, MTTR (skipping false positives), and backlog correctly' {
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -125,7 +125,7 @@ Describe 'Get-MsecDefenderIncidentStats' {
     }
 
     It 'returns zero counts and null MTTR / OldestOpenAgeDays when no incidents are returned' {
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -152,7 +152,7 @@ Describe 'Get-MsecDefenderIncidentStats' {
     # failure. ResolvedClassifiedCount = 0 alongside TotalResolvedInWindow > 0 says
     # plainly "nothing qualified to be averaged".
     It 'publishes a zero classified count when incidents are resolved but never classified' {
-        $out = InModuleScope msec {
+        $out = InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }
@@ -194,7 +194,7 @@ Describe 'Get-MsecDefenderIncidentStats' {
     }
 
     It 'rewrites a 403 to mention the missing SecurityIncident.Read.All permission' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
             Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
                 [pscustomobject]@{ access_token = 'mock'; expires_in = 3600 }

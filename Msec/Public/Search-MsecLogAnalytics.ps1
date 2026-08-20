@@ -10,7 +10,7 @@ function Search-MsecLogAnalytics {
 
         The query is loaded by convention from:
 
-            msec/Kql/Law/<Subject>/<Name>.kql
+            Msec/Kql/Law/<Subject>/<Name>.kql
 
         For example, Search-MsecLogAnalytics -Subject Waf loads Kql/Law/Waf/All.kql. Each
         subject folder has at least an All.kql; named variants (e.g. "TopRules.kql") live
@@ -136,7 +136,7 @@ function Search-MsecLogAnalytics {
         [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-            $base = (Get-Module msec).ModuleBase
+            $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
             $lawFolder = Join-Path $base 'Kql/Law'
             if (-not (Test-Path -LiteralPath $lawFolder)) { return }
@@ -157,7 +157,7 @@ function Search-MsecLogAnalytics {
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             $subject = $fakeBoundParameters['Subject']
             if (-not $subject) { return }
-            $base = (Get-Module msec).ModuleBase
+            $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
             $folder = Join-Path $base "Kql/Law/$subject"
             if (-not (Test-Path -LiteralPath $folder)) { return }
@@ -195,7 +195,7 @@ function Search-MsecLogAnalytics {
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             try {
-                $module = Get-Module msec
+                $module = Get-Module Msec
                 if (-not $module) { return }
                 & $module { Read-MsecCache -Name (Get-MsecGraphCacheName -ResourceType 'LogAnalytics' -Name 'All') } |
                     Where-Object { $_.Name -like "$wordToComplete*" } |

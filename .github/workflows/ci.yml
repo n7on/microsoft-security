@@ -35,7 +35,7 @@ jobs:
           path: |
             ~/.local/share/powershell/Modules
             ~/Documents/PowerShell/Modules
-          key: psmodules-${{ runner.os }}-${{ hashFiles('msec/msec.psd1') }}
+          key: psmodules-${{ runner.os }}-${{ hashFiles('Msec/Msec.psd1') }}
           restore-keys: |
             psmodules-${{ runner.os }}-
 
@@ -81,7 +81,7 @@ jobs:
         env:
           MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
         run: |
-          $result = Invoke-Pester -Path ./msec/Tests -Output Detailed -PassThru
+          $result = Invoke-Pester -Path ./Msec/Tests -Output Detailed -PassThru
 
           # Pester 5 does NOT set a non-zero exit code on its own, so without this a red
           # suite reports a green build.

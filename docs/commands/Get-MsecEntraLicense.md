@@ -1,6 +1,6 @@
 ---
-external help file: msec-help.xml
-Module Name: msec
+external help file: Msec-help.xml
+Module Name: Msec
 online version:
 schema: 2.0.0
 ---
@@ -69,7 +69,7 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 ## NOTES
 Each row is a \[PSCustomObject\] with PSTypeName 'MsecEntraLicense', whose
 DefaultDisplayPropertySet (SkuPartNumber, Enabled, Assigned,
-CapabilityStatus) is registered in msec.psm1 - so Format-Table shows a
+CapabilityStatus) is registered in Msec.psm1 - so Format-Table shows a
 clean 4-column view and the Raw / ServicePlans columns stay accessible
 without cluttering it.
 

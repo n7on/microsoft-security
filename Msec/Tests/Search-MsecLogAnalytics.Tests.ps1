@@ -4,7 +4,7 @@
 # Resource Graph and its two failure modes, and the invariants the bundled Law queries rely on.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Redirect the completion cache for the whole file. Every test here resolves a workspace,
@@ -23,7 +23,7 @@ BeforeAll {
     # this line threw in BeforeAll and Pester failed the whole CONTAINER - taking down all ten
     # tests in the file, including the four Kql ones that only read files off disk. 'tenant-1'
     # matches what every test below mocks, so setup and tests resolve the same cache folder.
-    $script:CachePath = InModuleScope msec {
+    $script:CachePath = InModuleScope Msec {
         Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-1' } } }
         Get-MsecCachePath -Name 'graph-loganalytics-all'
     }
@@ -34,7 +34,7 @@ AfterAll {
         Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
     }
     $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Search-MsecLogAnalytics' {
@@ -45,7 +45,7 @@ Describe 'Search-MsecLogAnalytics' {
     }
 
     It 'loads the .kql by convention, resolves the workspace name, and passes the window as a timespan' {
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
@@ -81,7 +81,7 @@ Describe 'Search-MsecLogAnalytics' {
     It 'lists the available workspaces when the name does not resolve' {
         # "Workspace not found" on its own sends you to the portal. With dozens of workspaces the
         # candidate list is the entire value of the error.
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
@@ -100,7 +100,7 @@ Describe 'Search-MsecLogAnalytics' {
     It 'refuses to guess when a workspace name is ambiguous' {
         # Two workspaces of the same name in different resource groups is normal in a sharded
         # estate. Picking one silently would query the wrong data and look completely fine.
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
@@ -148,7 +148,7 @@ Describe '-WorkspaceName completion' {
     It 'refreshes the cache even when the workspace name does not resolve' {
         # The first attempt at a half-remembered name is exactly when you most need completion to
         # start working. Enumerating BEFORE matching is what makes the retry tab-completable.
-        $cached = InModuleScope msec {
+        $cached = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
             Mock Search-AzGraph -MockWith {
@@ -167,7 +167,7 @@ Describe '-WorkspaceName completion' {
 
 Describe 'Kql/Law bundled queries' {
     BeforeAll {
-        $script:LawRoot = Join-Path (Get-Module msec).ModuleBase 'Kql/Law'
+        $script:LawRoot = Join-Path (Get-Module Msec).ModuleBase 'Kql/Law'
     }
 
     It 'carries no time filter - the window belongs to -Days' {

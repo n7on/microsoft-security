@@ -6,12 +6,12 @@
 # dependent tab-completion, and clear errors.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Select-MsecAzureContext' {
@@ -28,7 +28,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'switches to a saved context matched by subscription id' {
-        $captured = InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        $captured = InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             $script:CapturedSub = $null
@@ -45,7 +45,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'switches to a saved context matched by subscription name when it is unique' {
-        $sub = InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        $sub = InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             $script:CapturedSub = $null
@@ -59,7 +59,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'disambiguates a shared subscription name by -User (which carries the tenant/cloud)' {
-        $captured = InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        $captured = InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             $script:CapturedSub = $null
@@ -76,7 +76,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'throws, naming the accounts, when a shared subscription name has no -User' {
-        InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
@@ -87,7 +87,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'throws a clear error when no saved context matches' {
-        InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
@@ -98,7 +98,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'warns when the chosen context tenant/cloud differs from the msec app session' {
-        $warnings = InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        $warnings = InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
@@ -112,7 +112,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'does NOT warn when the chosen context tenant and cloud still match the session' {
-        $warnings = InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        $warnings = InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
             Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
@@ -136,7 +136,7 @@ Describe 'Select-MsecAzureContext' {
             Account = [pscustomobject]@{ Id = 'admin@contoso.com' }
         }
 
-        $warnings = InModuleScope msec -Parameters @{ Ctx = $ctx } {
+        $warnings = InModuleScope Msec -Parameters @{ Ctx = $ctx } {
             param($Ctx)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { @($Ctx) }
             Mock Select-AzContext -RemoveParameterType 'InputObject' -MockWith { }
@@ -149,7 +149,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It 'throws when there are no saved contexts at all' {
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { @() }
             { Select-MsecAzureContext -Subscription 'dev' } |
                 Should -Throw -ExpectedMessage '*No saved Azure contexts*'
@@ -157,7 +157,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It '-Subscription tab-completes DISTINCT subscription names, with accounts in the tooltip' {
-        InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
 
@@ -178,7 +178,7 @@ Describe 'Select-MsecAzureContext' {
     }
 
     It '-User tab-completes only the accounts available for the chosen -Subscription' {
-        InModuleScope msec -Parameters @{ Ctxs = $script:Ctxs } {
+        InModuleScope Msec -Parameters @{ Ctxs = $script:Ctxs } {
             param($Ctxs)
             Mock Get-AzContext -ParameterFilter { $ListAvailable } -MockWith { $Ctxs }
 

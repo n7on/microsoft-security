@@ -33,7 +33,7 @@ function Invoke-MsecAzureVMScript {
         an Os property and the value is taken per-row.
 
     .PARAMETER ScriptName
-        Base name (no extension) of the script under msec/Scripts/<Os>/. Must exist for
+        Base name (no extension) of the script under Msec/Scripts/<Os>/. Must exist for
         every OS that comes down the pipeline - missing scripts produce a clear
         "<Os> script not found" error at first encounter.
 
@@ -86,7 +86,7 @@ function Invoke-MsecAzureVMScript {
         [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-            $base = (Get-Module msec).ModuleBase
+            $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
 
             # NB: the canonical OS map (extension + CommandId) lives in

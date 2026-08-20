@@ -62,7 +62,7 @@ help under `.NOTES`:
   each other. PIM-eligible assignments are included.
 - **Intune assignment targets are typed columns, not a summary string.** `AssignmentType`,
   `AssignmentGroup` and `AssignmentExcludedGroup` are arrays, so `-contains` is exact;
-  `msec.format.ps1xml` flattens them for display only. An assignment count cannot tell
+  `Msec.format.ps1xml` flattens them for display only. An assignment count cannot tell
   *All Users plus an exclusion group* from *two unrelated groups*.
 - **Unmeasured is `$null`, measured-and-zero is `0`.** A failed read never reports the same
   value as a successful one that found nothing; where a command can say why, it does.

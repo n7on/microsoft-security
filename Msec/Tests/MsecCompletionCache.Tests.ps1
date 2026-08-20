@@ -7,7 +7,7 @@
 # every Tab, and when ARM is unhealthy it hangs rather than failing fast.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
@@ -21,7 +21,7 @@ AfterAll {
         Remove-Item -LiteralPath $script:CacheDir -Recurse -Force
     }
     $env:MSEC_CACHE_DIR = $script:PrevCacheEnv
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Msec completion cache' {
@@ -30,7 +30,7 @@ Describe 'Msec completion cache' {
         # cache. The tenant folder is what lets two tenants stay warm across a context flip
         # instead of overwriting each other. The default must not be the module folder -
         # routinely read-only, and shared.
-        $paths = InModuleScope msec {
+        $paths = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-A' } } }
             $a = Get-MsecCachePath -Name 'subscriptions'
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-B' } } }
@@ -43,13 +43,13 @@ Describe 'Msec completion cache' {
 
         $paths.A | Should -Be (Join-Path (Join-Path $script:CacheDir 'tenant-A') 'subscriptions.json')
         $paths.B | Should -Be (Join-Path (Join-Path $script:CacheDir 'tenant-B') 'subscriptions.json')
-        $paths.Default | Should -Not -BeLike "$((Get-Module msec).ModuleBase)*"
+        $paths.Default | Should -Not -BeLike "$((Get-Module Msec).ModuleBase)*"
     }
 
     It 'round-trips items, and degrades to empty rather than throwing' {
         # Read-MsecCache is called from completers, so a missing or hand-mangled file must
         # degrade to silence - a completer that throws breaks the prompt itself.
-        $result = InModuleScope msec {
+        $result = InModuleScope Msec {
             Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-1' } } }
             Save-MsecCache -Name 'subscriptions' -Item @(
                 [pscustomobject]@{ Id = 'sub-1'; Name = 'Contoso-Prod'; TenantId = 't1' }
@@ -95,7 +95,7 @@ Describe '-Subscription completion' {
         Mock -ModuleName msec Get-AzContext -MockWith {
             [pscustomobject]@{ Tenant = @{ Id = 'completion-tenant' } }
         }
-        InModuleScope msec {
+        InModuleScope Msec {
             Save-MsecCache -Name 'subscriptions' -Item @(
                 [pscustomobject]@{ Id = '11111111-1111-1111-1111-111111111111'; Name = 'Contoso-Prod';    TenantId = 't1' }
                 [pscustomobject]@{ Id = '22222222-2222-2222-2222-222222222222'; Name = 'Contoso-Prod-US'; TenantId = 't1' }
@@ -128,7 +128,7 @@ Describe '-Subscription completion' {
     It 'never makes a network call from the completer' {
         # Structural guard, so that "improving" this into a live Get-AzSubscription fails here
         # first rather than hanging someone's prompt during an ARM outage.
-        $psm1  = Get-Content -LiteralPath (Join-Path (Get-Module msec).ModuleBase 'msec.psm1') -Raw
+        $psm1  = Get-Content -LiteralPath (Join-Path (Get-Module Msec).ModuleBase 'Msec.psm1') -Raw
         $start = $psm1.IndexOf('$msecSubscriptionCompleter = {')
         $body  = $psm1.Substring($start, $psm1.IndexOf('Register-ArgumentCompleter') - $start)
 
@@ -141,7 +141,7 @@ Describe '-Subscription completion' {
         # The cmdlet already enumerates every accessible subscription when unscoped, so keeping
         # the cache warm costs nothing - and -CurrentSubscription must not smuggle that
         # enumeration back in.
-        $cached = InModuleScope msec {
+        $cached = InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-current' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'brand-new-sub'; Name = 'Newly-Added'; TenantId = 't1' }) }
             Mock Search-AzGraph     -MockWith { @() }
@@ -150,7 +150,7 @@ Describe '-Subscription completion' {
         }
         $cached.Name | Should -Contain 'Newly-Added'
 
-        InModuleScope msec {
+        InModuleScope Msec {
             Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = [pscustomobject]@{ Id = 'sub-current' }; Tenant = @{ Id = 'tenant-1' } } }
             Mock Get-AzSubscription -MockWith { throw 'should not enumerate when scoped' }
             Mock Search-AzGraph     -MockWith { @() }

@@ -111,7 +111,7 @@ function Get-MsecEntraMfaRegistration {
     .NOTES
         Each row is a [PSCustomObject] with PSTypeName 'MsecEntraMfaRegistration', whose
         DefaultDisplayPropertySet (UserPrincipalName, IsAdmin, IsMfaCapable,
-        DefaultMfaMethod) is registered in msec.psm1.
+        DefaultMfaMethod) is registered in Msec.psm1.
 
         Projection (Graph field -> output property):
           id                          -> UserId

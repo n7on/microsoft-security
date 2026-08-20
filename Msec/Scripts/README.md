@@ -5,7 +5,7 @@ Each channel is a separate top-level folder so scripts for one channel can't
 accidentally be invoked through another.
 
 ```
-msec/Scripts/
+Msec/Scripts/
 └── VM/                ← Azure VM Run-Command (Invoke-MsecAzureVMScript)
     ├── Linux/
     │   └── *.sh      ← bash scripts (CommandId: RunShellScript)
@@ -17,7 +17,7 @@ Future channels follow the same shape — one folder per channel, OS subfolders
 inside:
 
 ```
-msec/Scripts/
+Msec/Scripts/
 ├── VM/                ← already exists
 └── Xdr/               ← future: Defender XDR Live Response (Invoke-MsecXdrScript)
     ├── Linux/

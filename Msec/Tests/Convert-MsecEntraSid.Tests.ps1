@@ -7,7 +7,7 @@
 # a plausible-looking but meaningless GUID.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Verified pair: little-endian uint32 packing of the objectId's 16 bytes.
@@ -18,7 +18,7 @@ BeforeAll {
 }
 
 AfterAll {
-    Remove-Module msec -Force -ErrorAction SilentlyContinue
+    Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Convert-MsecEntraSid' {
@@ -74,7 +74,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'does not need a session when -Resolve is not used' {
-            InModuleScope msec { $script:MsecSession = $null }
+            InModuleScope Msec { $script:MsecSession = $null }
             { Convert-MsecEntraSid -Sid $script:KnownSid } | Should -Not -Throw
         }
     }
@@ -106,7 +106,7 @@ Describe 'Convert-MsecEntraSid' {
 
     Context '-Resolve' {
         BeforeEach {
-            InModuleScope msec -Parameters @{ Thumb = $script:TestThumbBytes } {
+            InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
                 param($Thumb)
                 $script:MsecSession = @{
                     TenantId        = 'tenant'
@@ -120,7 +120,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'adds the display name, UPN and object type from Graph' {
-            $row = InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            $row = InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -149,7 +149,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'resolves a group, which has no UPN' {
-            $row = InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            $row = InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -175,7 +175,7 @@ Describe 'Convert-MsecEntraSid' {
             # is granted to the ROLE, so the SID is a directoryRole, not a person. The
             # per-tenant instance id is useless for joining across tenants, so the
             # stable roleTemplateId must survive into the row.
-            $row = InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            $row = InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -200,7 +200,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'marks a deleted object NotFound instead of failing the batch' {
-            $rows = InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            $rows = InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -227,7 +227,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'rewrites a 403 to mention the missing Directory.Read.All permission' {
-            InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }
                 Mock Invoke-RestMethod -ParameterFilter { $Uri -match 'oauth2/v2.0/token' } -MockWith {
@@ -243,7 +243,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'requires a session' {
-            InModuleScope msec -Parameters @{ Sid = $script:KnownSid } {
+            InModuleScope Msec -Parameters @{ Sid = $script:KnownSid } {
                 param($Sid)
                 $script:MsecSession = $null
                 { Convert-MsecEntraSid -Sid $Sid -Resolve } | Should -Throw -ExpectedMessage '*Connect-Msec*'
@@ -253,11 +253,11 @@ Describe 'Convert-MsecEntraSid' {
 
     Context 'module surface' {
         It 'is exported by the module' {
-            (Get-Command Convert-MsecEntraSid -Module msec) | Should -Not -BeNullOrEmpty
+            (Get-Command Convert-MsecEntraSid -Module Msec) | Should -Not -BeNullOrEmpty
         }
 
         It 'is listed in FunctionsToExport' {
-            $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..' 'msec.psd1')
+            $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..' 'Msec.psd1')
             $manifest.FunctionsToExport | Should -Contain 'Convert-MsecEntraSid'
         }
     }

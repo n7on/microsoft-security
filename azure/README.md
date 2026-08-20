@@ -1,6 +1,6 @@
 # Azure infrastructure for `msec`
 
-Provisions the Azure resources behind the [msec](../msec) PowerShell module:
+Provisions the Azure resources behind the [msec](../Msec) PowerShell module:
 
 | Resource | Purpose |
 |---|---|

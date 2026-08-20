@@ -157,7 +157,7 @@ function Get-MsecIntuneScriptResult {
         PSCustomObject per (script, device), PSTypeName 'MsecIntuneScriptResult'. See .NOTES.
 
     .NOTES
-        Default table view (registered in msec.psm1): ScriptName, Source, DeviceName, State,
+        Default table view (registered in Msec.psm1): ScriptName, Source, DeviceName, State,
         Output. Output is last so a long script result truncates gracefully rather than
         pushing other columns off the terminal.
 

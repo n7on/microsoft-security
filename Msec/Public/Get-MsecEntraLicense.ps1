@@ -37,7 +37,7 @@ function Get-MsecEntraLicense {
     .NOTES
         Each row is a [PSCustomObject] with PSTypeName 'MsecEntraLicense', whose
         DefaultDisplayPropertySet (SkuPartNumber, Enabled, Assigned,
-        CapabilityStatus) is registered in msec.psm1 - so Format-Table shows a
+        CapabilityStatus) is registered in Msec.psm1 - so Format-Table shows a
         clean 4-column view and the Raw / ServicePlans columns stay accessible
         without cluttering it.
 

@@ -6,7 +6,7 @@ function Search-MsecAzureResourceGraph {
     .DESCRIPTION
         The query is loaded by convention from:
 
-            msec/Kql/Graph/<ResourceType>/<Name>.kql
+            Msec/Kql/Graph/<ResourceType>/<Name>.kql
 
         For example, Search-MsecAzureResourceGraph -ResourceType VM loads Kql/Graph/VM/All.kql. Each
         resource-type folder has at least an All.kql; named variants (e.g. "Running.kql")
@@ -106,7 +106,7 @@ function Search-MsecAzureResourceGraph {
         [Parameter(Mandatory)]
         [ArgumentCompleter({
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
-            $base = (Get-Module msec).ModuleBase
+            $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
             $graphFolder = Join-Path $base 'Kql/Graph'
             if (-not (Test-Path -LiteralPath $graphFolder)) { return }
@@ -127,7 +127,7 @@ function Search-MsecAzureResourceGraph {
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             $rt = $fakeBoundParameters['ResourceType']
             if (-not $rt) { return }
-            $base = (Get-Module msec).ModuleBase
+            $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
             $folder = Join-Path $base "Kql/Graph/$rt"
             if (-not (Test-Path -LiteralPath $folder)) { return }

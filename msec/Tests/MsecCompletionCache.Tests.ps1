@@ -83,9 +83,18 @@ Describe 'Msec completion cache' {
 
 Describe '-Subscription completion' {
     BeforeAll {
-        # Get-AzContext is NOT mocked here on purpose: Save-MsecCache stamps the cache with the
-        # tenant it was written under, and the completer runs outside InModuleScope against the
-        # real context. Stamping a fake tenant would make Read-MsecCache correctly discard it.
+        # Both ends have to agree on the tenant, because the cache is partitioned by it: this
+        # BeforeAll writes the cache, and the completer under test reads it back - but the
+        # completer runs OUTSIDE InModuleScope, via TabExpansion2. Mocking only the write side
+        # would send it to a folder the read side never looks in.
+        #
+        # -ModuleName msec is what makes that work: it intercepts the module's own calls to
+        # Get-AzContext wherever they come from, including the completer's
+        # `& $module { Read-MsecCache }`. This used to rely on the developer's real context
+        # being present on both sides, which is true locally and false on any CI runner.
+        Mock -ModuleName msec Get-AzContext -MockWith {
+            [pscustomobject]@{ Tenant = @{ Id = 'completion-tenant' } }
+        }
         InModuleScope msec {
             Save-MsecCache -Name 'subscriptions' -Item @(
                 [pscustomobject]@{ Id = '11111111-1111-1111-1111-111111111111'; Name = 'Contoso-Prod';    TenantId = 't1' }

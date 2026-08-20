@@ -14,8 +14,19 @@ BeforeAll {
     $env:MSEC_CACHE_DIR  = Join-Path ([System.IO.Path]::GetTempPath()) "msec-test-cache-$([guid]::NewGuid())"
     New-Item -ItemType Directory -Path $env:MSEC_CACHE_DIR -Force | Out-Null
     $script:CacheDir  = $env:MSEC_CACHE_DIR
-    # Tenant-scoped now, so ask the module rather than assuming a flat layout.
-    $script:CachePath = InModuleScope msec { Get-MsecCachePath -Name 'graph-loganalytics-all' }
+
+    # Tenant-scoped now, so ask the module rather than assuming a flat layout - and mock the
+    # context while asking. Get-MsecCachePath needs a tenant for the subfolder and THROWS
+    # without one, which MSEC_CACHE_DIR does not satisfy: the tenant check comes first.
+    #
+    # A developer with an ambient `az login` never sees that. A CI runner has no context, so
+    # this line threw in BeforeAll and Pester failed the whole CONTAINER - taking down all ten
+    # tests in the file, including the four Kql ones that only read files off disk. 'tenant-1'
+    # matches what every test below mocks, so setup and tests resolve the same cache folder.
+    $script:CachePath = InModuleScope msec {
+        Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = @{ Id = 'tenant-1' } } }
+        Get-MsecCachePath -Name 'graph-loganalytics-all'
+    }
 }
 
 AfterAll {

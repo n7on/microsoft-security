@@ -31,6 +31,28 @@ No tenant, no network, no Azure context is needed - every test mocks
 `Invoke-RestMethod` and `Invoke-MsecKeyVaultSign`. If a test needs a session it fabricates
 one by assigning `$script:MsecSession` inside `InModuleScope`.
 
+**Run it at least once without an Azure context**, because a local `Connect-AzAccount`
+masks a whole class of failure that CI then finds:
+
+```powershell
+pwsh -NoProfile -Command {
+    Import-Module Az.Accounts
+    Clear-AzContext -Scope Process -Force      # process scope only - your saved login is untouched
+    Invoke-Pester -Path ./msec/Tests
+}
+```
+
+The trap is `Get-MsecCachePath`: it needs a tenant id for the cache subfolder and THROWS
+without one, *before* it looks at `MSEC_CACHE_DIR`. So redirecting the cache is not enough -
+any test that touches the cache must also mock `Get-AzContext`. Two files learned this the
+hard way; a `BeforeAll` that threw took down the entire container, failing ten tests
+including four that only read `.kql` files off disk.
+
+Where the code under test runs OUTSIDE `InModuleScope` - argument completers do, via
+`TabExpansion2` - use `Mock -ModuleName msec Get-AzContext` rather than a mock inside
+`InModuleScope`, so both the setup that writes the cache and the completer that reads it back
+resolve the same tenant folder.
+
 Tests that touch the completion cache redirect it first:
 
 ```powershell

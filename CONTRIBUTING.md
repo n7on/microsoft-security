@@ -149,10 +149,25 @@ suite. Both workflows check `FailedCount` and throw.
 absent - which on a non-interactive runner is a hang, not a question. The publish job
 bootstraps it explicitly.
 
+**Actions get deprecated by their Node runtime, not by their features.** GitHub retires the
+Node version an action targets, so a pinned major that still works today starts emitting
+`Node.js 20 is deprecated` and is eventually forced onto a newer runtime anyway. The check
+is the action's own `action.yml`:
+
+```bash
+curl -s https://raw.githubusercontent.com/actions/checkout/v7/action.yml | grep 'using:'
+```
+
+Everything here is on `node24`. Note that the deprecation notice names only the action that
+tripped it, so the others in the file are worth checking at the same time - when
+`actions/checkout@v4` was flagged, `softprops/action-gh-release@v2` was equally out of date
+and silent about it.
+
 Worth adding [actionlint](https://github.com/rhysd/actionlint) if you want these caught
 before pushing; it knows the context-availability rules. It is a third-party action or
 binary, so whether that belongs in this repo's CI is a supply-chain call rather than a
-technical one.
+technical one - as is pinning `softprops/action-gh-release` to a commit SHA instead of a
+tag, which is the usual advice for third-party actions in a security-sensitive repo.
 
 ## Things that will catch you out
 

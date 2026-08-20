@@ -22,14 +22,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # No build step: msec is a script module, so the repo layout IS the module.
       # PowerShell 7 ships on every GitHub runner, and the manifest requires 7.0+, so
       # there is deliberately no Windows PowerShell 5.1 leg.
 
       - name: Cache PowerShell modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # Az.Compute alone is over 100 MB. Without a cache this step dominates the run.
           path: |
@@ -98,7 +98,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install dependencies
         shell: pwsh

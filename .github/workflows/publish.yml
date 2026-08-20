@@ -24,7 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
-      MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
 
     steps:
       - name: Checkout
@@ -71,7 +70,18 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           Set-PSRepository PSGallery -InstallationPolicy Trusted
+
+          # Publish-Module (PowerShellGet 2.x) packs through the NuGet package provider. If
+          # it is not present it PROMPTS to install it, and a prompt in a non-interactive
+          # runner is a hang or a failure rather than a question. Bootstrapping it here is
+          # idempotent and turns an unclear stall into a step that either works or says why.
+          if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force | Out-Null
+          }
+          "NuGet provider: $((Get-PackageProvider -Name NuGet).Version)"
+
           if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge '5.0')) {
             Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
           }
@@ -84,6 +94,9 @@ jobs:
 
       - name: Run tests
         shell: pwsh
+        # Step level - the `runner` context does not exist in jobs.<id>.env. See ci.yml.
+        env:
+          MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
         run: |
           $result = Invoke-Pester -Path ./msec/Tests -Output Detailed -PassThru
           if ($result.FailedCount -gt 0) {

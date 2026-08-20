@@ -19,9 +19,6 @@ jobs:
 
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
-      # Keeps the suite off the runner's real module cache, the same way it keeps off a
-      # developer's. Tests that write the completion cache honour this.
-      MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
 
     steps:
       - name: Checkout
@@ -66,6 +63,16 @@ jobs:
 
       - name: Run Pester tests
         shell: pwsh
+        # Keeps the suite off the runner's real module cache, the same way it keeps off a
+        # developer's. Tests that write the completion cache honour this.
+        #
+        # Step level, not job level: the `runner` context is only available inside steps, and
+        # referencing it in jobs.<id>.env fails the whole workflow at parse time with
+        # "Unrecognized named-value: 'runner'" - before any job starts, so there is no log to
+        # read. `github` and `matrix` ARE available up there, which is what makes the
+        # restriction easy to trip over.
+        env:
+          MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
         run: |
           $result = Invoke-Pester -Path ./msec/Tests -Output Detailed -PassThru
 

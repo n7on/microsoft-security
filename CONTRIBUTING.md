@@ -111,6 +111,27 @@ and warns. That is deliberate: it lets an urgent release through, but the warnin
 because the committed manifest then no longer describes what is on the Gallery. A Gallery
 version cannot be replaced, only superseded, so prefer bumping first.
 
+## Things that will catch you out in the workflows
+
+**The `runner` context does not exist at job level.** `jobs.<id>.env` may reference only
+`github`, `needs`, `strategy`, `matrix`, `vars`, `secrets` and `inputs`. Putting
+`${{ runner.temp }}` there fails the whole workflow at PARSE time - before any job starts,
+so there is no job log to read, only `Unrecognized named-value: 'runner'` against a line
+number. Move it to the step's own `env:`, where `runner` is available. `github` and `matrix`
+working fine up there is what makes the restriction easy to trip over.
+
+**Pester 5 sets no exit code.** `Invoke-Pester` on its own reports a green build with a red
+suite. Both workflows check `FailedCount` and throw.
+
+**`Publish-Module` needs the NuGet package provider** to pack, and PROMPTS for it when it is
+absent - which on a non-interactive runner is a hang, not a question. The publish job
+bootstraps it explicitly.
+
+Worth adding [actionlint](https://github.com/rhysd/actionlint) if you want these caught
+before pushing; it knows the context-availability rules. It is a third-party action or
+binary, so whether that belongs in this repo's CI is a supply-chain call rather than a
+technical one.
+
 ## Things that will catch you out
 
 **Import the `.psm1`, not the manifest.** The tests do
@@ -173,3 +194,36 @@ Match the file you are editing. Comments explain *why* - the constraint, the fai
 the thing that looks like a simplification but is not. Comment-based help carries the
 reasoning behind the output shape, not just the parameter list; `.NOTES` is where the
 projection and its edge cases are documented.
+
+## Creating the PowerShell Gallery API key
+
+The package does **not** need to exist first. The "Select Packages" list on the key page
+only shows packages you already own, which makes it look as though it must - for a first
+publish you use the **Glob Pattern** field instead, which accepts a name that does not exist
+yet.
+
+At <https://www.powershellgallery.com/account/apikeys>:
+
+1. **Key Name** - anything, e.g. `msec-github-actions`.
+2. **Expires In** - 365 days is the maximum. Note the date somewhere; an expired key fails
+   the publish step with a 403, which reads like a permissions problem rather than a clock.
+3. **Select Scopes** - **Push new packages and package versions**. This is the one that
+   matters: `Push only new package versions` cannot create a package that does not exist, so
+   with that scope the *first* publish fails and every later one works, which is a confusing
+   way to find out.
+4. **Select Packages → Glob Pattern** - `msec`. Leave the package checkbox list alone; it is
+   empty until the first publish. `*` also works but grants more than this repo needs.
+5. Copy the key immediately - it is shown once.
+
+Then add it to the repository: **Settings → Secrets and variables → Actions → New
+repository secret**, named `PSGALLERY_API_KEY`.
+
+Once the package exists you can, if you prefer, replace the key with one scoped to
+`Push only new package versions` for the same glob - a narrower key for the steady state.
+
+### Rehearse before tagging
+
+Run **Publish to PowerShell Gallery** manually from the Actions tab with **dryRun** ticked.
+That exercises the version parsing, the manifest patch, the tests and
+`Test-ModuleManifest`, ending at `Publish-Module -WhatIf` without pushing anything. Worth
+doing once: a Gallery version cannot be replaced, only superseded.

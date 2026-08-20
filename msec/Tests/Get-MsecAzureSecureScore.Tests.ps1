@@ -173,7 +173,10 @@ Describe 'Get-MsecAzureSecureScore' {
         # 2 successful subs return rows, the failing one is skipped (no row, just warning).
         $output.Rows.Count | Should -Be 2
         $output.Rows.SubscriptionId | Should -Not -Contain 'sub-B'
-        $output.Warnings.Count | Should -BeGreaterThan 0
-        $output.Warnings[0] | Should -Match 'no-reader'
+        # Matched across ALL warnings rather than at [0]. Az.Accounts emits its own
+        # version-upgrade advisory into the same WarningVariable, and on a runner with an
+        # older Az than the Gallery's latest it arrives FIRST - so indexing [0] asserted
+        # against Microsoft's upgrade notice instead of the command's output.
+        ($output.Warnings -join "`n") | Should -Match 'no-reader'
     }
 }

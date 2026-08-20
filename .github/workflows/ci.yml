@@ -61,6 +61,13 @@ jobs:
             }
           }
 
+          # Az.Accounts warns that a newer Az exists, into whatever WarningVariable the
+          # caller supplied - so it lands in the middle of a test's own warnings. The tests
+          # no longer depend on warning ORDER, but silencing it at source keeps the logs
+          # readable and removes a difference between the runner and a developer's machine.
+          Import-Module Az.Accounts
+          Update-AzConfig -CheckForUpgrade $false -Scope Process | Out-Null
+
       - name: Run Pester tests
         shell: pwsh
         # Keeps the suite off the runner's real module cache, the same way it keeps off a

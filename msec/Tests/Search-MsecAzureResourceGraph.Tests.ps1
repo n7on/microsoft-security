@@ -307,9 +307,12 @@ Describe 'Search-MsecAzureResourceGraph pagination' {
             [pscustomobject]@{ Rows = @($rows); Warnings = @($w) }
         }
 
-        $result.Rows.Count     | Should -Be 3
-        $result.Warnings.Count | Should -Be 1
-        $result.Warnings[0]    | Should -Match 'INCOMPLETE'
+        $result.Rows.Count | Should -Be 3
+        # Filtered, not counted outright: the point is that truncation is reported ONCE and
+        # not per page, which is a claim about this command's warnings only. Counting every
+        # warning in the variable also counts Az.Accounts' version-upgrade advisory, which
+        # has nothing to do with paging and is not present on every machine.
+        @($result.Warnings | Where-Object { $_ -match 'INCOMPLETE' }).Count | Should -Be 1
     }
 
     It 'makes exactly one call when the response is a bare row array with no token' {

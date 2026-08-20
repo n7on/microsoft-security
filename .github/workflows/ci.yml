@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every OS runs even if one fails - "broken on Windows only" is the useful signal,
+      # and cancelling the others hides it.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    env:
+      POWERSHELL_TELEMETRY_OPTOUT: 1
+      # Keeps the suite off the runner's real module cache, the same way it keeps off a
+      # developer's. Tests that write the completion cache honour this.
+      MSEC_CACHE_DIR: ${{ runner.temp }}/msec-cache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No build step: msec is a script module, so the repo layout IS the module.
+      # PowerShell 7 ships on every GitHub runner, and the manifest requires 7.0+, so
+      # there is deliberately no Windows PowerShell 5.1 leg.
+
+      - name: Cache PowerShell modules
+        uses: actions/cache@v4
+        with:
+          # Az.Compute alone is over 100 MB. Without a cache this step dominates the run.
+          path: |
+            ~/.local/share/powershell/Modules
+            ~/Documents/PowerShell/Modules
+          key: psmodules-${{ runner.os }}-${{ hashFiles('msec/msec.psd1') }}
+          restore-keys: |
+            psmodules-${{ runner.os }}-
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+
+          # Pester 5 for the suite itself.
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge '5.0')) {
+            Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0
+          }
+
+          # The tests mock Az cmdlets, and Pester's Mock requires the command to EXIST -
+          # a missing module fails as "Could not find Command Get-AzContext" rather than
+          # as anything that points at the real cause. These four cover every Az cmdlet
+          # the suite mocks: Az.Accounts (context/subscription/token), Az.ResourceGraph
+          # (Search-AzGraph), Az.Compute (Invoke-AzVMRunCommand) and
+          # Az.OperationalInsights (Invoke-AzOperationalInsightsQuery).
+          foreach ($m in 'Az.Accounts', 'Az.ResourceGraph', 'Az.Compute', 'Az.OperationalInsights') {
+            if (-not (Get-Module -ListAvailable $m)) {
+              Install-Module $m -Scope CurrentUser -Force
+            }
+          }
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          $result = Invoke-Pester -Path ./msec/Tests -Output Detailed -PassThru
+
+          # Pester 5 does NOT set a non-zero exit code on its own, so without this a red
+          # suite reports a green build.
+          Write-Host "Passed: $($result.PassedCount)  Failed: $($result.FailedCount)  Skipped: $($result.SkippedCount)"
+          if ($result.FailedCount -gt 0) {
+            throw "$($result.FailedCount) test(s) failed."
+          }
+
+  help:
+    name: Help audit
+    runs-on: ubuntu-latest
+    env:
+      POWERSHELL_TELEMETRY_OPTOUT: 1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PlatyPS -Scope CurrentUser -Force
+          foreach ($m in 'Az.Accounts', 'Az.KeyVault', 'Az.Compute', 'Az.ResourceGraph', 'Az.OperationalInsights') {
+            if (-not (Get-Module -ListAvailable $m)) { Install-Module $m -Scope CurrentUser -Force }
+          }
+
+      # Audits, rather than regenerating and diffing. Comment-based help fails silently -
+      # one line starting '.word' truncates a whole block, and Get-Help then shows the
+      # syntax where the synopsis should be - so this checks for that directly. Diffing
+      # generated markdown would instead fail whenever the runner's PowerShell renders
+      # common parameters differently from the author's, which is noise.
+      - name: Audit comment-based help
+        shell: pwsh
+        run: ./tools/Update-MsecHelp.ps1 -AuditOnly

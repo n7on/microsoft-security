@@ -14,6 +14,14 @@ function Get-MsecDefenderScoreDeviceConfiguration {
         normalised against control maxima). Use this function only when you specifically
         need the raw Defender configuration points.
 
+    .EXAMPLE
+        Get-MsecDefenderScoreDeviceConfiguration
+
+    .EXAMPLE
+        # The normalised 0-100 device figure most reports want, for comparison. Score and
+        # ScorePercent are different scales and must not be charted on one axis.
+        Get-MsecSecureScore -Category Device
+
     .OUTPUTS
         PSCustomObject with ScoreType ('DeviceConfiguration'), Date (today), Score (raw points).
     #>

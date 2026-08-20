@@ -17,24 +17,28 @@ function Get-MsecAdoServiceConnection {
         even if it's exposed to multiple projects. The 'Projects' column lists
         every project the connection is currently shared to.
 
-        Use this for the audit-relevant questions the ADO portal makes painful:
+        See the examples for the audit-relevant questions the ADO portal makes painful.
 
-            # All service connections, sorted by what they connect to
-            Get-MsecAdoServiceConnection -Organization 'contoso' |
-                Sort-Object Type | Format-Table Name, Type, AuthScheme, IsShared
+    .EXAMPLE
+        # All service connections, sorted by what they connect to.
+        Get-MsecAdoServiceConnection -Organization 'contoso' |
+            Sort-Object Type | Format-Table Name, Type, AuthScheme, IsShared
 
-            # Connections to Azure subscriptions specifically (find forgotten
-            # ones, audit the auth scheme — Service Principal vs Managed
-            # Identity vs Federated Workload Identity)
-            Get-MsecAdoServiceConnection -Organization 'contoso' |
-                Where Type -eq 'azurerm' |
-                Select Name, AuthScheme, @{n='SubId';e={$_.Raw.data.subscriptionId}},
-                       CreatedByName, Projects
+    .EXAMPLE
+        # Connections to Azure subscriptions specifically: find forgotten ones, and audit
+        # the auth scheme - Service Principal vs Managed Identity vs Federated Workload
+        # Identity. A long-lived secret here is a standing key to a subscription.
+        Get-MsecAdoServiceConnection -Organization 'contoso' |
+            Where-Object Type -eq 'azurerm' |
+            Select-Object Name, AuthScheme, @{ n = 'SubId'; e = { $_.Raw.data.subscriptionId } },
+                          CreatedByName, Projects
 
-            # Highly shared connections — broad blast radius if compromised
-            Get-MsecAdoServiceConnection -Organization 'contoso' |
-                Where { $_.Projects.Count -gt 3 } |
-                Sort { $_.Projects.Count } -Descending
+    .EXAMPLE
+        # Highly shared connections - broad blast radius if one is compromised, because
+        # any pipeline in any of those projects can use it.
+        Get-MsecAdoServiceConnection -Organization 'contoso' |
+            Where-Object { $_.Projects.Count -gt 3 } |
+            Sort-Object { $_.Projects.Count } -Descending
 
     .PARAMETER Organization
         Azure DevOps organization name. The bit before .visualstudio.com in

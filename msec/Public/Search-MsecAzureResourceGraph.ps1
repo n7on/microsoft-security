@@ -37,8 +37,8 @@ function Search-MsecAzureResourceGraph {
         error.
 
     .PARAMETER Name
-        KQL file base name (without extension). Defaults to 'All'. Tab-completes from the
-        .kql files in the selected ResourceType folder.
+        KQL file base name (without extension). Defaults to 'All'. Tab-completes
+        from the .kql files in the selected ResourceType folder.
 
     .PARAMETER Subscription
         Restrict to specific subscriptions, by NAME or id - 'PROD' rather than a GUID. Names are

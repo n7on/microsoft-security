@@ -57,8 +57,8 @@ function Search-MsecLogAnalytics {
 
 
     .PARAMETER Days
-        Time window in whole days, passed to the API as a server-side timespan. Default 7. The
-        .kql files do NOT carry their own time filter - see the NB below.
+        Time window in whole days, passed to the API as a server-side timespan.
+        Default 7. The .kql files do NOT carry their own time filter - see the NB below.
 
     .PARAMETER Timespan
         Time window for anything shorter or finer than a day - 4:00 for four hours, 0:30 for

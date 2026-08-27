@@ -64,6 +64,9 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Search-MsecLogAnalytics](./docs/commands/Search-MsecLogAnalytics.md) - Run a bundled KQL query against a Log Analytics workspace
 - [Invoke-MsecAzureVMScript](./docs/commands/Invoke-MsecAzureVMScript.md) - Run a bundled script on one or more Azure VMs
 
+### Reporting
+- [Export-MsecPostureReport](./docs/commands/Export-MsecPostureReport.md) - Append this run's posture measurements to an Excel workbook, building a charted time series
+
 ### Azure DevOps
 - [Get-MsecAdoServiceConnection](./docs/commands/Get-MsecAdoServiceConnection.md) - Every service connection in an organization, with its auth scheme
 

@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Export-MsecPostureReport` - collects the tenant's posture with the read-only Get-Msec*
+  commands and appends one row per measurement to an Excel workbook (via ImportExcel), so
+  repeated runs build a time series. One sheet per measurement, each written as an Excel
+  TABLE - including Azure Secure Score with one column per subscription, and Intune device
+  compliance aggregated from `Get-MsecIntuneDevice`.
+
+  Every chart is on a Dashboard sheet, first in the workbook, stacked one per row and set up
+  to print one chart per page - A4 landscape, fit to one page wide, a page break above each
+  chart and a print area covering them (charts are drawings anchored to cells, so without a
+  print area a PDF export is blank pages).
+
+  Chart series use ordinary cell ranges. Structured table references were tried first, on
+  the theory that Excel would grow the series with the table - EPPlus stores and reads those
+  back happily, so it tested green, and Excel rendered every chart BLANK. Ordinary ranges
+  are pinned to the row count they were written with, so the ranges are refreshed in place
+  as rows are appended; the chart itself is never rebuilt, and its title, position, size,
+  colours and any series added by hand all survive.
+
+  No series colours are set: Excel's own theme palette applies, so the charts match the
+  workbook and follow it if the theme changes.
+
+  `-TableStyle` sets the Excel table style on every data sheet, default `Medium2`. It is
+  applied on the append path as well as on create, so changing it restyles sheets that
+  already exist rather than leaving them on the old style.
+  Azure Secure Score is per-subscription rather than a tenant-wide average - averaging a
+  well-run production subscription with a neglected sandbox describes neither.
+  `-Subscription` filters which ones appear, taking names or ids.
+
+  Rows accumulate and are never deduped. Secure Score is trimmed to its newest snapshot,
+  because `Get-MsecSecureScore` returns ~90 days on every call and appending all of it would
+  add ~90 near-duplicate rows per run.
+
+  Collection degrades rather than fails: a tenant missing a Defender or Entra P1 licence
+  gets a 403 on some measurements, and those are recorded in a RunLog sheet while every
+  other measurement still lands. A failed measurement contributes no row, leaving a visible
+  gap rather than a fabricated zero.
 - `Get-MsecIntuneScriptResult` - per-device results from all five Intune script collections:
   remediations (deviceHealthScripts), platform scripts (deviceManagementScripts and
   deviceShellScripts), macOS custom attributes and custom compliance discovery scripts.

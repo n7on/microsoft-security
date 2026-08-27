@@ -44,6 +44,18 @@ jobs:
         run: |
           Set-PSRepository PSGallery -InstallationPolicy Trusted
 
+          # ImportExcel: a real dependency of Export-MsecPostureReport. Without it that command's
+
+          # tests SKIP rather than fail, which reads as a green suite that never ran them.
+
+          if (-not (Get-Module -ListAvailable ImportExcel)) {
+
+            Install-Module ImportExcel -Scope CurrentUser -Force
+
+          }
+
+          
+
           # Pester 5 for the suite itself.
           if (-not (Get-Module -ListAvailable Pester | Where-Object Version -ge '5.0')) {
             Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -MinimumVersion 5.0

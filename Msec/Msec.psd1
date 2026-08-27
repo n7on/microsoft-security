@@ -63,8 +63,7 @@
         'Search-MsecLogAnalytics',
         'Invoke-MsecAzureVMScript',
         'Select-MsecAzureContext',
-        'Get-MsecAdoServiceConnection',
-        'Export-MsecWordReport'
+        'Get-MsecAdoServiceConnection'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

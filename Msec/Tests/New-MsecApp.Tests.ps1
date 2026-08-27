@@ -244,6 +244,9 @@ Describe 'New-MsecApp' {
             # Two Graph roles exist here, plus the Defender one.
             @($out.Result.GrantedNow).Count | Should -Be 3
             # The twelve that do not exist in this cloud are named rather than silently lost.
+            # This count is deliberately literal: it has to be updated by hand whenever a
+            # permission is added to $resources, which is the point - a role that vanishes
+            # from the list should fail a test rather than quietly stop being requested.
             @($out.Result.UnavailableRoles).Count | Should -Be 12
             ($out.Warnings -join "`n") | Should -Match 'not available'
             ($out.Warnings -join "`n") | Should -Match 'Group\.Read\.All'

@@ -11,6 +11,12 @@ All notable changes to this project will be documented in this file.
   The data behind the portal's Excel export. Reads deviceRunStates only - per-user results
   from user-context scripts are not covered.
 
+### Removed
+- `Export-MsecWordReport`. It was the module's only optional-dependency command, requiring
+  PSWriteOffice to be installed separately, and its tests skipped entirely when that module
+  was absent - so on CI and on most machines it was shipped but never exercised. Pipe to
+  `Export-Csv`, or to `Export-Excel` from the ImportExcel module, for the same evidence.
+
 ### Fixed
 - `New-MsecApp` now requests `DeviceManagementScripts.Read.All`. Intune scripts are a
   separate scope from `DeviceManagementConfiguration.Read.All`, which does not cover

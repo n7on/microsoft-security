@@ -67,9 +67,6 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 ### Azure DevOps
 - [Get-MsecAdoServiceConnection](./docs/commands/Get-MsecAdoServiceConnection.md) - Every service connection in an organization, with its auth scheme
 
-### Reporting
-- [Export-MsecWordReport](./docs/commands/Export-MsecWordReport.md) - Build a Word report from any pipeline of msec objects
-
 Every command has full help, including the reasoning behind its output shape:
 
 ```powershell

@@ -97,11 +97,15 @@ the right signal: "we didn't get a verdict for this VM, investigate".
 > or `0` to disable entirely (mostly useful for unit tests that mock
 > `Invoke-AzVMRunCommand`).
 
-## Word report (only when an auditor wants per-VM detail)
+## When an auditor wants the raw per-VM output
 
-Still available via `Export-MsecWordReport` — it'll just render the JSON inside
-each VM page, which is honestly fine for evidence. Use this when an auditor asks for
-"the actual output, not just a summary."
+The CSV above is a summary. When someone asks for "the actual output, not just a
+summary", keep the `Output` column — it is the script's JSON exactly as the VM
+emitted it, so it stands on its own as evidence:
+
+```powershell
+... | Select-Object VmName, Status, Output | Export-Csv ./eset-raw.csv -NoTypeInformation
+```
 
 ## Filtering VMs by OS
 

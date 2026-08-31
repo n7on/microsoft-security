@@ -15,7 +15,8 @@ per measurement per run so the file builds a time series you can chart.
 
 ```
 Export-MsecPostureReport [-Path] <String> [-Days <Int32>] [-Measurement <String[]>] [-Subscription <String[]>]
- [-TableStyle <String>] [-PassThru] [-WhatIf] [-Confirm]
+ [-PolicyInitiative <String[]>] [-Target <Hashtable>] [-TableStyle <String>] [-ChartWidth <Int32>]
+ [-ChartHeight <Int32>] [-ResetDashboard] [-PassThru] [-WhatIf] [-Confirm]
  [<CommonParameters>]
 ```
 
@@ -40,12 +41,30 @@ those cells are inside it, and without that a PDF export comes out as blank page
 Page settings that are a matter of taste (orientation, paper, margins) are written
 only when the sheet is first created, so switching to A3 in Excel is not undone.
 
+CHARTS ARE SIZED FOR PASTING INTO WORD, not for filling Excel's page.
+Word pastes a
+copied chart at its true pixel size with no scaling, so the document's printable
+width is the real constraint - about 602 px on A4 portrait at standard margins, 930
+on landscape.
+A chart sized to fill Excel's own landscape page is wider than either
+and has to be dragged smaller on every paste, so the default (-ChartWidth 600) fits
+the tighter case and therefore any document.
+Excel printing does not lose out: the
+print area follows the chart width, so fit-to-one-page-wide scales the narrow band
+back up to fill the sheet.
+
 THE CHARTS ARE NOT REBUILT ON LATER RUNS.
 Their series use ordinary cell ranges,
 which are pinned to the row count they were written with, so the ranges are refreshed
-in place as rows are appended - and nothing else about the chart is touched.
-Its
-title, position, size, colours and any series you added yourself all survive.
+in place as rows are appended.
+Title, size, colours and any series you added yourself
+all survive.
+
+POSITION IS THE EXCEPTION - it belongs to the layout and is reasserted every run,
+because it is what the page breaks are aligned to.
+It also has to be: adding a
+measurement anywhere but the end of the list shifts every later slot, and a chart that
+stayed where it was would have the newcomer drawn straight on top of it.
 
 Series colours are NOT set: Excel's own theme palette applies, so the charts match
 the workbook and follow it if you change the theme.
@@ -55,6 +74,7 @@ Sheets, each data sheet written as an Excel table:
   Scores                 Secure Score, exposure, device configuration score
   SecureScoreByCategory  one column per Secure Score category (Identity, Device, ...)
   AzureSecureScore       one column per Azure subscription
+  PolicyCompliance       one column per Azure Policy initiative
   MfaCoverage            MFA capability overall and for admins
   DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
   Incidents              Defender XDR volume, severity mix and time-to-resolve
@@ -192,6 +212,52 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
+### -PolicyInitiative
+Which Azure Policy initiatives the PolicyCompliance sheet covers, as wildcards matched
+against the initiative's display name.
+Omit for every initiative grading at least one
+resource - which on a large estate is more lines than one chart can carry, hence the
+warning past eight.
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -Target
+Sheet name mapped to a target value, e.g.
+@{ MfaCoverage = 95; PolicyCompliance = 80 }.
+Each becomes a Target column on that sheet holding the same number on every row, which
+Excel plots as a flat line across the chart - so the goal sits alongside the trend
+instead of living in someone's head.
+
+Only the sheets you name get one, so charts you have no target for are untouched.
+The
+value is in the chart's own units: a percentage on the percentage charts, a count on
+Incidents or TenantSettings (@{ Incidents = 0 } draws a zero line under the severity
+counts).
+Raising a target later shows as a step in the line rather than rewriting
+history, because it is stored per row.
+
+```yaml
+Type: Hashtable
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: @{}
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
 ### -TableStyle
 Excel table style for every data sheet.
 One of Light1-21, Medium1-28 or Dark1-11 -
@@ -209,6 +275,65 @@ Aliases:
 Required: False
 Position: Named
 Default value: Medium2
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ChartWidth
+Chart width in pixels, default 600.
+Sized so a chart pasted into Word fits an A4
+PORTRAIT page at standard margins - Word pastes at true pixel size with no scaling,
+so anything wider has to be resized by hand every time.
+About 900 suits landscape
+documents.
+Printing from Excel is unaffected either way: the print area follows the
+chart width and fit-to-one-page-wide scales it up to fill the sheet.
+
+```yaml
+Type: Int32
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: 600
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ChartHeight
+Chart height in pixels, default 370.
+Also sets the row band each chart occupies, and
+therefore where the page breaks fall.
+
+```yaml
+Type: Int32
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: 370
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ResetDashboard
+Rebuild the Dashboard sheet from scratch.
+Charts are created once and afterwards only
+range-refreshed, so a change to -ChartWidth or -ChartHeight does not reach charts that
+already exist - this is how to apply one.
+It discards manual edits on the Dashboard;
+the data sheets and their accumulated history are untouched.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

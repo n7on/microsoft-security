@@ -46,28 +46,56 @@ function Add-MsecExcelDashboard {
         [Parameter(Mandatory)] [string] $Path,
         [Parameter(Mandatory)] [object[]] $Chart,
 
+        [int]    $ChartWidth  = 600,
+        [int]    $ChartHeight = 370,
+        [switch] $Reset,
         [string] $Heading,
         [string] $WorksheetName = 'Dashboard'
     )
 
     # ---- page geometry ---------------------------------------------------------------------
     #
-    # One chart per printed page, sized for A4 landscape.
+    # THE BINDING CONSTRAINT IS WORD, NOT EXCEL. Copy a chart out of Excel and paste it into a
+    # document and it arrives at its true pixel size, with no scaling - so it has to fit the
+    # target page as drawn. At 96 DPI and Word's default 2.54 cm margins:
     #
-    # A4 landscape is 11.69 x 8.27 in. At 0.4 in margins the printable area is 10.89 x 7.47 in,
-    # which at 96 DPI is about 1045 x 717 px. A 960 x 560 chart therefore fits without Excel
-    # having to scale it down, and leaves room for the heading on the first page.
+    #   A4 portrait   21.0 cm - 5.08 = 15.9 cm  ~  602 px
+    #   A4 landscape  29.7 cm - 5.08 = 24.6 cm  ~  930 px
     #
-    # 560 px is 28 rows at the default 20 px row height, so a 30-row band holds one chart with
-    # a gap. The band is what the page breaks are placed on, so it decides pagination.
-    $chartWidth  = 960
-    $chartHeight = 560
-    $band        = 30
-    $firstRow    = 2      # below the heading in A1
+    # Sizing for Excel's own landscape page (about 1045 px) therefore produces a chart too
+    # wide for Word in EITHER orientation, which has to be dragged smaller by hand on every
+    # paste. The default is sized for the tighter of the two - portrait - so a pasted chart
+    # fits any document without being touched.
+    #
+    # Printing from Excel does not suffer for it: the print area below is derived from the
+    # chart width, so fit-to-one-page-wide scales that narrow band UP to fill the sheet.
+    # Small in the file, full width on the page, exact size in Word.
+    $chartWidth  = $ChartWidth
+    $chartHeight = $ChartHeight
+
+    # Rows are 20 px by default, so a band is the chart's height in rows plus a gap. The band
+    # is where the page breaks go, so it decides pagination.
+    $band     = [int][Math]::Ceiling($chartHeight / 20) + 4
+    $firstRow = 2      # below the heading in A1
+
+    # Columns are 64 px by default. One column of slack so the chart never touches the edge
+    # of the print area.
+    $printColumns = [int][Math]::Ceiling($chartWidth / 64) + 1
+    $printLastCol = ConvertTo-MsecExcelColumn -Index ($printColumns - 1)
 
     $package = Open-ExcelPackage -Path $Path
     try {
+        # Charts are created once and then only range-refreshed, so a size change cannot reach
+        # a chart that already exists. -Reset drops the sheet so the whole thing is rebuilt at
+        # the current geometry - the only way to reshape a dashboard built by an earlier
+        # version, and the reason it is a switch rather than the default: it discards every
+        # manual edit on that sheet along with the old sizes.
         $dashboard = $package.Workbook.Worksheets[$WorksheetName]
+        if ($dashboard -and $Reset) {
+            $package.Workbook.Worksheets.Delete($WorksheetName)
+            $dashboard = $null
+        }
+
         $created = $false
         if (-not $dashboard) {
             $dashboard = $package.Workbook.Worksheets.Add($WorksheetName)
@@ -138,6 +166,17 @@ function Add-MsecExcelDashboard {
                         $series.XSeries = $xRange
                     }
                 }
+
+                # POSITION IS OWNED BY THE LAYOUT, not by the reader, so it is reasserted
+                # every run. Without this, adding a measurement anywhere but the end of the
+                # canonical list shifts every later slot while the charts already drawn stay
+                # put - and the new chart lands exactly on top of an existing one. That is
+                # not a cosmetic misalignment: the chart underneath simply cannot be seen.
+                #
+                # Everything else about the chart is still the reader's - title, colours,
+                # size, series added by hand. Only where it sits is not, because where it
+                # sits is what the page breaks are aligned to.
+                $existing.SetPosition($firstRow + ($slot * $band), 0, 0, 0)
                 continue
             }
 
@@ -180,10 +219,10 @@ function Add-MsecExcelDashboard {
         # prints them only if the cells they sit over are inside it; without this the export
         # comes out as blank pages.
         #
-        # 960 px is 15 columns at the default 64 px width, so column P gives a column of
-        # slack. The last row is the bottom of the final band.
+        # Derived from the chart width rather than fixed, so a narrow chart still fills the
+        # printed page: fit-to-one-page-wide scales this band up to the sheet width.
         $lastRow = $firstRow + ($Chart.Count * $band)
-        $dashboard.PrinterSettings.PrintArea = $dashboard.Cells["A1:P$lastRow"]
+        $dashboard.PrinterSettings.PrintArea = $dashboard.Cells["A1:$printLastCol$lastRow"]
 
         # In front of the data sheets, so the workbook opens on the charts.
         $package.Workbook.Worksheets.MoveToStart($WorksheetName)

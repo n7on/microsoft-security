@@ -366,19 +366,84 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
 
             $charts.Count | Should -Be 5
 
-            # One per row band: every chart starts in column A, 30 rows below the last.
+            # The band is derived from -ChartHeight, so it is read off the result rather than
+            # hardcoded - otherwise every size change breaks this test for no reason.
             $charts[0].From.Row | Should -Be 2
+            $band = $charts[1].From.Row - $charts[0].From.Row
+            $band | Should -BeGreaterThan 0
+
+            # One per row band: every chart starts in column A, one band below the last.
             for ($i = 0; $i -lt $charts.Count; $i++) {
-                $charts[$i].From.Row    | Should -Be (2 + $i * 30)
+                $charts[$i].From.Row    | Should -Be (2 + $i * $band)
                 $charts[$i].From.Column | Should -Be 0
             }
 
             # A page break at the top of every band but the first, so each chart prints on
             # its own page - and no chart straddles one.
             for ($i = 1; $i -lt $charts.Count; $i++) {
-                $worksheet.Row(2 + $i * 30).PageBreak | Should -BeTrue
-                $charts[$i - 1].To.Row | Should -BeLessThan (2 + $i * 30)
+                $worksheet.Row(2 + $i * $band).PageBreak | Should -BeTrue
+                $charts[$i - 1].To.Row | Should -BeLessThan (2 + $i * $band)
             }
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'sizes charts to fit a Word page, and derives the print area from that width' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $worksheet = $package.Workbook.Worksheets['Dashboard']
+            $chart = $worksheet.Drawings | Where-Object Name -eq 'chartScores' | Select-Object -First 1
+
+            # Word pastes at true pixel size, and A4 portrait at standard margins gives about
+            # 602 px of printable width. Anything wider has to be resized on every paste.
+            $columnsSpanned = $chart.To.Column - $chart.From.Column
+            $columnsSpanned | Should -BeLessOrEqual 10        # ~600 px at 64 px/column
+
+            # The print area follows the chart width rather than being fixed wide, so
+            # fit-to-one-page-wide scales the narrow band back up to fill the printed sheet.
+            # ~600 px at 64 px per column plus one of slack, so about 11 columns - and in
+            # any case far narrower than the 16 it took when charts were sized for Excel.
+            $area = $package.Workbook.Worksheets['Dashboard'].PrinterSettings.PrintArea.Address
+            $area | Should -Match '\$A\$1:\$[A-Z]+\$\d+'
+            $lastColumn = [regex]::Match($area, ':\$([A-Z]+)\$').Groups[1].Value
+            $lastColumn      | Should -Not -BeNullOrEmpty
+            $lastColumn.Length | Should -Be 1                               # single letter, so < 27 columns
+            [int][char]$lastColumn | Should -BeLessOrEqual ([int][char]'L')
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'honours an explicit chart size, and -Reset is what applies it to an existing sheet' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs -ChartWidth 600 -ChartHeight 370
+            # Without -Reset the existing chart keeps its size: charts are created once.
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs -ChartWidth 1200 -ChartHeight 700
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        $narrow = ($package.Workbook.Worksheets['Dashboard'].Drawings |
+            Where-Object Name -eq 'chartScores')
+        $narrowSpan = $narrow.To.Column - $narrow.From.Column
+        Close-ExcelPackage $package -NoSave
+
+        $narrowSpan | Should -BeLessOrEqual 10
+
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs -ChartWidth 1200 -ChartHeight 700 -Reset
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $wide = ($package.Workbook.Worksheets['Dashboard'].Drawings |
+                Where-Object Name -eq 'chartScores')
+            ($wide.To.Column - $wide.From.Column) | Should -BeGreaterThan $narrowSpan
         }
         finally { Close-ExcelPackage $package -NoSave }
     }
@@ -402,10 +467,50 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
 
             # Charts are drawings anchored to cells, so they print only if those cells are
             # inside the print area - without this the export is blank pages.
-            $settings.PrintArea.Address | Should -Match '\$A\$1:\$P\$\d+'
+            $settings.PrintArea.Address | Should -Match '\$A\$1:\$[A-Z]+\$\d+'
         }
         finally { Close-ExcelPackage $package -NoSave }
     }
+    It 'repositions existing charts when a new measurement is inserted mid-list' {
+        # This is how PolicyCompliance was added: not appended, but slotted in among the
+        # existing specs. Every later slot shifts, and without repositioning the new chart is
+        # drawn exactly on top of whichever chart already held that row - invisible, with
+        # nothing to say it happened.
+        $rows = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            foreach ($name in 'A', 'B', 'C', 'D') {
+                Add-MsecExcelRow -Path $Book -WorksheetName $name -TableName "tbl$name" `
+                    -Row ([pscustomobject]@{ RunUtc = 'd1'; Value = 1 }) | Out-Null
+            }
+            $spec = {
+                param($sheet)
+                [pscustomobject]@{ Sheet = $sheet; Table = "tbl$sheet"; XColumn = 'RunUtc'
+                                   Title = $sheet; Series = @('Value') }
+            }
+
+            Add-MsecExcelDashboard -Path $Book -Chart @((& $spec 'A'), (& $spec 'B'), (& $spec 'C'))
+            # 'D' inserted BEFORE 'C', so C's slot moves from 2 to 3.
+            Add-MsecExcelDashboard -Path $Book -Chart @((& $spec 'A'), (& $spec 'B'), (& $spec 'D'), (& $spec 'C'))
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $charts = @($package.Workbook.Worksheets['Dashboard'].Drawings |
+                Where-Object Name -like 'chart?')
+            $positions = @($charts | ForEach-Object { $_.From.Row })
+
+            $charts.Count | Should -Be 4
+            @($positions | Sort-Object -Unique).Count | Should -Be 4    # no two stacked
+
+            # C moved down a band to make room for D, rather than D landing on top of C.
+            $band = ($charts | Where-Object Name -eq 'chartB').From.Row -
+                    ($charts | Where-Object Name -eq 'chartA').From.Row
+            ($charts | Where-Object Name -eq 'chartD').From.Row | Should -Be (2 + 2 * $band)
+            ($charts | Where-Object Name -eq 'chartC').From.Row | Should -Be (2 + 3 * $band)
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
     It 'holds a slot for a measurement that has not succeeded yet' {
         # 'Email' has no sheet, so its chart cannot be drawn - but the one after it must
         # still land in its own slot rather than shuffling up into Email's place.
@@ -426,10 +531,15 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
             @($dashboard.Drawings).Count | Should -Be 2
             @($dashboard.Drawings | Where-Object Name -eq 'chartEmail').Count | Should -Be 0
 
-            # One chart per 30-row band, so slot 2 is row 2 + 2*30 = 62. If the gap had
-            # collapsed, AzureSecureScore would sit at slot 1 (row 32) instead - and would
-            # then move again the first time Email succeeded.
-            ($dashboard.Drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row | Should -Be 62
+            # Slot 2, not slot 1. chartScores holds slot 0, Email's slot 1 is empty, so
+            # AzureSecureScore must sit two bands down - if the gap had collapsed it would be
+            # one band down, and would move again the first time Email succeeded.
+            $scores = ($dashboard.Drawings | Where-Object Name -eq 'chartScores').From.Row
+            $azure  = ($dashboard.Drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row
+            $scores | Should -Be 2
+            (($azure - $scores) % 2) | Should -Be 0            # an exact whole number of bands
+            $azure | Should -Be ($scores + 2 * (($azure - $scores) / 2))
+            $azure | Should -BeGreaterThan ($scores + 20)      # two bands, not one
         }
         finally { Close-ExcelPackage $package -NoSave }
     }
@@ -597,6 +707,161 @@ Describe 'Export-MsecPostureReport' -Skip:(-not $script:HasExcel) {
         ($log | Where-Object Source -eq 'Get-MsecSecureScore').Status | Should -Be 'Succeeded'
     }
 
+    It 'skips policy compliance when the Az context is on a different tenant' {
+        # The multi-tenant loop this report invites: Connect-Msec per tenant, export per
+        # tenant. Connect-Msec does not move the Az context, so without this guard tenant B's
+        # workbook gets tenant A's policy numbers - plausible, wrong, and in a compliance report.
+        $result = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-AzContext -MockWith {
+                [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'other-tenant' } }
+            }
+            Mock Search-MsecAzureResourceGraph -MockWith { throw 'must not be called' }
+
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance `
+                -WarningVariable w -WarningAction SilentlyContinue | Out-Null
+            $w
+        }
+
+        ($result -join ' ') | Should -Match 'WRONG TENANT'
+        ($result -join ' ') | Should -Match 'Select-MsecAzureContext'
+
+        # No sheet at all - a gap in the chart, not a wrong number.
+        { Import-Excel -Path $script:Book -WorksheetName 'PolicyCompliance' -ErrorAction Stop } | Should -Throw
+
+        # ...and the reason is recorded, so a missing column is explainable months later.
+        $log = @(Import-Excel -Path $script:Book -WorksheetName 'RunLog')
+        ($log | Where-Object Source -like '*Policy/Compliance*').Status | Should -Be 'Skipped'
+    }
+
+    It 'collects policy compliance when the Az context matches the session tenant' {
+        $columns = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # Same tenant as the session set up in BeforeEach.
+            Mock Get-AzContext -MockWith {
+                [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } }
+            }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                [pscustomobject]@{ Initiative = 'NIS2'; CompliantResources = 8; Resources = 10 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance -WarningAction SilentlyContinue | Out-Null
+            @((Import-Excel -Path $Book -WorksheetName 'PolicyCompliance')[0].PSObject.Properties.Name)
+        }
+
+        $columns | Should -Contain 'NIS2'
+    }
+
+    It 'weights policy compliance by resources rather than averaging the percentages' {
+        $row = InModuleScope Msec {
+            # Matches the session tenant, so the wrong-tenant guard lets it through.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } } }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                # Same initiative in two subscriptions of very different size.
+                [pscustomobject]@{ Initiative = 'CIS Benchmark'; SubscriptionName = 'PROD'
+                                   CompliantResources = 100; Resources = 400 }   # 25%
+                [pscustomobject]@{ Initiative = 'CIS Benchmark'; SubscriptionName = 'SANDBOX'
+                                   CompliantResources = 4;   Resources = 4 }     # 100%
+            }
+            @(Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance `
+                -PassThru -WarningAction SilentlyContinue)[0].Row
+        } -Parameters @{ Book = $script:Book }
+
+        # 104 compliant of 404 graded = 25.74%.
+        # Averaging the two percentages would give 62.5 - a number matching neither
+        # subscription, and one that a four-resource sandbox can swing at will.
+        $row.'CIS Benchmark' | Should -Be 25.74
+    }
+
+    It 'orders initiative columns by how much of the estate they grade' {
+        $columns = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # Matches the session tenant, so the wrong-tenant guard lets it through.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } } }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                [pscustomobject]@{ Initiative = 'Small';  CompliantResources = 1;  Resources = 2 }
+                [pscustomobject]@{ Initiative = 'Broad';  CompliantResources = 50; Resources = 900 }
+                [pscustomobject]@{ Initiative = 'Medium'; CompliantResources = 10; Resources = 40 }
+                # Grades nothing, so it is not a column at all - an empty line on the chart
+                # says less than no line.
+                [pscustomobject]@{ Initiative = 'Unused'; CompliantResources = 0;  Resources = 0 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance -WarningAction SilentlyContinue | Out-Null
+            @((Import-Excel -Path $Book -WorksheetName 'PolicyCompliance')[0].PSObject.Properties.Name)
+        }
+
+        # Widest coverage leftmost, so the first chart series is the one grading most.
+        $initiatives = @($columns | Where-Object { $_ -notin 'RunUtc', 'TenantId' })
+        $initiatives | Should -Be @('Broad', 'Medium', 'Small')
+        $initiatives | Should -Not -Contain 'Unused'
+    }
+
+    It 'filters initiatives by wildcard' {
+        $columns = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # Matches the session tenant, so the wrong-tenant guard lets it through.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } } }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                [pscustomobject]@{ Initiative = 'CIS Benchmark v2';   CompliantResources = 5; Resources = 10 }
+                [pscustomobject]@{ Initiative = 'Tagging standards';  CompliantResources = 5; Resources = 10 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance `
+                -PolicyInitiative '*Benchmark*' -WarningAction SilentlyContinue | Out-Null
+            @((Import-Excel -Path $Book -WorksheetName 'PolicyCompliance')[0].PSObject.Properties.Name)
+        }
+
+        $columns | Should -Contain 'CIS Benchmark v2'
+        $columns | Should -Not -Contain 'Tagging standards'
+    }
+
+    It 'warns per pattern that matched nothing, and names what was actually in scope' {
+        # Three standards asked for, two assigned. Silently returning two columns would read
+        # as "SOC 2 has no data" rather than "SOC 2 is not assigned, or is called something
+        # else here".
+        $warnings = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # Matches the session tenant, so the wrong-tenant guard lets it through.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } } }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                [pscustomobject]@{ Initiative = 'ISO 27001:2013'; CompliantResources = 5; Resources = 10 }
+                [pscustomobject]@{ Initiative = 'NIS2';           CompliantResources = 8; Resources = 10 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance `
+                -PolicyInitiative '*NIS2*', '*SOC*', '*27001*' `
+                -WarningVariable w -WarningAction SilentlyContinue | Out-Null
+            $w
+        }
+
+        $text = $warnings -join ' '
+        $text | Should -Match "No policy initiative matches '\*SOC\*'"
+        $text | Should -Match 'ISO 27001:2013'          # says what IS there
+        $text | Should -Not -Match "matches '\*NIS2\*'"  # the two that hit stay quiet
+        $text | Should -Not -Match "matches '\*27001\*'"
+
+        # ...and the two that matched still produce their columns.
+        $columns = @((Import-Excel -Path $script:Book -WorksheetName 'PolicyCompliance')[0].PSObject.Properties.Name)
+        $columns | Should -Contain 'NIS2'
+        $columns | Should -Contain 'ISO 27001:2013'
+    }
+
+    It 'warns rather than silently drawing an unreadable chart when many initiatives are in scope' {
+        $warnings = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # Matches the session tenant, so the wrong-tenant guard lets it through.
+            Mock Get-AzContext -MockWith { [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' } } }
+            Mock Search-MsecAzureResourceGraph -MockWith {
+                1..10 | ForEach-Object {
+                    [pscustomobject]@{ Initiative = "Initiative $_"; CompliantResources = 1; Resources = 2 }
+                }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PolicyCompliance `
+                -WarningVariable w -WarningAction SilentlyContinue | Out-Null
+            $w
+        }
+
+        ($warnings -join ' ') | Should -Match '10 policy initiatives'
+        ($warnings -join ' ') | Should -Match '-PolicyInitiative'
+    }
+
     It 'aggregates Intune compliance from the per-device rows' {
         InModuleScope Msec -Parameters @{ Book = $script:Book } {
             param($Book)
@@ -618,6 +883,71 @@ Describe 'Export-MsecPostureReport' -Skip:(-not $script:HasExcel) {
         # Out of ALL enrolled devices - counting the grace-period one out of the denominator
         # would flatter the number exactly where it matters.
         $devices[0].CompliantPercent | Should -Be 50
+    }
+
+    It 'writes a Target column and plots it, only on the sheets named' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraMfaRegistrationStats -MockWith {
+                [pscustomobject]@{ TotalUsers = 100; MfaCapable = 87; MfaCapablePercent = 87 }
+            }
+            Mock Get-MsecDefenderIncidentStats -MockWith {
+                [pscustomobject]@{ TotalCreated = 12; High = 1; Medium = 4; Low = 7; Informational = 0 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement MfaCoverage, Incidents `
+                -Target @{ MfaCoverage = 95 } -WarningAction SilentlyContinue | Out-Null
+        }
+
+        # The named sheet carries the constant, which is what Excel draws as a flat line.
+        (Import-Excel -Path $script:Book -WorksheetName 'MfaCoverage').Target | Should -Be 95
+
+        # The sheet NOT named is untouched - no column, so no extra series and no clutter.
+        @((Import-Excel -Path $script:Book -WorksheetName 'Incidents')[0].PSObject.Properties.Name) |
+            Should -Not -Contain 'Target'
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $dashboard = $package.Workbook.Worksheets['Dashboard']
+            $mfa = $dashboard.Drawings | Where-Object Name -eq 'chartMfaCoverage'
+            $incidents = $dashboard.Drawings | Where-Object Name -eq 'chartIncidents'
+
+            # Target is LAST, so it takes the final theme colour and reads as an annotation.
+            @($mfa.Series)[-1].Header | Should -Be 'Target'
+            @($incidents.Series | ForEach-Object { $_.Header }) | Should -Not -Contain 'Target'
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'records a raised target as a step rather than rewriting the earlier rows' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraMfaRegistrationStats -MockWith {
+                [pscustomobject]@{ TotalUsers = 100; MfaCapable = 87; MfaCapablePercent = 87 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement MfaCoverage -Target @{ MfaCoverage = 90 } -WarningAction SilentlyContinue | Out-Null
+            Export-MsecPostureReport -Path $Book -Measurement MfaCoverage -Target @{ MfaCoverage = 95 } -WarningAction SilentlyContinue | Out-Null
+        }
+
+        # Stored per row, so "we moved the bar" is visible in the chart. A single stored
+        # constant would have silently restated the old months at the new target.
+        @((Import-Excel -Path $script:Book -WorksheetName 'MfaCoverage').Target) | Should -Be @(90, 95)
+    }
+
+    It 'warns when -Target names a sheet that does not exist' {
+        $warnings = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraMfaRegistrationStats -MockWith {
+                [pscustomobject]@{ TotalUsers = 100; MfaCapablePercent = 87 }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement MfaCoverage `
+                -Target @{ MfaCoverge = 95 } `
+                -WarningVariable w -WarningAction SilentlyContinue | Out-Null
+            $w
+        }
+
+        # A typo would otherwise be a target that silently never appears.
+        ($warnings -join ' ') | Should -Match "'MfaCoverge'"
+        ($warnings -join ' ') | Should -Match 'MfaCoverage'      # names the real ones
     }
 
     It 'honours -WhatIf without creating the workbook' {

@@ -51,6 +51,7 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Get-MsecEntraMfaRegistration](./docs/commands/Get-MsecEntraMfaRegistration.md) - Per-user authentication-method registration: who can actually do MFA, with what
 - [Get-MsecEntraMfaRegistrationStats](./docs/commands/Get-MsecEntraMfaRegistrationStats.md) - MFA coverage in one row, overall and for admins
 - [Get-MsecEntraMfaEvidence](./docs/commands/Get-MsecEntraMfaEvidence.md) - Per-user evidence that MFA was demanded and met at sign-in, for an access review
+- [Get-MsecEntraDisabledUser](./docs/commands/Get-MsecEntraDisabledUser.md) - Disabled ("archived") accounts, how long each has been off, and what licences they still hold
 - [Convert-MsecEntraSid](./docs/commands/Convert-MsecEntraSid.md) - Convert an Entra SID (`S-1-12-1-...`) to its objectId and back
 
 ### Intune

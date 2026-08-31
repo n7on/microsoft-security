@@ -1,0 +1,107 @@
+// One row per initiative assignment per subscription, with its compliance score - the number
+// the portal shows on Policy > Compliance, computed the same way.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance.
+//
+//   # every initiative, everywhere the session can see
+//   Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance
+//
+//   # selected subscriptions (server-side) and selected initiatives (on the result, which is
+//   # already tiny because this aggregates)
+//   Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance -Subscription PROD, TEST |
+//       Where-Object Initiative -like '*Benchmark*'
+//
+// THE SCORE IS PER RESOURCE, NOT PER CHECK. This is the one thing to get right and the easy
+// thing to get wrong. policystates holds one row per RESOURCE PER POLICY: an initiative with
+// 200 policies grading 50 resources is 10,000 rows. Counting those rows compliant-vs-total
+// answers "what share of checks passed", which is a different and much flatter number than
+// the portal's - one badly configured storage account failing a single rule barely moves it.
+//
+// Azure grades a RESOURCE: it is non-compliant for the initiative if ANY policy in that
+// initiative says so. So this rolls up to the resource first (the inner summarize), then
+// counts resources (the outer one). CompliancePercent then matches what the portal shows,
+// and NonCompliantResources is a count of things you have to go and fix.
+//
+// Both numbers are kept, because they answer different questions: CompliancePercent for
+// reporting, NonCompliantChecks for scale of the remediation work.
+//
+// ONLY INITIATIVES. Rows whose policySetDefinitionId is empty come from a standalone policy
+// assignment rather than an initiative, and are filtered out - otherwise single policies
+// appear alongside initiatives as if they were the same kind of thing.
+//
+// THE READABLE NAME COMES FROM THE ASSIGNMENT, NOT THE DEFINITION. Built-in policy SET
+// definitions live at tenant scope and are not returned by a subscription-scoped query, so
+// their display names cannot be joined in - the same limitation All.kql documents. The
+// assignment IS returned, and its displayName is the name people recognise ('ASC Default',
+// 'Microsoft Cloud Security Benchmark'), so that is what Initiative reports. Where an
+// assignment has no display name the definition id is the fallback.
+//
+// NB: compliance states are produced by periodic evaluation, not live. LastEvaluatedUtc is
+// carried for exactly this reason - a subscription whose newest state is four days old is
+// reporting on a four-day-old estate, and a resource fixed this morning still reads
+// NonCompliant. Check that column before taking a low score to a meeting.
+//
+// VOLUME: this aggregates server-side, so it returns a few dozen rows however large the
+// estate. That is the point - the raw policystates table runs past the cmdlet's 50000-row
+// default on a mid-sized tenant (see DiagnosticSettings.kql, which reads it unaggregated).
+
+PolicyResources
+| where type =~ 'microsoft.policyinsights/policystates'
+| extend P = properties
+| extend SetId = tostring(P.policySetDefinitionId)
+// Initiatives only - see the note above.
+| where isnotempty(SetId)
+| extend State          = tostring(P.complianceState),
+         ResourceId     = tolower(tostring(P.resourceId)),
+         AssignmentId   = tolower(tostring(P.policyAssignmentId)),
+         AssignmentName = tostring(P.policyAssignmentName),
+         EvaluatedUtc   = todatetime(P.timestamp)
+// ---- roll up to the RESOURCE. One row per resource per initiative assignment. ----
+| summarize FailedChecks  = countif(State =~ 'NonCompliant'),
+            ExemptChecks  = countif(State =~ 'Exempt'),
+            Checks        = count(),
+            EvaluatedUtc  = max(EvaluatedUtc)
+        by subscriptionId, SetId, AssignmentId, AssignmentName, ResourceId
+// ---- then count resources, which is what Azure's percentage is over. ----
+| summarize Resources             = count(),
+            CompliantResources    = countif(FailedChecks == 0),
+            NonCompliantResources = countif(FailedChecks > 0),
+            NonCompliantChecks    = sum(FailedChecks),
+            ExemptChecks          = sum(ExemptChecks),
+            TotalChecks           = sum(Checks),
+            LastEvaluatedUtc      = max(EvaluatedUtc)
+        by subscriptionId, SetId, AssignmentId, AssignmentName
+| extend CompliancePercent = iff(Resources > 0,
+                                 round(100.0 * CompliantResources / Resources, 2),
+                                 real(null))
+| join kind=leftouter (
+    PolicyResources
+    | where type =~ 'microsoft.authorization/policyassignments'
+    | project AssignmentId       = tolower(id),
+              AssignmentDisplay  = tostring(properties.displayName),
+              // 'Default' enforces; 'DoNotEnforce' grades without blocking, so a low score
+              // there is a forecast rather than something currently being stopped.
+              EnforcementMode    = iff(isempty(tostring(properties.enforcementMode)), 'Default',
+                                       tostring(properties.enforcementMode))
+  ) on AssignmentId
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Initiative        = coalesce(AssignmentDisplay, AssignmentName, tostring(split(SetId, '/')[-1])),
+          SubscriptionName,
+          CompliancePercent,
+          CompliantResources,
+          NonCompliantResources,
+          Resources,
+          // How much work the gap actually is: a single resource can fail twenty rules.
+          NonCompliantChecks,
+          ExemptChecks,
+          TotalChecks,
+          EnforcementMode,
+          LastEvaluatedUtc,
+          SubscriptionId   = subscriptionId,
+          AssignmentName,
+          AssignmentId
+| order by CompliancePercent asc, SubscriptionName asc, Initiative asc

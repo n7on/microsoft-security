@@ -329,6 +329,51 @@ Describe 'Search-MsecAzureResourceGraph pagination' {
     }
 }
 
+Describe 'Kql/Graph/Policy' {
+    It 'tab-completes Policy and its query names' {
+        $line = 'Search-MsecAzureResourceGraph -ResourceType Policy -Name '
+        $names = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches.CompletionText
+        $names | Should -Contain 'All'
+        $names | Should -Contain 'Compliance'
+    }
+
+    It 'Compliance.kql scores per RESOURCE, not per check' {
+        $query = InModuleScope Msec {
+            Mock Get-AzContext      -MockWith { [pscustomobject]@{ Subscription = @{ Id = 'sub-1' }; Tenant = @{ Id = 'tenant-1' } } }
+            Mock Get-AzSubscription -MockWith { @([pscustomobject]@{ Id = 'sub-1' }) }
+            $script:CapturedQuery = $null
+            Mock Search-AzGraph -MockWith { $script:CapturedQuery = $Query; @() }
+            $null = Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance
+            $script:CapturedQuery
+        }
+
+        $query | Should -Match "type =~ 'microsoft.policyinsights/policystates'"
+
+        # Initiatives only - a standalone policy assignment is not one.
+        $query | Should -Match 'isnotempty\(SetId\)'
+
+        # THE POINT OF THE FILE. policystates is one row per resource PER POLICY, so it has to
+        # roll up to the resource first and count resources second - two summarize stages. One
+        # stage would answer "what share of checks passed", a much flatter number than the
+        # portal's, where a single bad resource failing twenty rules barely registers.
+        ([regex]::Matches($query, '\|\s*summarize')).Count | Should -BeGreaterOrEqual 2
+        $query | Should -Match 'by subscriptionId, SetId, AssignmentId, AssignmentName, ResourceId'
+        $query | Should -Match 'CompliantResources\s*=\s*countif\(FailedChecks == 0\)'
+        $query | Should -Match 'NonCompliantResources\s*=\s*countif\(FailedChecks > 0\)'
+
+        # Percentage over RESOURCES, guarded against divide-by-zero.
+        $query | Should -Match 'CompliancePercent = iff\(Resources > 0'
+        $query | Should -Match '100\.0 \* CompliantResources / Resources'
+
+        # Staleness is carried, because these states are periodic rather than live.
+        $query | Should -Match 'LastEvaluatedUtc'
+
+        # The readable name comes from the ASSIGNMENT; built-in set definitions are not
+        # returned by a subscription-scoped query, so their display names cannot be joined.
+        $query | Should -Match "type =~ 'microsoft.authorization/policyassignments'"
+        $query | Should -Match 'Initiative\s*=\s*coalesce\(AssignmentDisplay'
+    }
+}
 Describe 'Kql/Graph/KeyVault' {
     It 'tab-completes KeyVault and both of its query names' {
         $line = 'Search-MsecAzureResourceGraph -ResourceType '

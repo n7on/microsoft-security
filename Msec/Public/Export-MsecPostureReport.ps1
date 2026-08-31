@@ -22,10 +22,24 @@ function Export-MsecPostureReport {
         Page settings that are a matter of taste (orientation, paper, margins) are written
         only when the sheet is first created, so switching to A3 in Excel is not undone.
 
+        CHARTS ARE SIZED FOR PASTING INTO WORD, not for filling Excel's page. Word pastes a
+        copied chart at its true pixel size with no scaling, so the document's printable
+        width is the real constraint - about 602 px on A4 portrait at standard margins, 930
+        on landscape. A chart sized to fill Excel's own landscape page is wider than either
+        and has to be dragged smaller on every paste, so the default (-ChartWidth 600) fits
+        the tighter case and therefore any document. Excel printing does not lose out: the
+        print area follows the chart width, so fit-to-one-page-wide scales the narrow band
+        back up to fill the sheet.
+
         THE CHARTS ARE NOT REBUILT ON LATER RUNS. Their series use ordinary cell ranges,
         which are pinned to the row count they were written with, so the ranges are refreshed
-        in place as rows are appended - and nothing else about the chart is touched. Its
-        title, position, size, colours and any series you added yourself all survive.
+        in place as rows are appended. Title, size, colours and any series you added yourself
+        all survive.
+
+        POSITION IS THE EXCEPTION - it belongs to the layout and is reasserted every run,
+        because it is what the page breaks are aligned to. It also has to be: adding a
+        measurement anywhere but the end of the list shifts every later slot, and a chart that
+        stayed where it was would have the newcomer drawn straight on top of it.
 
         Series colours are NOT set: Excel's own theme palette applies, so the charts match
         the workbook and follow it if you change the theme.
@@ -35,6 +49,7 @@ function Export-MsecPostureReport {
           Scores                 Secure Score, exposure, device configuration score
           SecureScoreByCategory  one column per Secure Score category (Identity, Device, ...)
           AzureSecureScore       one column per Azure subscription
+          PolicyCompliance       one column per Azure Policy initiative
           MfaCoverage            MFA capability overall and for admins
           DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
           Incidents              Defender XDR volume, severity mix and time-to-resolve
@@ -81,11 +96,46 @@ function Export-MsecPostureReport {
         name matching none or several throws with the candidates rather than guessing. Omit
         for every subscription the session can see.
 
+    .PARAMETER PolicyInitiative
+        Which Azure Policy initiatives the PolicyCompliance sheet covers, as wildcards matched
+        against the initiative's display name. Omit for every initiative grading at least one
+        resource - which on a large estate is more lines than one chart can carry, hence the
+        warning past eight.
+
+    .PARAMETER Target
+        Sheet name mapped to a target value, e.g. @{ MfaCoverage = 95; PolicyCompliance = 80 }.
+        Each becomes a Target column on that sheet holding the same number on every row, which
+        Excel plots as a flat line across the chart - so the goal sits alongside the trend
+        instead of living in someone's head.
+
+        Only the sheets you name get one, so charts you have no target for are untouched. The
+        value is in the chart's own units: a percentage on the percentage charts, a count on
+        Incidents or TenantSettings (@{ Incidents = 0 } draws a zero line under the severity
+        counts). Raising a target later shows as a step in the line rather than rewriting
+        history, because it is stored per row.
+
     .PARAMETER TableStyle
         Excel table style for every data sheet. One of Light1-21, Medium1-28 or Dark1-11 -
         tab-completes. Default Medium2. It is applied on every run, not just when a sheet is
         created, so changing it restyles the existing sheets next time rather than leaving
         the old ones behind.
+
+    .PARAMETER ChartWidth
+        Chart width in pixels, default 600. Sized so a chart pasted into Word fits an A4
+        PORTRAIT page at standard margins - Word pastes at true pixel size with no scaling,
+        so anything wider has to be resized by hand every time. About 900 suits landscape
+        documents. Printing from Excel is unaffected either way: the print area follows the
+        chart width and fit-to-one-page-wide scales it up to fill the sheet.
+
+    .PARAMETER ChartHeight
+        Chart height in pixels, default 370. Also sets the row band each chart occupies, and
+        therefore where the page breaks fall.
+
+    .PARAMETER ResetDashboard
+        Rebuild the Dashboard sheet from scratch. Charts are created once and afterwards only
+        range-refreshed, so a change to -ChartWidth or -ChartHeight does not reach charts that
+        already exist - this is how to apply one. It discards manual edits on the Dashboard;
+        the data sheets and their accumulated history are untouched.
 
     .PARAMETER PassThru
         Emit the collected rows as objects as well as writing them.
@@ -132,10 +182,18 @@ function Export-MsecPostureReport {
         [int] $Days = 30,
 
         [ValidateSet('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
-                     'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance')]
+                     'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
+                     'PolicyCompliance')]
         [string[]] $Measurement,
 
         [string[]] $Subscription,
+
+        # Wildcards, matched against the initiative's display name. Omit for every initiative
+        # that grades at least one resource.
+        [string[]] $PolicyInitiative,
+
+        # Sheet name -> target value, e.g. @{ MfaCoverage = 95; PolicyCompliance = 80 }.
+        [hashtable] $Target = @{},
 
         # [string], not the EPPlus enum: that type only exists once ImportExcel is imported,
         # and a parameter's type is resolved when the function is DEFINED - naming it here
@@ -159,6 +217,22 @@ function Export-MsecPostureReport {
         })]
         [string] $TableStyle = 'Medium2',
 
+        # Chart size in pixels. The default fits an A4 PORTRAIT Word page at standard
+        # margins (~602 px of printable width), so a chart copied out of Excel and pasted
+        # into a document arrives at a usable size without being dragged smaller. Raise to
+        # about 900 if your documents are landscape and you want the extra width.
+        [ValidateRange(200, 2000)]
+        [int] $ChartWidth = 600,
+
+        [ValidateRange(150, 1200)]
+        [int] $ChartHeight = 370,
+
+        # Rebuild the Dashboard sheet from scratch. Charts are otherwise created once and
+        # never resized, so a workbook built before a -ChartWidth change keeps the old size
+        # until this is passed. Discards manual edits on that sheet - the data sheets and
+        # their history are untouched.
+        [switch] $ResetDashboard,
+
         [switch] $PassThru
     )
 
@@ -180,7 +254,8 @@ function Export-MsecPostureReport {
     $tenantId = $script:MsecSession.TenantId
     $wanted   = if ($Measurement) { $Measurement } else {
         @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
-          'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance')
+          'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
+          'PolicyCompliance')
     }
 
     # Resolved up front, outside the per-measurement try/catch, so a name that matches
@@ -262,6 +337,42 @@ function Export-MsecPostureReport {
     # here rather than read off a summary property - there isn't one.
     $devices = if ('DeviceCompliance' -in $wanted) { Get-Source 'Get-MsecIntuneDevice' { Get-MsecIntuneDevice } }
 
+    # Azure Policy, via Resource Graph rather than Graph - so this one needs an Az context
+    # where the rest need only the msec session. Running without one fails this measurement
+    # and nothing else, which is the right shape: a tenant report should not be held hostage
+    # to whether Connect-AzAccount has been run.
+    $policy = if ('PolicyCompliance' -in $wanted) {
+        # msec runs on TWO identities: the app-only session from Connect-Msec (Graph, and so
+        # every other measurement here) and your Az context (ARM, and so this one). They move
+        # independently, and Connect-Msec does NOT move the Az context.
+        #
+        # That matters most in the loop this report invites - connect to tenant A, export;
+        # connect to tenant B, export. Without switching the Az context too, tenant B's
+        # workbook silently gets tenant A's policy compliance: a plausible number, in the
+        # wrong file, in a compliance report. So a mismatch SKIPS the measurement rather than
+        # writing it. A gap in the chart is recoverable; a wrong number nobody questions is not.
+        $azTenant = (Get-AzContext -ErrorAction SilentlyContinue).Tenant.Id
+        if ($azTenant -and $tenantId -and $azTenant -ne $tenantId) {
+            $message = "Az context is on tenant $azTenant but this session is connected to $tenantId, so Azure Policy compliance would be the WRONG TENANT'S data. Skipped. Move the Az context with Select-MsecAzureContext, or exclude it with -Measurement."
+            Write-Warning $message
+            $runLog.Add([pscustomobject]@{
+                RunUtc = $runUtc; Source = 'Search-MsecAzureResourceGraph (Policy/Compliance)'
+                Status = 'Skipped'; DurationSeconds = 0; Message = $message
+            })
+            $null
+        }
+        else {
+            Get-Source 'Search-MsecAzureResourceGraph (Policy/Compliance)' {
+                if ($subscriptionId.Count) {
+                    Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance -Subscription $subscriptionId
+                }
+                else {
+                    Search-MsecAzureResourceGraph -ResourceType Policy -Name Compliance
+                }
+            }
+        }
+    }
+
     # ---- compose ---------------------------------------------------------------------------
 
     $sheets = [System.Collections.Generic.List[object]]::new()
@@ -276,6 +387,7 @@ function Export-MsecPostureReport {
     # dropped that one chart from the dashboard while every other one appeared.
     $secureScoreCategories   = @()
     $azureSubscriptionColumn = @()
+    $policyInitiativeColumn  = @()
 
     if ('Scores' -in $wanted) {
         $overall = $secureScore | Where-Object ScoreType -eq 'Overall' | Select-Object -First 1
@@ -500,6 +612,89 @@ function Export-MsecPostureReport {
         })
     }
 
+    if ($policy) {
+        # One column per INITIATIVE, aggregated across the subscriptions in scope. The
+        # aggregate is recomputed from the resource counts - total compliant / total graded -
+        # NOT averaged from the per-subscription percentages. Averaging percentages gives a
+        # subscription holding four resources the same weight as one holding four hundred,
+        # which produces a number that matches no subscription and moves for no reason.
+        $byInitiative = $policy |
+            Where-Object { $_.Resources -gt 0 } |
+            Group-Object Initiative
+
+        if ($PolicyInitiative) {
+            $available = @($byInitiative.Name)
+
+            # A pattern matching nothing is almost always a naming assumption that did not
+            # hold - '*ISO27001*' where the assignment is called 'ISO 27001:2013', or a
+            # standard nobody has actually assigned. Left silent it costs a column, and a
+            # missing line on a compliance chart reads as "we have no data" rather than "you
+            # asked for something that is not here". So each pattern is checked on its own.
+            foreach ($pattern in $PolicyInitiative) {
+                if (-not @($available | Where-Object { $_ -like $pattern }).Count) {
+                    Write-Warning "No policy initiative matches '$pattern', so it contributes no column. In scope: $($available -join ', ')"
+                }
+            }
+
+            $byInitiative = @($byInitiative | Where-Object {
+                $name = $_.Name
+                @($PolicyInitiative | Where-Object { $name -like $_ }).Count -gt 0
+            })
+        }
+
+        # Widest coverage first, so the leftmost columns - and therefore the first chart
+        # series - are the initiatives grading most of the estate.
+        $byInitiative = @($byInitiative | Sort-Object {
+            ($_.Group | Measure-Object -Property Resources -Sum).Sum
+        } -Descending)
+
+        $row = [ordered]@{ RunUtc = $runUtc; TenantId = $tenantId }
+        foreach ($group in $byInitiative) {
+            $compliant = ($group.Group | Measure-Object -Property CompliantResources -Sum).Sum
+            $graded    = ($group.Group | Measure-Object -Property Resources -Sum).Sum
+            if ($graded) { $row[$group.Name] = [math]::Round(100 * $compliant / $graded, 2) }
+        }
+
+        $policyInitiativeColumn = @($byInitiative.Name)
+
+        if ($policyInitiativeColumn.Count -gt 8) {
+            Write-Warning "$($policyInitiativeColumn.Count) policy initiatives are in scope, so the PolicyCompliance chart will have that many lines and be hard to read. Narrow it with -PolicyInitiative, e.g. -PolicyInitiative '*Benchmark*'."
+        }
+
+        if ($policyInitiativeColumn.Count) {
+            $sheets.Add([pscustomobject]@{
+                Sheet = 'PolicyCompliance'
+                Table = 'tblPolicyCompliance'
+                Row   = [pscustomobject] $row
+            })
+        }
+    }
+
+    # ---- targets ------------------------------------------------------------------------------
+    #
+    # A target is written as an ordinary column holding the same number on every row, which
+    # Excel then plots as a flat line across the chart. No special mechanism, and no clutter
+    # where you have not asked for one: a sheet with no target gets no column and therefore
+    # no extra series.
+    #
+    # Stored per row rather than held somewhere as a constant, so RAISING a target shows up as
+    # a step in the line. "We moved the bar in March and the number followed" is exactly the
+    # thing a posture report should be able to show, and a single stored constant could not.
+    $chartSheets = @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'PolicyCompliance',
+                     'MfaCoverage', 'DeviceCompliance', 'Incidents', 'Email',
+                     'ConditionalAccess', 'TenantSettings')
+
+    foreach ($key in @($Target.Keys)) {
+        if ($key -notin $chartSheets) {
+            Write-Warning "-Target names '$key', which is not one of the sheets: $($chartSheets -join ', '). It will have no effect."
+        }
+    }
+
+    foreach ($sheet in $sheets) {
+        if (-not $Target.ContainsKey($sheet.Sheet)) { continue }
+        $sheet.Row | Add-Member -NotePropertyName 'Target' -NotePropertyValue ([double] $Target[$sheet.Sheet]) -Force
+    }
+
     # ---- write -----------------------------------------------------------------------------
 
     if (-not $PSCmdlet.ShouldProcess($Path, "Append $($sheets.Count) measurement row(s) plus the run log")) {
@@ -530,10 +725,11 @@ function Export-MsecPostureReport {
     # Built from the CANONICAL list rather than from $sheets, so a measurement that failed
     # this run keeps its slot and drops into it whenever it next succeeds - rather than every
     # later chart shuffling up one place and the layout changing from run to run.
-    Add-MsecExcelDashboard -Path $Path -Heading "Security posture - $tenantId" -Chart @(
+    $chartSpec = @(
         [pscustomobject]@{ Sheet = 'Scores';                Table = 'tblScores';                XColumn = 'RunUtc'; Title = 'Security scores over time (%)';                         Series = @('SecureScorePercent', 'ExposurePercent') }
         [pscustomobject]@{ Sheet = 'SecureScoreByCategory'; Table = 'tblSecureScoreByCategory'; XColumn = 'RunUtc'; Title = 'Secure Score by category (%)';                           Series = @($secureScoreCategories) }
         [pscustomobject]@{ Sheet = 'AzureSecureScore';      Table = 'tblAzureSecureScore';      XColumn = 'RunUtc'; Title = 'Azure Secure Score by subscription (%)';                Series = @($azureSubscriptionColumn) }
+        [pscustomobject]@{ Sheet = 'PolicyCompliance';    Table = 'tblPolicyCompliance';    XColumn = 'RunUtc'; Title = 'Azure Policy compliance by initiative (%)';               Series = @($policyInitiativeColumn) }
         [pscustomobject]@{ Sheet = 'MfaCoverage';           Table = 'tblMfaCoverage';           XColumn = 'RunUtc'; Title = 'MFA capability over time (%)';                          Series = @('MfaCapablePercent', 'AdminMfaCapablePercent', 'PasswordlessCapablePercent', 'PhoneOnlyMfaCapablePercent', 'SsprCapablePercent') }
         [pscustomobject]@{ Sheet = 'DeviceCompliance';      Table = 'tblDeviceCompliance';      XColumn = 'RunUtc'; Title = 'Intune device compliance over time';                    Series = @('Compliant', 'Noncompliant', 'InGracePeriod') }
         [pscustomobject]@{ Sheet = 'Incidents';             Table = 'tblIncidents';             XColumn = 'RunUtc'; Title = "Defender XDR incidents by severity (last $Days days)";   Series = @('High', 'Medium', 'Low', 'Informational') }
@@ -541,6 +737,15 @@ function Export-MsecPostureReport {
         [pscustomobject]@{ Sheet = 'ConditionalAccess';     Table = 'tblConditionalAccess';     XColumn = 'RunUtc'; Title = "Conditional Access sign-in outcomes (last $Days days)"; Series = @('CaSuccess', 'CaFailure', 'CaNotApplied') }
         [pscustomobject]@{ Sheet = 'TenantSettings';        Table = 'tblTenantSettings';        XColumn = 'RunUtc'; Title = 'Privileged accounts over time';                         Series = @('GlobalAdministratorCount', 'HighlyPrivilegedMemberCount', 'ActivatedRoleCount') }
     )
+
+    # Target LAST in the series list, so it takes the final theme colour and reads as an
+    # annotation across the chart rather than as another measurement competing with them.
+    foreach ($spec in $chartSpec) {
+        if ($Target.ContainsKey($spec.Sheet)) { $spec.Series = @($spec.Series) + 'Target' }
+    }
+
+    Add-MsecExcelDashboard -Path $Path -Heading "Security posture - $tenantId" `
+        -ChartWidth $ChartWidth -ChartHeight $ChartHeight -Reset:$ResetDashboard -Chart $chartSpec
 
 
     $failed = @($runLog | Where-Object Status -eq 'Failed')

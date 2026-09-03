@@ -1,0 +1,100 @@
+// One row per App Service / Function App across every accessible subscription - the posture
+// view. Use -Name StackSettings for the runtime stack in detail.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType AppService.
+// No filtering is applied here - filter the output in PowerShell, e.g. the sites reachable
+// from anywhere without TLS being forced:
+//   Search-MsecAzureResourceGraph -ResourceType AppService |
+//       Where-Object { -not $_.HttpsOnly -and $_.PublicNetworkAccess -eq 'Enabled' }
+//
+// WHAT RESOURCE GRAPH KNOWS ABOUT A SITE, AND WHAT IT DOES NOT. Everything under
+// properties.* is populated. Almost nothing under properties.siteConfig.* is: the ARM GET on
+// a site returns a TRIMMED siteConfig, and the full one lives on the sites/config child
+// resource, which Resource Graph does not index at all (microsoft.web/sites/config returns
+// zero rows). The keys are still present in the bag, holding null - so a query that projected
+// them would emit a column of blanks that reads as "not configured" when it means "not
+// visible from here".
+//
+// So these are NOT answerable in KQL and are deliberately absent rather than projected empty:
+//   minTlsVersion / scmMinTlsVersion   ftpsState              ipSecurityRestrictions
+//   netFrameworkVersion, phpVersion,   appCommandLine         use32BitWorkerProcess
+//   nodeVersion, pythonVersion,        managedPipelineMode    webSocketsEnabled
+//   javaVersion, windowsFxVersion      remoteDebuggingEnabled healthCheckPath
+// Reach those through the control plane instead - Get-AzWebApp / (Get-AzWebApp).SiteConfig,
+// or `az webapp config show` - one call per site.
+//
+// The four siteConfig fields that ARE populated are used below: linuxFxVersion, alwaysOn,
+// http20Enabled and numberOfWorkers.
+//
+// NB: the subscription and App Service plan lookups are inlined rather than hoisted into a
+// `let`. Resource Graph only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.web/sites'
+| extend Config = properties.siteConfig
+| extend Fx = tostring(Config.linuxFxVersion)
+// kind carries the shape: 'app,linux', 'functionapp,linux,container', 'app' (Windows), ...
+| extend IsLinux     = tostring(kind) has 'linux',
+         IsContainer = tostring(kind) has 'container',
+         IsFunction  = tostring(kind) has 'functionapp'
+// linuxFxVersion is 'STACK|VERSION' - 'DOTNETCORE|8.0', 'PHP|8.3', or for a container
+// 'DOCKER|registry/repository:tag'.
+| extend Stack        = iff(isempty(Fx), '', tostring(split(Fx, '|')[0])),
+         StackVersion = iff(isempty(Fx), '', tostring(split(Fx, '|')[1]))
+// A Windows site reports nothing here, and that is a gap in the ANSWER, not a property of
+// the site - so it is named as such rather than left blank to be read as "none".
+| extend Stack = case(isnotempty(Stack), Stack,
+                      IsLinux,           'Unknown',
+                                         'Unknown (Windows)')
+// The plan carries the SKU, and the SKU is what decides whether features like vnet
+// integration and slots are even available. Ids are compared lower-cased: the RP stores the
+// serverFarmId with different casing than the plan's own id on some sites.
+| extend ServerFarmKey = tolower(tostring(properties.serverFarmId))
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.web/serverfarms'
+    | project ServerFarmId = tolower(id), SkuName = tostring(sku.name), SkuTier = tostring(sku.tier)
+  ) on $left.ServerFarmKey == $right.ServerFarmId
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          Kind              = tostring(kind),
+          // 'Running' / 'Stopped'. A stopped site still holds its configuration and its
+          // hostnames, so it stays in the inventory rather than being filtered out here.
+          State             = tostring(properties.state),
+          Stack,
+          StackVersion,
+          // Absent = false. Without it the site answers on plain http as well as https.
+          HttpsOnly         = coalesce(tobool(properties.httpsOnly), false),
+          // Absent = Enabled. Defaulting this the safe-looking way would under-report
+          // exposure on every site that never had it set.
+          PublicNetworkAccess = iff(isempty(tostring(properties.publicNetworkAccess)),
+                                    'Enabled', tostring(properties.publicNetworkAccess)),
+          ClientCertEnabled = coalesce(tobool(properties.clientCertEnabled), false),
+          ClientCertMode    = tostring(properties.clientCertMode),
+          // Regional vnet integration: outbound traffic leaves through the subnet.
+          VnetIntegrated    = isnotempty(tostring(properties.virtualNetworkSubnetId)),
+          VnetSubnet        = strcat(extract(@'(?i)/virtualnetworks/([^/]+)', 1, tostring(properties.virtualNetworkSubnetId)), '/',
+                                     extract(@'(?i)/subnets/([^/]+)', 1, tostring(properties.virtualNetworkSubnetId))),
+          // 'None' / 'SystemAssigned' / 'UserAssigned' / 'SystemAssigned, UserAssigned'.
+          // Anything but None means the site can reach Azure without a stored secret.
+          IdentityType      = iff(isempty(tostring(identity.type)), 'None', tostring(identity.type)),
+          IsFunction,
+          IsContainer,
+          AlwaysOn          = tobool(Config.alwaysOn),
+          Http20Enabled     = tobool(Config.http20Enabled),
+          WorkerCount       = toint(Config.numberOfWorkers),
+          SkuName,
+          SkuTier,
+          DefaultHostName   = tostring(properties.defaultHostName),
+          // hostNames always contains the default one, so a custom domain is any extra.
+          CustomHostNameCount = coalesce(array_length(properties.hostNames), 1) - 1,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by SubscriptionName asc, Name asc

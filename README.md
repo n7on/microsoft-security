@@ -67,6 +67,9 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 
 ### Reporting
 - [Export-MsecPostureReport](./docs/commands/Export-MsecPostureReport.md) - Append this run's posture measurements to an Excel workbook, building a charted time series
+- [Export-MsecVMUpdateReport](./docs/commands/Export-MsecVMUpdateReport.md) - Evidence of when every VM in the current subscription was last patched, one worksheet per subscription
+- [Export-MsecVMNtpReport](./docs/commands/Export-MsecVMNtpReport.md) - Evidence that every VM in the current subscription has its clock synchronised against a real time source
+- [Export-MsecEntraDisabledUserReport](./docs/commands/Export-MsecEntraDisabledUserReport.md) - Evidence of every disabled account, how long it has been disabled, and what it still costs in licences
 
 ### Azure DevOps
 - [Get-MsecAdoServiceConnection](./docs/commands/Get-MsecAdoServiceConnection.md) - Every service connection in an organization, with its auth scheme

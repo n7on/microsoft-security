@@ -1,0 +1,111 @@
+// One row per App Service / Function App, projecting the RUNTIME STACK - what the portal
+// calls Stack settings. The question behind it is end-of-life: a site on PHP 7.4 or .NET
+// Core 3.1 is running a runtime that stopped receiving security fixes years ago, and the
+// platform will keep hosting it indefinitely without saying so.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType AppService -Name StackSettings.
+// No filtering here - filter in PowerShell:
+//   # What is actually running, most common first:
+//   Search-MsecAzureResourceGraph -ResourceType AppService -Name StackSettings |
+//       Group-Object Stack, StackVersion | Sort-Object Count -Descending
+//
+//   # Containers pinned to a tag that can be rewritten underneath them:
+//   ... | Where-Object MutableTag
+//
+// READ THE COVERAGE COLUMN BEFORE READING THE STACK. StackSource says where the answer came
+// from, and it has two values:
+//
+//   LinuxFxVersion - Resource Graph knows. Linux sites, including containers.
+//   Unavailable    - Resource Graph does NOT know, and this row is a gap in the answer
+//                    rather than a site with no stack. Windows sites keep their runtime in
+//                    netFrameworkVersion / phpVersion / nodeVersion / javaVersion, which
+//                    live on the sites/config child resource - a resource Resource Graph
+//                    does not index at all (microsoft.web/sites/config returns zero rows).
+//                    The keys exist under properties.siteConfig holding null, so projecting
+//                    them would produce a column of blanks that reads as "nothing
+//                    configured" when it means "not visible from here".
+//
+// Those rows sort to the TOP. An unanswered site is the one most likely to be the neglected
+// one, and burying it under the sites that did answer is how it stays neglected. For those,
+// go to the control plane one site at a time:
+//   (Get-AzWebApp -ResourceGroupName <rg> -Name <name>).SiteConfig |
+//       Select-Object netFrameworkVersion, phpVersion, nodeVersion, javaVersion, minTlsVersion, ftpsState
+//
+// A CONTAINER'S REAL RUNTIME IS INVISIBLE EITHER WAY. Stack reads DOCKER and StackVersion is
+// the image reference; what is inside the image - which .NET, which OpenSSL - is not
+// something Azure knows, let alone Resource Graph. So a DOCKER row means "the runtime is
+// governed by your image pipeline, not by the platform", which is an answer, just a different
+// one. MutableTag is the part that is checkable from here: an image pinned to 'latest' or a
+// branch name can be replaced underneath the site without any change visible in Azure, so
+// what ran last week cannot be reconstructed from this row.
+//
+// NB: the subscription and App Service plan lookups are inlined rather than hoisted into a
+// `let`. Resource Graph only supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.web/sites'
+| extend Config = properties.siteConfig
+| extend Fx = tostring(Config.linuxFxVersion)
+| extend IsLinux     = tostring(kind) has 'linux',
+         IsContainer = tostring(kind) has 'container'
+// 'STACK|VERSION' - 'DOTNETCORE|8.0', 'PHP|8.3', 'NODE|20-lts',
+// 'DOTNET-ISOLATED|8.0' (the Functions isolated worker), or
+// 'DOCKER|registry/repository:tag'.
+| extend RawStack   = iff(isempty(Fx), '', tostring(split(Fx, '|')[0])),
+         RawVersion = iff(isempty(Fx), '', tostring(split(Fx, '|')[1]))
+| extend StackSource = iff(isnotempty(RawStack), 'LinuxFxVersion', 'Unavailable')
+| extend Stack        = iff(StackSource == 'LinuxFxVersion', RawStack,
+                            iff(IsLinux, 'Unknown', 'Unknown (Windows)')),
+         StackVersion = RawVersion
+// Container image, split so the tag is filterable on its own. A tag is the part after the
+// LAST colon that contains no slash - which is what keeps a registry port (myreg:5000/repo)
+// from being mistaken for one.
+| extend ContainerImage = iff(RawStack =~ 'DOCKER', RawVersion, '')
+| extend ContainerTag   = extract(@':([^:/]+)$', 1, ContainerImage)
+// An image reference with no tag at all does not mean "no tag" - Docker resolves it as
+// :latest, which is the most mutable tag there is. Naming it keeps that from reading as
+// pinned.
+| extend ContainerTag = case(isempty(ContainerImage),                         '',
+                             isempty(ContainerTag),                          'latest (implicit)',
+                                                                             ContainerTag)
+| extend MutableTag = isnotempty(ContainerImage)
+                      and (ContainerTag in~ ('latest', 'latest (implicit)', 'trunk', 'main',
+                                             'master', 'dev', 'develop', 'test', 'staging',
+                                             'prod', 'production', 'stable')
+                           or isempty(ContainerTag))
+| extend ServerFarmKey = tolower(tostring(properties.serverFarmId))
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.web/serverfarms'
+    | project ServerFarmId = tolower(id), SkuName = tostring(sku.name), SkuTier = tostring(sku.tier)
+  ) on $left.ServerFarmKey == $right.ServerFarmId
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name         = name,
+          StackSource,
+          Stack,
+          StackVersion,
+          OperatingSystem = iff(IsLinux, 'Linux', 'Windows'),
+          IsContainer,
+          ContainerImage,
+          ContainerTag,
+          MutableTag,
+          Kind         = tostring(kind),
+          State        = tostring(properties.state),
+          // Off means the site is unloaded when idle - so a scheduled job or a warm cache
+          // silently stops. Populated by Resource Graph, unlike most of siteConfig.
+          AlwaysOn     = tobool(Config.alwaysOn),
+          Http20Enabled = tobool(Config.http20Enabled),
+          WorkerCount  = toint(Config.numberOfWorkers),
+          SkuName,
+          SkuTier,
+          ResourceGroupName = resourceGroup,
+          Location     = location,
+          SubscriptionName,
+          SubscriptionId = subscriptionId,
+          Id           = id
+// Sites whose stack could not be read come FIRST - see the note on StackSource above.
+| order by StackSource asc, SubscriptionName asc, Stack asc, StackVersion asc, Name asc

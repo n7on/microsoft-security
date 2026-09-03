@@ -62,9 +62,20 @@ all survive.
 
 POSITION IS THE EXCEPTION - it belongs to the layout and is reasserted every run,
 because it is what the page breaks are aligned to.
-It also has to be: adding a
-measurement anywhere but the end of the list shifts every later slot, and a chart that
-stayed where it was would have the newcomer drawn straight on top of it.
+It also has to be: charts are
+packed densely, so a chart that stayed where it was would have its neighbour drawn
+straight on top of it.
+
+ONLY MEASUREMENTS THAT HAVE ACTUALLY PRODUCED A ROW GET A CHART, and they are packed
+one after another with no gaps.
+Running a single measurement gives a dashboard with a
+single chart at the top, not one chart several blank pages down.
+The consequence worth
+knowing: the first time a new measurement lands, every chart below it moves down one
+page.
+That happens once - a data sheet never loses its rows, so the layout only ever
+settles further - and the alternative was a permanent blank page for every measurement
+this tenant does not collect.
 
 Series colours are NOT set: Excel's own theme palette applies, so the charts match
 the workbook and follow it if you change the theme.
@@ -75,6 +86,7 @@ Sheets, each data sheet written as an Excel table:
   SecureScoreByCategory  one column per Secure Score category (Identity, Device, ...)
   AzureSecureScore       one column per Azure subscription
   PolicyCompliance       one column per Azure Policy initiative
+  PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
   MfaCoverage            MFA capability overall and for admins
   DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
   Incidents              Defender XDR volume, severity mix and time-to-resolve
@@ -82,6 +94,19 @@ Sheets, each data sheet written as an Excel table:
   ConditionalAccess      sign-in outcomes, risk, report-only would-blocks
   TenantSettings         security defaults, admin counts, licensing posture
   RunLog                 what ran, what failed and why
+
+PRIVILEGED ACCESS IS COUNTED IN PEOPLE, NOT ASSIGNMENTS.
+Someone holding Global
+Administrator, Security Administrator and Exchange Administrator is ONE administrator;
+counting rows would say three, and would move whenever the same faces swapped roles.
+Holders are counted, so a role reaching someone through a role-assignable group counts
+the person, and StandingPrivileged against EligiblePrivileged is the PIM adoption story
+over time.
+
+GlobalAdminHolders there can exceed GlobalAdministratorCount on TenantSettings.
+They
+are not in conflict: this one counts effective holders including group-inherited and
+PIM-eligible ones, the other counts the assignment side.
 
 AZURE SECURE SCORE IS ONE COLUMN PER SUBSCRIPTION, not a tenant-wide average -
 averaging a well-run production subscription with a neglected sandbox produces a

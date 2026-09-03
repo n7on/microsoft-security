@@ -77,6 +77,10 @@ Update-TypeData -TypeName 'MsecEntraMfaEvidence' `
     -DefaultDisplayPropertySet 'UserPrincipalName', 'EvidenceStatus', 'IsMfaCapable', 'DefaultMfaMethod', 'IsAdmin' `
     -Force
 
+Update-TypeData -TypeName 'MsecEntraAppCredential' `
+    -DefaultDisplayPropertySet 'DisplayName', 'CredentialType', 'CredentialName', 'EndDateTime', 'DaysUntilExpiry' `
+    -Force
+
 Update-TypeData -TypeName 'MsecEntraLicense' `
     -DefaultDisplayPropertySet 'SkuPartNumber', 'Enabled', 'Assigned', 'CapabilityStatus' `
     -Force

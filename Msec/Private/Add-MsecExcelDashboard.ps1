@@ -24,16 +24,19 @@ function Add-MsecExcelDashboard {
         the only thing overwritten is the span of rows each series covers, which has to move
         or the chart stops keeping up.
 
-        Slot positions come from the caller's canonical ordering rather than from what
-        happens to exist yet, so a measurement that failed on the first run and succeeded on
-        the second still lands in its own place rather than shuffling the others along.
+        Charts are PACKED DENSELY in the caller's canonical order. The order is the caller's;
+        the spacing is not. A spec that has never produced a row takes no space at all, so a
+        workbook holding one measurement gets one chart at the top rather than one chart
+        several blank pages down. The trade is that a measurement succeeding for the first
+        time pushes every later chart down one page - once, and never back.
 
     .PARAMETER Path
         The .xlsx file. Must already have the data sheets written.
 
     .PARAMETER Chart
         Ordered chart specs. Each needs Sheet, Table, Title, Series and XColumn. A spec whose
-        sheet does not exist yet is skipped and picked up on a later run.
+        sheet does not exist yet is skipped - it contributes no chart and no blank space - and
+        is picked up on a later run.
 
     .PARAMETER Heading
         Text for the title cell above the charts.
@@ -127,56 +130,91 @@ function Add-MsecExcelDashboard {
             $dashboard.PrinterSettings.FitToHeight          = 0
         }
 
-        for ($slot = 0; $slot -lt $Chart.Count; $slot++) {
-            $spec = $Chart[$slot]
-            $chartName = "chart$($spec.Sheet)"
+        # CHARTS ARE PACKED DENSELY, IN CANONICAL ORDER. The caller's list fixes the ORDER
+        # charts appear in; it does not reserve a slot for each entry. A measurement that has
+        # never produced a row contributes no chart and takes no space, so a workbook holding
+        # only one measurement gets one chart at the top rather than one chart four blank
+        # pages down.
+        #
+        # The cost, accepted deliberately: when a measurement succeeds for the FIRST time,
+        # every chart after it moves down one page. That is a one-way, one-off move - a data
+        # sheet never loses its rows, so a chart that exists keeps existing and the layout only
+        # ever settles further. Position is reasserted every run anyway (see below), so this
+        # adds no new instability; it only makes the existing kind more visible. Blank pages
+        # between charts are the worse cost, because they are permanent rather than one-off.
+        $slot = 0
+        foreach ($spec in $Chart) {
 
-            # No data sheet yet - that measurement has never succeeded. Skipped rather than
-            # drawn empty, and its slot is held so the layout does not shift when it arrives.
-            $dataSheet = $package.Workbook.Worksheets[$spec.Sheet]
-            if (-not $dataSheet -or -not $dataSheet.Dimension) { continue }
-
-            # Header row of the data sheet, so each series name can be mapped to its column.
-            $headers = @(1..$dataSheet.Dimension.Columns | ForEach-Object { $dataSheet.Cells[1, $_].Text })
-            $lastRow = $dataSheet.Dimension.Rows
-            if ($lastRow -lt 2) { continue }     # header only; nothing to plot yet
-
-            $xIndex = [array]::IndexOf($headers, $spec.XColumn)
-            if ($xIndex -lt 0) { continue }
-            $xLetter = ConvertTo-MsecExcelColumn -Index $xIndex
-            $xRange = "$($spec.Sheet)!`$$xLetter`$2:`$$xLetter`$$lastRow"
-
-            $plot = [ordered]@{}
-            foreach ($name in @($spec.Series | Where-Object { $_ })) {
-                $index = [array]::IndexOf($headers, $name)
-                if ($index -lt 0) { continue }
-                $letter = ConvertTo-MsecExcelColumn -Index $index
-                $plot[$name] = "$($spec.Sheet)!`$$letter`$2:`$$letter`$$lastRow"
-            }
-            if (-not $plot.Count) { continue }
+            # Normally one chart per sheet, so the sheet names it. A spec may override that,
+            # which is what several charts reading different BLOCKS of one shared sheet need -
+            # without it they would all derive the same name and only the first would exist.
+            $chartName = if ($spec.ChartName) { [string] $spec.ChartName } else { "chart$($spec.Sheet)" }
 
             $existing = $dashboard.Drawings | Where-Object Name -eq $chartName | Select-Object -First 1
 
+            # Work out what this spec can plot, if anything. A missing data sheet is not an
+            # error - that measurement has simply never succeeded.
+            $plot   = [ordered]@{}
+            $xRange = $null
+
+            $dataSheet = $package.Workbook.Worksheets[$spec.Sheet]
+            if ($dataSheet -and $dataSheet.Dimension) {
+                # Header row of the data sheet, so each series name can be mapped to its column.
+                $headers = @(1..$dataSheet.Dimension.Columns | ForEach-Object { $dataSheet.Cells[1, $_].Text })
+                $lastRow = $dataSheet.Dimension.Rows
+
+                # A spec may pin the rows it plots. Used where one sheet holds several blocks -
+                # a summary table with a section per subscription - and each chart must read
+                # only its own, rather than the whole sheet.
+                $firstDataRow = if ($spec.RowStart) { [int] $spec.RowStart } else { 2 }
+                if ($spec.RowEnd) { $lastRow = [Math]::Min([int] $spec.RowEnd, $lastRow) }
+
+                $xIndex = [array]::IndexOf($headers, $spec.XColumn)
+
+                # $lastRow -lt $firstDataRow covers the header-only sheet as well as an
+                # out-of-range RowStart: either way there is nothing to plot yet.
+                if ($xIndex -ge 0 -and $lastRow -ge $firstDataRow) {
+                    $xLetter = ConvertTo-MsecExcelColumn -Index $xIndex
+                    $xRange = "$($spec.Sheet)!`$$xLetter`$$firstDataRow`:`$$xLetter`$$lastRow"
+
+                    foreach ($name in @($spec.Series | Where-Object { $_ })) {
+                        $index = [array]::IndexOf($headers, $name)
+                        if ($index -lt 0) { continue }
+                        $letter = ConvertTo-MsecExcelColumn -Index $index
+                        $plot[$name] = "$($spec.Sheet)!`$$letter`$$firstDataRow`:`$$letter`$$lastRow"
+                    }
+                }
+            }
+
+            # Nothing drawn and nothing to draw: contributes no chart, and therefore no slot
+            # and no blank page. An EXISTING chart always takes its slot even when this run has
+            # nothing to say about it - otherwise it would keep the position it was drawn at
+            # while the charts around it packed up past it, and end up underneath one of them.
+            if (-not $existing -and -not $plot.Count) { continue }
+
             if ($existing) {
                 # REFRESH ONLY THE RANGES. Everything else about the chart is the reader's -
-                # title, colours, size, position, series they added themselves - and stays.
-                foreach ($series in $existing.Series) {
-                    if ($plot.Contains($series.Header)) {
-                        $series.Series = $plot[$series.Header]
-                        $series.XSeries = $xRange
+                # title, colours, size, series they added themselves - and stays.
+                if ($plot.Count) {
+                    foreach ($series in $existing.Series) {
+                        if ($plot.Contains($series.Header)) {
+                            $series.Series = $plot[$series.Header]
+                            $series.XSeries = $xRange
+                        }
                     }
                 }
 
                 # POSITION IS OWNED BY THE LAYOUT, not by the reader, so it is reasserted
-                # every run. Without this, adding a measurement anywhere but the end of the
-                # canonical list shifts every later slot while the charts already drawn stay
-                # put - and the new chart lands exactly on top of an existing one. That is
-                # not a cosmetic misalignment: the chart underneath simply cannot be seen.
+                # every run. Without this, a chart that already existed would keep the row it
+                # was drawn at while the ones around it moved - and the chart taking its place
+                # would be drawn straight on top of it. That is not a cosmetic misalignment:
+                # the chart underneath simply cannot be seen.
                 #
                 # Everything else about the chart is still the reader's - title, colours,
                 # size, series added by hand. Only where it sits is not, because where it
                 # sits is what the page breaks are aligned to.
                 $existing.SetPosition($firstRow + ($slot * $band), 0, 0, 0)
+                $slot++
                 continue
             }
 
@@ -193,26 +231,39 @@ function Add-MsecExcelDashboard {
                 $series = $drawing.Series.Add($plot[$name], $xRange)
                 $series.Header = $name
 
-                # The only two properties set, and neither is styling:
+                # LINE SERIES ONLY. Smooth and Marker live on ExcelLineChartSerie; a column
+                # chart's series is an ExcelBarChartSerie and has neither, so setting them
+                # unconditionally throws the moment a spec asks for anything but a line.
+                # Tested by property rather than by chart type, so a future type is handled
+                # by whether it actually supports these rather than by a list to keep in sync.
+                #
+                # Neither is styling:
                 #   Smooth off - a smoothed line invents values between two monthly samples,
-                #                which on a compliance trend reads as movement that never
-                #                happened.
+                #                which on a trend reads as movement that never happened.
                 #   Markers on - with a handful of points, the dots show where a real sample
                 #                sits as opposed to interpolation between them.
                 # Colour and width are left to Excel's theme.
-                $series.Smooth = $false
-                $series.Marker = [OfficeOpenXml.Drawing.Chart.eMarkerStyle]::Circle
+                $properties = $series.PSObject.Properties.Name
+                if ($properties -contains 'Smooth') { $series.Smooth = $false }
+                if ($properties -contains 'Marker') {
+                    $series.Marker = [OfficeOpenXml.Drawing.Chart.eMarkerStyle]::Circle
+                }
             }
+
+            $slot++
         }
+
+        # How many charts actually landed. Pagination and the print area follow THIS rather
+        # than the length of the spec list - sizing them to the list would put the page breaks
+        # where charts are not, and leave a print area of empty pages hanging off the bottom.
+        $placed = $slot
 
         # ---- pagination ----------------------------------------------------------------------
         #
         # A page break at the top of every band but the first, so each chart prints - and
-        # exports to PDF - on its own page. Driven by the number of SLOTS rather than by the
-        # charts that exist, so a measurement that has not succeeded yet leaves a blank page
-        # rather than shifting every later chart onto the wrong one.
-        for ($slot = 1; $slot -lt $Chart.Count; $slot++) {
-            $dashboard.Row($firstRow + ($slot * $band)).PageBreak = $true
+        # exports to PDF - on its own page.
+        for ($i = 1; $i -lt $placed; $i++) {
+            $dashboard.Row($firstRow + ($i * $band)).PageBreak = $true
         }
 
         # Print area has to cover the charts. They are drawings anchored to cells, so Excel
@@ -221,7 +272,7 @@ function Add-MsecExcelDashboard {
         #
         # Derived from the chart width rather than fixed, so a narrow chart still fills the
         # printed page: fit-to-one-page-wide scales this band up to the sheet width.
-        $lastRow = $firstRow + ($Chart.Count * $band)
+        $lastRow = $firstRow + ($placed * $band)
         $dashboard.PrinterSettings.PrintArea = $dashboard.Cells["A1:$printLastCol$lastRow"]
 
         # In front of the data sheets, so the workbook opens on the charts.

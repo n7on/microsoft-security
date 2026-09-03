@@ -37,9 +37,17 @@ function Export-MsecPostureReport {
         all survive.
 
         POSITION IS THE EXCEPTION - it belongs to the layout and is reasserted every run,
-        because it is what the page breaks are aligned to. It also has to be: adding a
-        measurement anywhere but the end of the list shifts every later slot, and a chart that
-        stayed where it was would have the newcomer drawn straight on top of it.
+        because it is what the page breaks are aligned to. It also has to be: charts are
+        packed densely, so a chart that stayed where it was would have its neighbour drawn
+        straight on top of it.
+
+        ONLY MEASUREMENTS THAT HAVE ACTUALLY PRODUCED A ROW GET A CHART, and they are packed
+        one after another with no gaps. Running a single measurement gives a dashboard with a
+        single chart at the top, not one chart several blank pages down. The consequence worth
+        knowing: the first time a new measurement lands, every chart below it moves down one
+        page. That happens once - a data sheet never loses its rows, so the layout only ever
+        settles further - and the alternative was a permanent blank page for every measurement
+        this tenant does not collect.
 
         Series colours are NOT set: Excel's own theme palette applies, so the charts match
         the workbook and follow it if you change the theme.
@@ -50,6 +58,7 @@ function Export-MsecPostureReport {
           SecureScoreByCategory  one column per Secure Score category (Identity, Device, ...)
           AzureSecureScore       one column per Azure subscription
           PolicyCompliance       one column per Azure Policy initiative
+          PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
           MfaCoverage            MFA capability overall and for admins
           DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
           Incidents              Defender XDR volume, severity mix and time-to-resolve
@@ -57,6 +66,17 @@ function Export-MsecPostureReport {
           ConditionalAccess      sign-in outcomes, risk, report-only would-blocks
           TenantSettings         security defaults, admin counts, licensing posture
           RunLog                 what ran, what failed and why
+
+        PRIVILEGED ACCESS IS COUNTED IN PEOPLE, NOT ASSIGNMENTS. Someone holding Global
+        Administrator, Security Administrator and Exchange Administrator is ONE administrator;
+        counting rows would say three, and would move whenever the same faces swapped roles.
+        Holders are counted, so a role reaching someone through a role-assignable group counts
+        the person, and StandingPrivileged against EligiblePrivileged is the PIM adoption story
+        over time.
+
+        GlobalAdminHolders there can exceed GlobalAdministratorCount on TenantSettings. They
+        are not in conflict: this one counts effective holders including group-inherited and
+        PIM-eligible ones, the other counts the assignment side.
 
         AZURE SECURE SCORE IS ONE COLUMN PER SUBSCRIPTION, not a tenant-wide average -
         averaging a well-run production subscription with a neglected sandbox produces a
@@ -183,7 +203,7 @@ function Export-MsecPostureReport {
 
         [ValidateSet('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
                      'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
-                     'PolicyCompliance')]
+                     'PolicyCompliance', 'PrivilegedAccess')]
         [string[]] $Measurement,
 
         [string[]] $Subscription,
@@ -255,7 +275,7 @@ function Export-MsecPostureReport {
     $wanted   = if ($Measurement) { $Measurement } else {
         @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
           'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
-          'PolicyCompliance')
+          'PolicyCompliance', 'PrivilegedAccess')
     }
 
     # Resolved up front, outside the per-measurement try/catch, so a name that matches
@@ -336,6 +356,13 @@ function Export-MsecPostureReport {
     # Get-MsecIntuneDevice returns one row PER DEVICE, so the compliance mix is aggregated
     # here rather than read off a summary property - there isn't one.
     $devices = if ('DeviceCompliance' -in $wanted) { Get-Source 'Get-MsecIntuneDevice' { Get-MsecIntuneDevice } }
+
+    # Every role holder, not just the highly privileged ones: the counts below need to tell
+    # 'privileged' from 'any role', and filtering here would make that impossible. Groups are
+    # expanded, so a role held through a role-assignable group counts the PEOPLE in it.
+    $roleHolders = if ('PrivilegedAccess' -in $wanted) {
+        Get-Source 'Get-MsecEntraRoleHolder' { Get-MsecEntraRoleHolder }
+    }
 
     # Azure Policy, via Resource Graph rather than Graph - so this one needs an Az context
     # where the rest need only the msec session. Running without one fails this measurement
@@ -670,6 +697,60 @@ function Export-MsecPostureReport {
         }
     }
 
+    if ($roleHolders) {
+        $privileged = @($roleHolders | Where-Object IsHighlyPrivileged)
+
+        # COUNTED AS DISTINCT PEOPLE, not as assignments. Someone holding Global Administrator,
+        # Security Administrator and Exchange Administrator is ONE administrator; counting rows
+        # would report three and move whenever roles were shuffled between the same faces.
+        # EffectiveId is the holder - the person a role reaches through a group, not the group.
+        $distinct = {
+            param($rows)
+            @($rows | Where-Object EffectiveId | Select-Object -ExpandProperty EffectiveId -Unique).Count
+        }
+
+        $active   = @($privileged | Where-Object AssignmentType -eq 'Active')
+        $eligible = @($privileged | Where-Object AssignmentType -eq 'Eligible')
+
+        $row = [ordered]@{
+            RunUtc   = $runUtc
+            TenantId = $tenantId
+
+            # The story this chart is for: standing privilege down, eligible up. A person with
+            # both an active and an eligible assignment is in both counts - that is not double
+            # counting, it is someone who has PIM available and standing access anyway, which
+            # is exactly the state worth seeing.
+            StandingPrivileged = & $distinct $active
+            EligiblePrivileged = & $distinct $eligible
+
+            # Non-human and guest holders, which no amount of PIM or MFA policy covers.
+            PrivilegedServicePrincipals = & $distinct @($privileged | Where-Object EffectiveType -eq 'servicePrincipal')
+            PrivilegedGuests            = & $distinct @($privileged | Where-Object { $_.UserType -eq 'Guest' })
+            # Disabled and still privileged: the account cannot sign in, but the assignment
+            # survives re-enabling. Ties directly to Get-MsecEntraDisabledUser.
+            PrivilegedDisabled          = & $distinct @($privileged | Where-Object { $_.AccountEnabled -eq $false })
+
+            # Counts effective HOLDERS, so it includes people reached through a role-assignable
+            # group and people who are only PIM-eligible. That is why it can exceed the
+            # GlobalAdministratorCount on the TenantSettings sheet, which counts the assignment
+            # side. Both are right; they answer different questions.
+            GlobalAdminHolders = & $distinct @($privileged | Where-Object { $_.RoleName -match 'Global Administrator|Company Administrator' })
+
+            # A holder Graph would not name - an unexpanded group, a deleted object. Carried
+            # because an unresolved holder is privilege nobody is reviewing.
+            UnresolvedHolders  = @($privileged | Where-Object { -not $_.IsResolved }).Count
+
+            PrivilegedAssignments = $privileged.Count
+            AllRoleAssignments    = @($roleHolders).Count
+        }
+
+        $sheets.Add([pscustomobject]@{
+            Sheet = 'PrivilegedAccess'
+            Table = 'tblPrivilegedAccess'
+            Row   = [pscustomobject] $row
+        })
+    }
+
     # ---- targets ------------------------------------------------------------------------------
     #
     # A target is written as an ordinary column holding the same number on every row, which
@@ -681,7 +762,7 @@ function Export-MsecPostureReport {
     # a step in the line. "We moved the bar in March and the number followed" is exactly the
     # thing a posture report should be able to show, and a single stored constant could not.
     $chartSheets = @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'PolicyCompliance',
-                     'MfaCoverage', 'DeviceCompliance', 'Incidents', 'Email',
+                     'PrivilegedAccess', 'MfaCoverage', 'DeviceCompliance', 'Incidents', 'Email',
                      'ConditionalAccess', 'TenantSettings')
 
     foreach ($key in @($Target.Keys)) {
@@ -722,14 +803,19 @@ function Export-MsecPostureReport {
 
     # Charts, all on the Dashboard sheet in front of the data.
     #
-    # Built from the CANONICAL list rather than from $sheets, so a measurement that failed
-    # this run keeps its slot and drops into it whenever it next succeeds - rather than every
-    # later chart shuffling up one place and the layout changing from run to run.
+    # Built from the CANONICAL list rather than from $sheets, so this run's failures do not
+    # decide the ORDER charts appear in - a measurement that failed today keeps its place in
+    # the sequence and drops back into it whenever it next succeeds.
+    #
+    # The list fixes order only, not spacing. Add-MsecExcelDashboard packs the charts that
+    # actually exist one after another, so an entry no tenant ever collects costs nothing
+    # rather than a permanent blank page.
     $chartSpec = @(
         [pscustomobject]@{ Sheet = 'Scores';                Table = 'tblScores';                XColumn = 'RunUtc'; Title = 'Security scores over time (%)';                         Series = @('SecureScorePercent', 'ExposurePercent') }
         [pscustomobject]@{ Sheet = 'SecureScoreByCategory'; Table = 'tblSecureScoreByCategory'; XColumn = 'RunUtc'; Title = 'Secure Score by category (%)';                           Series = @($secureScoreCategories) }
         [pscustomobject]@{ Sheet = 'AzureSecureScore';      Table = 'tblAzureSecureScore';      XColumn = 'RunUtc'; Title = 'Azure Secure Score by subscription (%)';                Series = @($azureSubscriptionColumn) }
-        [pscustomobject]@{ Sheet = 'PolicyCompliance';    Table = 'tblPolicyCompliance';    XColumn = 'RunUtc'; Title = 'Azure Policy compliance by initiative (%)';               Series = @($policyInitiativeColumn) }
+        [pscustomobject]@{ Sheet = 'PolicyCompliance';       Table = 'tblPolicyCompliance';       XColumn = 'RunUtc'; Title = 'Azure Policy compliance by initiative (%)';               Series = @($policyInitiativeColumn) }
+        [pscustomobject]@{ Sheet = 'PrivilegedAccess';       Table = 'tblPrivilegedAccess';       XColumn = 'RunUtc'; Title = 'Privileged access over time';                            Series = @('StandingPrivileged', 'EligiblePrivileged', 'PrivilegedServicePrincipals', 'PrivilegedGuests', 'PrivilegedDisabled') }
         [pscustomobject]@{ Sheet = 'MfaCoverage';           Table = 'tblMfaCoverage';           XColumn = 'RunUtc'; Title = 'MFA capability over time (%)';                          Series = @('MfaCapablePercent', 'AdminMfaCapablePercent', 'PasswordlessCapablePercent', 'PhoneOnlyMfaCapablePercent', 'SsprCapablePercent') }
         [pscustomobject]@{ Sheet = 'DeviceCompliance';      Table = 'tblDeviceCompliance';      XColumn = 'RunUtc'; Title = 'Intune device compliance over time';                    Series = @('Compliant', 'Noncompliant', 'InGracePeriod') }
         [pscustomobject]@{ Sheet = 'Incidents';             Table = 'tblIncidents';             XColumn = 'RunUtc'; Title = "Defender XDR incidents by severity (last $Days days)";   Series = @('High', 'Medium', 'Low', 'Informational') }

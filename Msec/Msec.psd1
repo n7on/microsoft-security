@@ -55,6 +55,7 @@
         'Get-MsecEntraTenantSecuritySetting',
         'Get-MsecEntraLicense',
         'Get-MsecEntraRoleHolder',
+        'Get-MsecEntraAppCredential',
         'Get-MsecEntraMfaRegistration',
         'Get-MsecEntraMfaEvidence',
         'Get-MsecEntraMfaRegistrationStats',
@@ -65,7 +66,10 @@
         'Invoke-MsecAzureVMScript',
         'Select-MsecAzureContext',
         'Get-MsecAdoServiceConnection',
-        'Export-MsecPostureReport'
+        'Export-MsecPostureReport',
+        'Export-MsecVMUpdateReport',
+        'Export-MsecVMNtpReport',
+        'Export-MsecEntraDisabledUserReport'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

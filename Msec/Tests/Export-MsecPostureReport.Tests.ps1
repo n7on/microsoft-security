@@ -511,9 +511,10 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
         finally { Close-ExcelPackage $package -NoSave }
     }
 
-    It 'holds a slot for a measurement that has not succeeded yet' {
-        # 'Email' has no sheet, so its chart cannot be drawn - but the one after it must
-        # still land in its own slot rather than shuffling up into Email's place.
+    It 'leaves no gap for a measurement that has not succeeded yet' {
+        # 'Email' has no sheet, so its chart cannot be drawn - and it must cost NOTHING. The
+        # earlier design reserved a slot for it, which on a workbook holding one measurement
+        # meant the only chart sat several blank pages down the dashboard.
         $withGap = @(
             $script:Specs[0]
             [pscustomobject]@{ Sheet = 'Email'; Table = 'tblEmail'; XColumn = 'RunUtc'; Title = 'Email'; Series = @('Phishing') }
@@ -531,15 +532,111 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
             @($dashboard.Drawings).Count | Should -Be 2
             @($dashboard.Drawings | Where-Object Name -eq 'chartEmail').Count | Should -Be 0
 
-            # Slot 2, not slot 1. chartScores holds slot 0, Email's slot 1 is empty, so
-            # AzureSecureScore must sit two bands down - if the gap had collapsed it would be
-            # one band down, and would move again the first time Email succeeded.
+            # Slot 1, not slot 2: AzureSecureScore sits directly under Scores, with Email's
+            # empty place collapsed rather than printed as a blank page.
             $scores = ($dashboard.Drawings | Where-Object Name -eq 'chartScores').From.Row
             $azure  = ($dashboard.Drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row
             $scores | Should -Be 2
-            (($azure - $scores) % 2) | Should -Be 0            # an exact whole number of bands
-            $azure | Should -Be ($scores + 2 * (($azure - $scores) / 2))
-            $azure | Should -BeGreaterThan ($scores + 20)      # two bands, not one
+
+            # One band apart, whatever the band works out to.
+            $gap = $azure - $scores
+            $gap | Should -BeGreaterThan 0
+            $gap | Should -BeLessThan 40      # one band, not two
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'pushes later charts down when a new measurement lands, without overlapping' {
+        # The accepted cost of packing densely, pinned so it stays a one-off move rather than
+        # turning into charts drawn on top of each other.
+        $withGap = @(
+            $script:Specs[0]
+            [pscustomobject]@{ Sheet = 'Email'; Table = 'tblEmail'; XColumn = 'RunUtc'; Title = 'Email'; Series = @('Phishing') }
+            $script:Specs[1]
+        )
+
+        $before = InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $withGap } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+            $p = Open-ExcelPackage -Path $Book
+            $row = ($p.Workbook.Worksheets['Dashboard'].Drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row
+            Close-ExcelPackage $p -NoSave
+            $row
+        }
+
+        # Now Email succeeds for the first time, taking the slot between the two.
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $withGap } {
+            param($Book, $Specs)
+            Add-MsecExcelRow -Path $Book -WorksheetName 'Email' -TableName 'tblEmail' `
+                -Row ([pscustomobject]@{ RunUtc = 'd1'; Phishing = 3 }) | Out-Null
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $drawings = $package.Workbook.Worksheets['Dashboard'].Drawings
+            @($drawings).Count | Should -Be 3
+
+            $rows = @($drawings | ForEach-Object { $_.From.Row })
+            # Every chart on its own row - the failure this guards is two charts sharing one,
+            # where the lower is invisible.
+            @($rows | Select-Object -Unique).Count | Should -Be 3
+
+            $scores = ($drawings | Where-Object Name -eq 'chartScores').From.Row
+            $email  = ($drawings | Where-Object Name -eq 'chartEmail').From.Row
+            $azure  = ($drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row
+
+            # Canonical ORDER is still the caller's, even though spacing is not.
+            $scores | Should -BeLessThan $email
+            $email  | Should -BeLessThan $azure
+            # And the newcomer pushed the last one down rather than landing on it.
+            $azure  | Should -BeGreaterThan $before
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'repositions a chart whose columns were not discovered this run' {
+        # The partial-run trap. A spec whose series are DISCOVERED from the data - one column
+        # per subscription, per initiative, per Secure Score category - carries an EMPTY series
+        # list on a run that did not collect that measurement. If an empty list made the whole
+        # spec be skipped, the chart would keep the row it was drawn at while every slot around
+        # it moved, and the next chart would be drawn straight on top of it.
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+        }
+
+        # Displace it, the way inserting a new measurement ahead of it would.
+        $package = Open-ExcelPackage -Path $script:Book
+        ($package.Workbook.Worksheets['Dashboard'].Drawings |
+            Where-Object Name -eq 'chartAzureSecureScore').SetPosition(500, 0, 0, 0)
+        Close-ExcelPackage $package
+
+        # Now a run that collected only Scores: the Azure spec knows no columns at all.
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            $partial = @(
+                $Specs[0]
+                [pscustomobject]@{ Sheet = 'AzureSecureScore'; Table = 'tblAzureSecureScore'
+                                   XColumn = 'RunUtc'; Title = 'Azure'; Series = @() }
+            )
+            Add-MsecExcelDashboard -Path $Book -Chart $partial
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $drawings = $package.Workbook.Worksheets['Dashboard'].Drawings
+            $scores = ($drawings | Where-Object Name -eq 'chartScores').From.Row
+            $azure  = ($drawings | Where-Object Name -eq 'chartAzureSecureScore').From.Row
+
+            $azure | Should -Not -Be 500                 # back in its slot
+            $azure | Should -BeGreaterThan $scores       # and below the chart before it
+
+            # Its series are untouched: this run knew nothing about its columns, so it had
+            # nothing to say about them.
+            $series = $drawings | Where-Object Name -eq 'chartAzureSecureScore' |
+                ForEach-Object { $_.Series } | ForEach-Object { $_.Header }
+            @($series) | Should -Be @('PROD', 'SANDBOX')
         }
         finally { Close-ExcelPackage $package -NoSave }
     }
@@ -883,6 +980,97 @@ Describe 'Export-MsecPostureReport' -Skip:(-not $script:HasExcel) {
         # Out of ALL enrolled devices - counting the grace-period one out of the denominator
         # would flatter the number exactly where it matters.
         $devices[0].CompliantPercent | Should -Be 50
+    }
+
+    It 'counts privileged people, not privileged assignments' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraRoleHolder -MockWith {
+                # One person, three roles. Counting rows would call this three administrators.
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; RoleName = 'Global Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; RoleName = 'Security Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; RoleName = 'Exchange Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                # A second, genuinely different person.
+                [pscustomobject]@{ EffectiveId = 'u2'; EffectiveType = 'user'; RoleName = 'Global Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                # Holds a role, but not a privileged one - in AllRoleAssignments and nothing else.
+                [pscustomobject]@{ EffectiveId = 'u3'; EffectiveType = 'user'; RoleName = 'Message Center Reader'
+                                   IsHighlyPrivileged = $false; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PrivilegedAccess -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'PrivilegedAccess')[0]
+        $row.StandingPrivileged | Should -Be 2   # people, not the 4 privileged rows
+        $row.GlobalAdminHolders | Should -Be 2
+        # Both totals are still carried, so the ratio between them stays checkable.
+        $row.PrivilegedAssignments | Should -Be 4
+        $row.AllRoleAssignments    | Should -Be 5
+    }
+
+    It 'splits standing privilege from PIM-eligible, counting someone with both in each' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraRoleHolder -MockWith {
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; RoleName = 'Global Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                # Same person, also eligible. Standing access they never have to activate for
+                # plus an eligible assignment is a real state, and belongs in both counts.
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; RoleName = 'Security Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Eligible'; AccountEnabled = $true; IsResolved = $true }
+                [pscustomobject]@{ EffectiveId = 'u2'; EffectiveType = 'user'; RoleName = 'Security Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Eligible'; AccountEnabled = $true; IsResolved = $true }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PrivilegedAccess -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'PrivilegedAccess')[0]
+        $row.StandingPrivileged | Should -Be 1
+        $row.EligiblePrivileged | Should -Be 2
+    }
+
+    It 'separates the holders no MFA or PIM policy covers' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraRoleHolder -MockWith {
+                [pscustomobject]@{ EffectiveId = 'u1'; EffectiveType = 'user'; UserType = 'Member'; RoleName = 'Global Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                [pscustomobject]@{ EffectiveId = 'g1'; EffectiveType = 'user'; UserType = 'Guest'; RoleName = 'Global Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                [pscustomobject]@{ EffectiveId = 'sp1'; EffectiveType = 'servicePrincipal'; RoleName = 'Application Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $true; IsResolved = $true }
+                # Cannot sign in today, but the assignment survives the account being re-enabled.
+                [pscustomobject]@{ EffectiveId = 'u2'; EffectiveType = 'user'; UserType = 'Member'; RoleName = 'Security Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; AccountEnabled = $false; IsResolved = $true }
+                # Graph would not name this one - privilege nobody is reviewing.
+                [pscustomobject]@{ EffectiveId = 'x1'; EffectiveType = 'unknown'; RoleName = 'Security Administrator'
+                                   IsHighlyPrivileged = $true; AssignmentType = 'Active'; IsResolved = $false }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement PrivilegedAccess -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'PrivilegedAccess')[0]
+        $row.PrivilegedGuests            | Should -Be 1
+        $row.PrivilegedServicePrincipals | Should -Be 1
+        $row.PrivilegedDisabled          | Should -Be 1
+        $row.UnresolvedHolders           | Should -Be 1
+    }
+
+    It 'contributes no row rather than a row of zeroes when role holders cannot be read' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecEntraRoleHolder -MockWith { throw 'Forbidden' }
+            Export-MsecPostureReport -Path $Book -Measurement PrivilegedAccess -WarningAction SilentlyContinue | Out-Null
+        }
+
+        # A fabricated zero would read as 'no administrators', which is the one conclusion
+        # a failed read must never support. The gap in the chart is the honest answer.
+        @(Open-ExcelPackage -Path $script:Book | ForEach-Object { $_.Workbook.Worksheets.Name }) |
+            Should -Not -Contain 'PrivilegedAccess'
+        @(Import-Excel -Path $script:Book -WorksheetName 'RunLog')[0].Source | Should -Be 'Get-MsecEntraRoleHolder'
     }
 
     It 'writes a Target column and plots it, only on the sheets named' {

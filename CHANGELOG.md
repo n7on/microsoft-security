@@ -5,6 +5,153 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- App Service KQL: `Kql/Graph/AppService/All.kql` (one row per site - TLS enforcement, public
+  network access, client certificates, vnet integration, managed identity, plan SKU) and
+  `Kql/Graph/AppService/StackSettings.kql` (the runtime stack, for the end-of-life question).
+  Reached as `Search-MsecAzureResourceGraph -ResourceType AppService [-Name StackSettings]`.
+
+  BOTH QUERIES DELIBERATELY OMIT MOST OF siteConfig. Resource Graph indexes the trimmed
+  siteConfig returned by the ARM GET on a site, not the sites/config child resource, which it
+  does not index at all - `microsoft.web/sites/config` returns zero rows. The keys are present
+  in the property bag holding null, so projecting them yields a column of blanks that reads as
+  "not configured" when it means "not visible from here". Verified against a live tenant:
+  `minTlsVersion`, `ftpsState`, `ipSecurityRestrictions`, `netFrameworkVersion`, `phpVersion`,
+  `nodeVersion`, `javaVersion`, `appCommandLine`, `managedPipelineMode`, `use32BitWorkerProcess`
+  and `healthCheckPath` were empty on 61 of 61 sites. Only `linuxFxVersion`, `alwaysOn`,
+  `http20Enabled` and `numberOfWorkers` are populated, and only those are used.
+
+  StackSettings therefore carries a `StackSource` column - `LinuxFxVersion` when Resource Graph
+  knows, `Unavailable` when it does not - and Windows sites, whose stack lives entirely in the
+  fields above, sort to the TOP as `Unknown (Windows)` rather than appearing as sites with no
+  stack. A container reports `DOCKER` with its image reference, because what runs inside the
+  image is not something Azure knows either; `MutableTag` flags the images pinned to `latest`,
+  `trunk` or a branch name, where what ran last week cannot be reconstructed from the row.
+- `Get-MsecEntraAppCredential` - every client secret and certificate on the tenant's app
+  registrations, one row per CREDENTIAL rather than per app: rolling up per app would have to
+  pick a single expiry, which hides the secret lapsing on Friday behind the two good for a
+  year. Carries `DaysUntilExpiry`, `IsExpired` and `LifetimeDays`, so it answers both halves of
+  the question - the outage (a credential expiring at 3am on the integration nobody owns) and
+  the security posture (a secret minted with a two-year lifetime is two years of standing
+  access if it leaks).
+
+  `-ExpiringWithinDays` always keeps ALREADY-EXPIRED credentials, whatever the window: expired
+  is not less urgent than expiring, and a filter that dropped them would report the opposite of
+  the truth.
+
+  App registrations are inventoried completely, including those with NO credentials
+  (`CredentialType 'None'`) - that is usually the good state, an app on federated credentials,
+  and a report that omitted them could not tell "no credentials" from "not returned". Service
+  principals are opt-in via `-IncludeServicePrincipal` and only appear when they actually hold
+  one, because a tenant carries hundreds of Microsoft-owned ones with none. Asking for them is
+  how a SAML token-signing certificate - whose expiry is a sign-in outage for every user of
+  that app - shows up at all.
+- `Export-MsecPostureReport` now measures privileged access, on a `PrivilegedAccess` sheet fed
+  by `Get-MsecEntraRoleHolder`: standing versus PIM-eligible admins, plus the holders no MFA or
+  PIM policy reaches - service principals, guests, and accounts that are disabled and privileged
+  at the same time.
+
+  Counted in PEOPLE, not assignments. Someone holding Global Administrator, Security
+  Administrator and Exchange Administrator is one administrator; counting rows would report
+  three and would move whenever the same faces swapped roles. Holders are counted, so a role
+  reaching someone through a role-assignable group counts the person rather than the group.
+  `PrivilegedAssignments` and `AllRoleAssignments` are carried alongside, so the ratio between
+  people and assignments stays checkable.
+
+  `GlobalAdminHolders` here can exceed `GlobalAdministratorCount` on the TenantSettings sheet.
+  They are not in conflict: this one counts effective holders, including group-inherited and
+  PIM-eligible ones; the other counts the assignment side.
+
+### Fixed
+- The posture report Dashboard now PACKS CHARTS DENSELY instead of reserving a slot for every
+  measurement in the canonical list. A measurement that has never produced a row cost a blank
+  page before, so a workbook holding only one measurement put its single chart several pages
+  down with nothing in between. The canonical list still fixes the ORDER charts appear in; it
+  no longer fixes their spacing.
+
+  The trade, taken deliberately: the first time a new measurement lands, every chart below it
+  moves down one page. That is a one-way, one-off move - a data sheet never loses its rows, so
+  a chart that exists keeps existing and the layout only ever settles further - and position
+  was already reasserted on every run, so it adds no new instability. A permanent blank page
+  per uncollected measurement was the worse cost.- The Dashboard now repositions a chart whose columns are DISCOVERED from the data - one per
+  subscription, per initiative, per Secure Score category - on a run that did not collect that
+  measurement. Such a spec carries an empty series list on a partial run, which previously made
+  the whole spec be skipped: the chart kept the row it was drawn at while the slots around it
+  moved, so the next chart could be drawn straight on top of it. This is what made adding
+  `PrivilegedAccess` mid-list safe to pick up with `-Measurement PrivilegedAccess` alone.- `Export-MsecEntraDisabledUserReport` - the evidence shape applied to the directory: one row
+  per disabled account, a worksheet named after the tenant, and a chart counting accounts per
+  age bucket with a second series for how many of those still hold licences. Graph rather than
+  Az, so `Connect-Msec` and no subscription dimension.
+
+  `Unknown` is a bucket in its own right. Entra stores no `disabledDateTime`, so the date comes
+  from the audit log and anything past its retention carries a bracket instead. The bracket
+  still places an account when both ends fall inside one bucket - "at least 30, at most 60" is
+  squarely 30-to-90 - but where it straddles a boundary the answer is Unknown rather than a
+  guess. What it is never allowed to be is "under 30 days": anything the audit log cannot see
+  is OLDER than the window, never newer.
+
+  The writing half of all three evidence reports now lives in one `Write-MsecEvidenceWorkbook` -
+  worksheet naming and collision handling, replace-not-append, the Summary block, per-block
+  timestamps and the dashboard. Reports supply their rows, their categories, and an ordered map
+  of count columns (one entry gives one bar per category, two give two). That map is what lets
+  this report chart accounts and licensed accounts side by side while the VM reports chart a
+  single count.
+- `Export-MsecVMNtpReport` - the same evidence shape for time synchronisation, via the bundled
+  `ntp-status` script. Both the Windows and Linux versions compute the same A.8.17 rule
+  (synchronised AND naming a real upstream source), so the verdict means the same thing on
+  both platforms.
+
+  `No time source` is its own verdict rather than being folded into `Not synchronised`: a
+  Windows machine fallen back to Local CMOS Clock reports itself perfectly synchronised - to
+  its own drifting hardware clock. It is not a machine whose daemon stalled, it is one pointed
+  at nothing, and the fix is different.
+
+  Both VM reports are now thin wrappers over a shared `Write-MsecVMEvidenceWorkbook`, which
+  owns everything they had in common - discovery, running the script, worksheet naming and
+  collision handling, snapshot-replace semantics, the shared Summary sheet, per-block
+  timestamps and the dashboard. A report supplies only the script to run, a projection from one
+  VM's answer to a row, and its ordered list of verdicts. Duplicating that machinery would have
+  meant fixing every bug in it twice.
+
+  Rows now sort worst-first by verdict, so the machines nobody could assess are at the TOP of
+  the table rather than buried under the healthy ones. That was the other way round while the
+  chart plotted a number per VM and a null must not lead; the chart counts per verdict now, so
+  the constraint is gone.
+- `Export-MsecVMUpdateReport` - an EVIDENCE document of VM patch state: one row per VM,
+  showing what that machine itself reported, on a worksheet named after the subscription. A
+  fresh file per run rather than a growing one, so nothing is appended and a sheet written
+  twice is replaced. Re-run against the same path after `Select-MsecAzureContext` and the next
+  subscription gets its own sheet and its own chart in the same document.
+
+  In-guest via the bundled `update-status` Run-Command script rather than
+  `Kql/Graph/VM/LastUpdated.kql`, which sees only what Azure Update Manager installed - a VM
+  patching itself through Windows Automatic Updates or unattended-upgrades contributes nothing
+  there and reads as never updated. The price is a Run-Command per VM: minutes for a fleet, and
+  the machines have to be running.
+
+  EVERY VM gets a row, including ones that could not be reached - a stopped machine, a wedged
+  agent or a timeout appears with the reason in Error rather than being left out, because
+  evidence that quietly omits what it failed on is not evidence. The `Assessment` column keeps
+  four states distinct, since they need different follow-up: Up to date, Stale, No update
+  history, No answer. Unparseable output (Azure truncates stdout at 4096 bytes) is No answer,
+  never a clean machine.
+
+  Rows are ordered worst-first, so the evidence table reads from the most overdue machine down.
+
+  The charts count VMs per assessment rather than plotting days per machine. Days per machine
+  left the VMs that could not be assessed with NO BAR - they have no number - so a reviewer
+  reading the chart alone saw only the machines that answered and no sign of the ones that did
+  not, which on an evidence document is the wrong emphasis entirely. Counts are also readable
+  at any fleet size. They come from a shared Summary sheet in long format, one five-row block
+  per subscription, and each chart reads only its own block.
+
+  Collection time is on every sheet: `CollectedUtc` per VM row, and per subscription block on
+  the Summary sheet. Subscriptions are scanned in separate runs, so one timestamp for the file
+  would date every sheet by whichever ran last - claiming a subscription scanned on Monday was
+  collected on Friday. The Dashboard heading reports the span rather than a single clock when
+  the blocks disagree.
+  Worksheet names follow Excel's rules (31 characters, no `: \ / ? * [ ]`), and two
+  subscriptions truncating to the same name are told apart by the SubscriptionId on the sheet
+  rather than one overwriting the other's evidence.
 - `Export-MsecPostureReport` - collects the tenant's posture with the read-only Get-Msec*
   commands and appends one row per measurement to an Excel workbook (via ImportExcel), so
   repeated runs build a time series. One sheet per measurement, each written as an Excel

@@ -24,6 +24,15 @@ function Connect-Msec {
           - 'Key Vault Certificate User' on the vault (to read cert metadata + tags).
           - 'Key Vault Crypto User'      on the vault (to sign with the key).
 
+        A SUCCESSFUL CONNECTION IS REMEMBERED for the tenant, so a later
+        Select-MsecAzureContext into it reconnects the app session on its own rather than
+        leaving the two identities pointing at different tenants. Vault name, client id and
+        certificate name only - no secret, because there isn't one to store: signing happens
+        inside Key Vault. Written only after the tokens have been obtained, so a saved profile
+        always describes a connection that actually worked. -NoSave skips it.
+
+    .PARAMETER NoSave
+        Do not remember this connection for Select-MsecAzureContext to replay.
     .PARAMETER KeyVaultName
         The Azure Key Vault containing the certificate.
     .PARAMETER CertificateName
@@ -45,7 +54,10 @@ function Connect-Msec {
         [Parameter(Mandatory)][string] $KeyVaultName,
         [Parameter()][string] $CertificateName = 'msec-app',
         [Parameter()][string] $ClientId,
-        [Parameter()][string] $TenantId
+        [Parameter()][string] $TenantId,
+
+        # Do not remember this connection for Select-MsecAzureContext to reuse.
+        [Parameter()][switch] $NoSave
     )
 
     $azCtx = Get-AzContext -ErrorAction SilentlyContinue
@@ -89,6 +101,14 @@ function Connect-Msec {
     }
     else {
         Write-Verbose "Defender (securitycenter) has no endpoint in $($endpoints.EnvironmentName); skipping Defender token. Defender functions will be unavailable."
+    }
+
+    # Remembered so Select-MsecAzureContext can reconnect this tenant on its own. Written only
+    # after the tokens above succeeded, so a profile always describes a connection that worked
+    # rather than one that was merely typed.
+    if (-not $NoSave) {
+        Save-MsecTenantProfile -TenantId $TenantId -KeyVaultName $KeyVaultName `
+                               -ClientId $ClientId -CertificateName $CertificateName
     }
 
     Write-Verbose "Connected to tenant $TenantId as app $ClientId in $($endpoints.EnvironmentName) (cert: $($meta.Thumbprint))"

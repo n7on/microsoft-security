@@ -28,6 +28,20 @@ function Select-MsecAzureContext {
         [-Tenant <id>] [-Environment <cloud>]. Cross-CLOUD moves always need that - a single
         Az session is one cloud at a time.
 
+        RECONNECTS THE MSEC APP SESSION TO MATCH, when the tenant being switched to has been
+        connected before. msec runs on TWO identities - the Az context is you, the msec session
+        is the app registration - and switching one used to leave the other pointing at the
+        tenant you just left, so Graph and Defender calls kept answering for the wrong tenant.
+        Connect-Msec remembers the vault, client id and certificate name per tenant; this
+        replays them.
+
+        No secret is stored and none is needed: signing happens inside Key Vault and the
+        private key never leaves it. A tenant with no saved profile behaves as before - the
+        context switches and a warning says the session is now misaligned. -NoConnect skips
+        the reconnect entirely.
+
+        A failed reconnect does NOT fail the switch. The context change is what was asked for
+        and it stands; the reconnect is a convenience, and losing it warns rather than throws.
     .PARAMETER Subscription
         Subscription name or id of the saved context to switch to. Tab-completes the
         distinct subscription names of your signed-in contexts.
@@ -89,7 +103,12 @@ function Select-MsecAzureContext {
                         [System.Management.Automation.CompletionResult]::new($text, $_, 'ParameterValue', $_)
                     }
             })]
-        [string] $User
+        [string] $User,
+
+        # Switch the Azure context only - do not reconnect the msec app session even if this
+        # tenant has a saved profile.
+        [Parameter()]
+        [switch] $NoConnect
     )
 
     $available = @(Get-AzContext -ListAvailable -ErrorAction SilentlyContinue)
@@ -125,16 +144,44 @@ function Select-MsecAzureContext {
     $ctxTenant = [string]$target.Tenant.Id
     $ctxCloud = [string]$target.Environment
 
+    # RECONNECT THE APP SESSION TO MATCH, if this tenant has been connected before. The two
+    # identities are separate - the Az context is you, the msec session is the app - and
+    # switching one used to leave the other pointing at the previous tenant, so every Graph
+    # call kept answering for the tenant you just left. That was a warning; now it is fixed
+    # where it can be.
+    #
+    # Only when the session is not already this tenant's, so a switch between two subscriptions
+    # in the same tenant costs nothing.
+    if (-not $NoConnect -and (-not $script:MsecSession -or [string]$script:MsecSession.TenantId -ne $ctxTenant)) {
+        $profile = Get-MsecTenantProfile -TenantId $ctxTenant
+        if ($profile) {
+            try {
+                # -NoSave: this is replaying a profile, not creating one.
+                Connect-Msec -KeyVaultName $profile.KeyVaultName -ClientId $profile.ClientId `
+                             -TenantId $ctxTenant -CertificateName $profile.CertificateName -NoSave
+                Write-Verbose "Reconnected the msec app session to tenant $ctxTenant using the saved profile (vault $($profile.KeyVaultName))."
+            }
+            catch {
+                # The context switch itself succeeded and must stand. Losing the convenience
+                # of auto-reconnect is not a reason to fail the thing that was asked for.
+                Write-Warning "Switched the Azure context, but could not reconnect the msec app session for tenant $ctxTenant using the saved profile (vault $($profile.KeyVaultName)): $($_.Exception.Message)"
+            }
+        }
+    }
+
     # Coherence check against the msec app session (if connected). The session is bound to a
     # tenant + cloud at Connect-Msec time; a switch into a different tenant or cloud leaves
-    # Graph/Defender calls using the OLD session.
+    # Graph/Defender calls using the OLD session. Reached only when the reconnect above did
+    # not happen or did not help - there is no profile for this tenant, it failed, or
+    # -NoConnect was given.
     if ($script:MsecSession) {
         $sessTenant = [string]$script:MsecSession.TenantId
         $sessCloud = [string]$script:MsecSession.Endpoints.EnvironmentName
         if ($ctxTenant -ne $sessTenant -or $ctxCloud -ne $sessCloud) {
             Write-Warning ("msec app session is bound to tenant $sessTenant / cloud $sessCloud, but the Az context is now " +
                 "tenant $ctxTenant / cloud $ctxCloud. Graph/Defender functions still use the old session - " +
-                'run Connect-Msec again to realign.')
+                'run Connect-Msec again to realign - which also saves a profile, so later ' +
+                'switches into this tenant reconnect on their own.')
         }
     }
 

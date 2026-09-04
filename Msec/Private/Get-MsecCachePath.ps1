@@ -60,7 +60,14 @@ function Get-MsecCachePath {
     param(
         [Parameter(Mandatory)]
         [ValidatePattern('^[a-z0-9-]+$')]
-        [string] $Name
+        [string] $Name,
+
+        # Which tenant's folder to use. Defaults to the CURRENT Az context, which is what the
+        # completion caches want. Passed explicitly by the tenant profile, which has to write
+        # under the tenant the msec SESSION is bound to - not always the same one, since
+        # Connect-Msec can resolve its tenant from the certificate rather than from the context.
+        [Parameter()]
+        [string] $TenantId
     )
 
     # Tenant-scoped, one subfolder per tenant. Flipping context with Select-MsecAzureContext is
@@ -68,7 +75,7 @@ function Get-MsecCachePath {
     # and overwrites it - so ping-ponging between two tenants leaves the cache permanently cold
     # and completion dead after every switch. Separate folders let both stay warm, and make
     # cross-tenant bleed impossible by construction rather than by a check on read.
-    $tenantId = (Get-AzContext -ErrorAction SilentlyContinue).Tenant.Id
+    $tenantId = if ($TenantId) { $TenantId } else { (Get-AzContext -ErrorAction SilentlyContinue).Tenant.Id }
     if (-not $tenantId) {
         # Callers all treat a failure here as "no cache": Read-MsecCache returns empty,
         # Save-MsecCache logs to verbose, completers offer nothing. Without a context there is

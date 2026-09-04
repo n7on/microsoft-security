@@ -18,8 +18,7 @@ leaves your msec app session (Connect-Msec) on a different tenant or cloud.
 ## SYNTAX
 
 ```
-Select-MsecAzureContext [-Subscription] <String> [[-User] <String>]
- [<CommonParameters>]
+Select-MsecAzureContext [-Subscription] <String> [[-User] <String>] [-NoConnect] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -49,6 +48,25 @@ If the subscription has no saved context yet, sign in first: Connect-AzAccount
 \[-Tenant \<id\>\] \[-Environment \<cloud\>\].
 Cross-CLOUD moves always need that - a single
 Az session is one cloud at a time.
+
+RECONNECTS THE MSEC APP SESSION TO MATCH, when the tenant being switched to has been
+connected before.
+msec runs on TWO identities - the Az context is you, the msec session
+is the app registration - and switching one used to leave the other pointing at the
+tenant you just left, so Graph and Defender calls kept answering for the wrong tenant.
+Connect-Msec remembers the vault, client id and certificate name per tenant; this
+replays them.
+
+No secret is stored and none is needed: signing happens inside Key Vault and the
+private key never leaves it.
+A tenant with no saved profile behaves as before - the
+context switches and a warning says the session is now misaligned.
+-NoConnect skips
+the reconnect entirely.
+
+A failed reconnect does NOT fail the switch.
+The context change is what was asked for
+and it stands; the reconnect is a convenience, and losing it warns rather than throws.
 
 ## EXAMPLES
 
@@ -96,6 +114,22 @@ Aliases:
 Required: False
 Position: 2
 Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -NoConnect
+Switch the Azure context only - do not reconnect the msec app session even if this
+tenant has a saved profile.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

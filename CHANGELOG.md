@@ -341,6 +341,27 @@ All notable changes to this project will be documented in this file.
   `Export-Csv`, or to `Export-Excel` from the ImportExcel module, for the same evidence.
 
 ### Changed
+- `Select-MsecAzureContext` now RECONNECTS THE MSEC APP SESSION to the tenant it switches to,
+  when that tenant has been connected before. `Connect-Msec` remembers the vault name, client
+  id and certificate name per tenant on a successful connection; switching context replays
+  them.
+
+  msec runs on two identities - the Az context is you, the msec session is the app
+  registration - and switching one left the other pointing at the tenant you just left, so
+  Graph and Defender calls kept answering for the wrong tenant. That was already detected; it
+  was a warning telling you to run Connect-Msec again. Now it is fixed where it can be, and the
+  warning remains for the cases it cannot (no saved profile, or -NoConnect).
+
+  NO SECRET IS STORED, and none is needed: msec signs its client assertion inside Key Vault and
+  the private key never leaves it. The profile holds what you would type on the command line,
+  under the tenant's own folder beside the completion caches, so two tenants can never overwrite
+  each other. `-NoSave` on Connect-Msec skips writing one; `-NoConnect` on
+  Select-MsecAzureContext skips replaying one.
+
+  Written only AFTER the tokens are obtained, so a saved profile always describes a connection
+  that worked rather than one that was merely typed. A missing, malformed or incomplete profile
+  is treated as no profile rather than as an error mid-switch, and a reconnect that fails warns
+  without failing the context switch - the switch is what was asked for and it stands.
 - The four snapshot reports (`Export-MsecVMUpdateReport`, `Export-MsecVMNtpReport`,
   `Export-MsecEntraDisabledUserReport`, `Export-MsecDefenderDeviceReport`) now ASK before
   replacing a worksheet that already holds evidence, and take `-Force` to skip the question.

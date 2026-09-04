@@ -14,7 +14,7 @@ Establishes a Microsoft Security session bound to a certificate in Azure Key Vau
 
 ```
 Connect-Msec [-KeyVaultName] <String> [[-CertificateName] <String>] [[-ClientId] <String>]
- [[-TenantId] <String>] [<CommonParameters>]
+ [[-TenantId] <String>] [-NoSave] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -43,6 +43,16 @@ Identity resolution order:
 Required Azure RBAC for the calling user (or group):
   - 'Key Vault Certificate User' on the vault (to read cert metadata + tags).
   - 'Key Vault Crypto User'      on the vault (to sign with the key).
+
+A SUCCESSFUL CONNECTION IS REMEMBERED for the tenant, so a later
+Select-MsecAzureContext into it reconnects the app session on its own rather than
+leaving the two identities pointing at different tenants.
+Vault name, client id and
+certificate name only - no secret, because there isn't one to store: signing happens
+inside Key Vault.
+Written only after the tokens have been obtained, so a saved profile
+always describes a connection that actually worked.
+-NoSave skips it.
 
 ## EXAMPLES
 
@@ -118,6 +128,21 @@ Aliases:
 Required: False
 Position: 4
 Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -NoSave
+Do not remember this connection for Select-MsecAzureContext to replay.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

@@ -5,7 +5,64 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
-- `Export-MsecDefenderDeviceReport` - the evidence shape applied to the Defender estate: one
+- `Export-MsecEntraGroupMemberReport` - the evidence shape applied to group membership: one
+  worksheet per group holding its members, a Summary with one row per group, and a chart.
+
+  THE CHART COMPARES GROUPS, not membership types within one. Groups are the x axis, so the
+  question it answers is "which of these is the outlier" - the access group that grew, the one
+  that is all guests, the one with a service principal in it. A chart per group would be a
+  dozen tiny pictures of a number already readable in a cell.
+
+  The Summary is the sheet a reviewer reads first: members per group, how much of that is
+  standing versus PIM-eligible, and how much is guests, service principals, nested groups or
+  disabled accounts. An empty group still gets a worksheet and a row - "nobody is in it" is a
+  finding that disappears if empty groups are skipped - and a group whose membership could not
+  be read is marked `Unreadable` rather than counted as a clean zero.
+
+  Sheets are keyed on the group ID, not its name: Entra display names are not unique, and
+  keying on the name would put two different groups' members on one sheet under one heading. A
+  group actually called 'Summary' or 'Dashboard' is suffixed rather than overwriting the
+  report's own sheets.
+
+  The overwrite prompt asks ONCE for the whole run rather than once per group - a wildcard can
+  match forty groups, and forty prompts is a prompt nobody reads. It comes after the collection
+  here, unlike the VM reports: which worksheets are at stake is not knowable until the names
+  have resolved, and reading group membership has no side effects.
+- `Get-MsecEntraGroupMember` - the members of one or more Entra groups as flat rows, one per
+  (group, member). Takes a list of names, wildcards included, and puts the group name on every
+  row so several groups come back as a single table rather than needing a call each.
+
+  PIM-ELIGIBLE MEMBERS ARE INCLUDED, marked `MembershipType 'Eligible'`. Where a group is
+  governed by PIM for Groups, people are eligible members rather than actual ones - they appear
+  on no `/members` endpoint at all, so a group whose whole membership is eligible reads as
+  EMPTY. The group looks unused while a queue of people is one activation away, which is the
+  most dangerous direction to be wrong in. Group OWNERS are deliberately excluded: an owner can
+  add themselves and then hold what the group grants, which is a real escalation path but a
+  different finding, and counting them would overstate the membership.
+
+  MEMBERS ARE NOT ONLY USERS. `MemberType` carries user / group / servicePrincipal / device,
+  because filtering to users here would quietly drop the service principal somebody added to an
+  access group. A member whose type Graph did not return reads `unknown` rather than being
+  assumed to be a user.
+
+  An empty group emits a row with `MemberType 'None'`, and one whose membership could not be
+  read emits `'Unreadable'` plus a warning - "the group is empty", "the group does not exist"
+  and "I could not look" are three different answers and only the first is good news. A name
+  matching nothing is named in a warning; a name matching SEVERAL groups returns all of them,
+  since Entra display names are not unique.
+
+  Direct members by default, matching what the portal shows - a nested group is one row.
+  `-Recurse` (aliased `-Transitive`) EXPANDS nested groups instead of listing them: the people
+  inside come back as members in their own right and the nested group itself does not appear,
+  because the question being asked is "who is in here" and a group is not a who. Graph's
+  /transitiveMembers returns the nested groups alongside their members, so listing it verbatim
+  would show a group as a member AND again as everyone in it.
+
+  Recursion reads PIM-eligible membership for every NESTED group too, not only the ones named.
+  Flattening follows actual membership only, so a nested group governed by PIM contributes
+  nobody - and the recursion would otherwise be quietly less complete than not recursing.
+  A person reachable through two nested groups is one row; Active and Eligible are kept apart,
+  since standing membership plus an eligible assignment is a real state worth seeing.- `Export-MsecDefenderDeviceReport` - the evidence shape applied to the Defender estate: one
   row per onboarded device, a worksheet named after the tenant, and a chart per tenant.
 
   THE CHART IS A DISTRIBUTION, NOT A TOTAL. Devices are banded by discovered-vulnerability
@@ -384,7 +441,9 @@ All notable changes to this project will be documented in this file.
 
   Unattended runs need `-Force`: a scheduled task has no one to answer, and `ShouldContinue` in
   a non-interactive host is an error rather than a default.
-### Fixed
+
+  `Confirm-MsecEvidenceOverwrite` also takes a SET of subjects, so a report writing many sheets
+  in one run asks a single question naming all of them.### Fixed
 - A DAMAGED WORKBOOK COULD BE SILENTLY REPLACED BY A FRESH ONE, losing every sheet in it rather
   than just one. Export-Excel can CREATE the file, so it treats "cannot read this" and "nothing
   here yet" identically - and a zero-byte file is indistinguishable from a new one. A OneDrive

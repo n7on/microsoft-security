@@ -54,6 +54,7 @@
         'Get-MsecEntraConditionalAccessSignInLog',
         'Get-MsecEntraConditionalAccessStats',
         'Get-MsecEntraTenantSecuritySetting',
+        'Get-MsecEntraGroupMember',
         'Get-MsecEntraLicense',
         'Get-MsecEntraRoleHolder',
         'Get-MsecEntraAppCredential',
@@ -71,7 +72,8 @@
         'Export-MsecVMUpdateReport',
         'Export-MsecVMNtpReport',
         'Export-MsecEntraDisabledUserReport',
-        'Export-MsecDefenderDeviceReport'
+        'Export-MsecDefenderDeviceReport',
+        'Export-MsecEntraGroupMemberReport'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

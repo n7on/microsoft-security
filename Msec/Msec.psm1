@@ -85,6 +85,10 @@ Update-TypeData -TypeName 'MsecEntraAppCredential' `
     -DefaultDisplayPropertySet 'DisplayName', 'CredentialType', 'CredentialName', 'EndDateTime', 'DaysUntilExpiry' `
     -Force
 
+Update-TypeData -TypeName 'MsecEntraGroupMember' `
+    -DefaultDisplayPropertySet 'GroupName', 'MemberName', 'MemberUserPrincipalName', 'MemberType', 'MembershipType' `
+    -Force
+
 Update-TypeData -TypeName 'MsecEntraLicense' `
     -DefaultDisplayPropertySet 'SkuPartNumber', 'Enabled', 'Assigned', 'CapabilityStatus' `
     -Force

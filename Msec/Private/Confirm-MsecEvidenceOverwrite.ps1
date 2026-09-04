@@ -26,12 +26,19 @@ function Confirm-MsecEvidenceOverwrite {
     .PARAMETER Force
         Skip the prompt and replace. For scheduled and unattended runs.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Single')]
     [OutputType([bool])]
     param(
         [Parameter(Mandatory)] [string] $Path,
-        [Parameter(Mandatory)] [string] $OwnerName,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string] $OwnerId,
+
+        [Parameter(Mandatory, ParameterSetName = 'Single')] [string] $OwnerName,
+        [Parameter(Mandatory, ParameterSetName = 'Single')] [AllowEmptyString()] [string] $OwnerId,
+
+        # Several subjects in one run - a report that writes a sheet per group rather than one
+        # per tenant. Each needs a Name and an Id. Asked as ONE question: a wildcard can match
+        # forty groups, and forty prompts is a prompt nobody reads.
+        [Parameter(Mandatory, ParameterSetName = 'Many')] [AllowEmptyCollection()] [object[]] $Owner,
+
         [Parameter(Mandatory)] [string] $OwnerColumn,
         [Parameter(Mandatory)] $Cmdlet,
         [switch] $Force
@@ -39,21 +46,37 @@ function Confirm-MsecEvidenceOverwrite {
 
     if ($Force) { return $true }
 
-    $sheet = Resolve-MsecEvidenceSheet -Path $Path -OwnerName $OwnerName -OwnerId $OwnerId -OwnerColumn $OwnerColumn
-    if (-not $sheet.IsReplace) { return $true }
+    $subjects = if ($PSCmdlet.ParameterSetName -eq 'Many') { @($Owner) }
+                else { @([pscustomobject]@{ Name = $OwnerName; Id = $OwnerId }) }
 
-    $held = if ($sheet.RowCount) {
-        "$($sheet.RowCount) row(s)" + $(if ($sheet.CollectedUtc) { " collected $($sheet.CollectedUtc) UTC" } else { '' })
+    $replacing = @(
+        foreach ($subject in $subjects) {
+            $sheet = Resolve-MsecEvidenceSheet -Path $Path -OwnerName ([string] $subject.Name) `
+                         -OwnerId ([string] $subject.Id) -OwnerColumn $OwnerColumn
+            if ($sheet.IsReplace) {
+                $held = if ($sheet.RowCount) {
+                    "$($sheet.RowCount) row(s)" + $(if ($sheet.CollectedUtc) { " collected $($sheet.CollectedUtc) UTC" } else { '' })
+                }
+                else {
+                    'data that could not be read back'
+                }
+                [pscustomobject]@{ Name = $subject.Name; SheetName = $sheet.SheetName; Held = $held }
+            }
+        }
+    )
+
+    if (-not $replacing.Count) { return $true }
+
+    $query = if ($replacing.Count -eq 1) {
+        "Worksheet '$($replacing[0].SheetName)' in '$Path' already holds $($replacing[0].Held) for '$($replacing[0].Name)'. Writing replaces them - a snapshot report does not append. Continue?"
     }
     else {
-        'data that could not be read back'
+        "$($replacing.Count) worksheet(s) in '$Path' already hold evidence and will be replaced - a snapshot report does not append: " +
+            (($replacing | ForEach-Object { "'$($_.SheetName)' ($($_.Held))" }) -join ', ') + '. Continue?'
     }
 
-    $query = "Worksheet '$($sheet.SheetName)' in '$Path' already holds $held for '$OwnerName'. Writing replaces them - a snapshot report does not append. Continue?"
-    $caption = 'Replace existing evidence?'
+    if ($Cmdlet.ShouldContinue($query, 'Replace existing evidence?')) { return $true }
 
-    if ($Cmdlet.ShouldContinue($query, $caption)) { return $true }
-
-    Write-Warning "Skipped '$OwnerName' - '$Path' was left unchanged. Use -Force to replace without being asked, or write to a different path."
+    Write-Warning "Skipped - '$Path' was left unchanged. Use -Force to replace without being asked, or write to a different path."
     return $false
 }

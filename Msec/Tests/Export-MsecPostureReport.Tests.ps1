@@ -1234,6 +1234,203 @@ Describe 'Export-MsecPostureReport' -Skip:(-not $script:HasExcel) {
         @(Import-Excel -Path $script:Book -WorksheetName 'RunLog')[0].Source | Should -Be 'Get-MsecEntraRoleHolder'
     }
 
+
+    It 'counts devices per OS family, and never drops one with no OS' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='Windows'; OsVersion='10.0.19045.4046'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='Windows'; OsVersion='10.0.22631.3155'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='c'; Os='iOS';     OsVersion='17.4.1';          ComplianceState='compliant' }
+                [pscustomobject]@{ Id='d'; Os='macOS';   OsVersion='14.4.1';          ComplianceState='compliant' }
+                # No OS reported. Still a device - dropping it would quietly shrink the total.
+                [pscustomobject]@{ Id='e'; Os=$null;     OsVersion=$null;             ComplianceState='unknown' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DevicePlatform -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'DevicePlatform')[0]
+        $row.TotalDevices | Should -Be 5
+        $row.Windows      | Should -Be 2
+        $row.iOS          | Should -Be 1
+        $row.macOS        | Should -Be 1
+        $row.Unknown      | Should -Be 1
+        # The columns must account for every device, or the sheet is quietly lying.
+        ($row.Windows + $row.iOS + $row.macOS + $row.Unknown) | Should -Be $row.TotalDevices
+    }
+
+    It 'files Windows 11 as Windows 11, not as Windows 10' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                # Windows 11 reports itself as 10.0.x - the build is the ONLY thing separating
+                # the two, and splitting on the version string files every 11 as a 10.
+                [pscustomobject]@{ Id='a'; Os='Windows'; OsVersion='10.0.19045.4046'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='Windows'; OsVersion='10.0.22000.194';  ComplianceState='compliant' }
+                [pscustomobject]@{ Id='c'; Os='Windows'; OsVersion='10.0.22631.3155'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='d'; Os='iOS';     OsVersion='17.4.1';          ComplianceState='compliant' }
+                [pscustomobject]@{ Id='e'; Os='iOS';     OsVersion='16.7.7';          ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'DeviceOsVersion')[0]
+        $row.'Windows 10' | Should -Be 1
+        $row.'Windows 11' | Should -Be 2      # 22000 is the boundary, and it is inclusive
+        $row.'iOS 17'     | Should -Be 1
+        $row.'iOS 16'     | Should -Be 1
+        $row.TotalDevices | Should -Be 5
+    }
+
+    It 'collapses patch-level versions into one release column' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                # Three builds of the same release. Column-per-raw-version would reshape the
+                # sheet every patch Tuesday and give the chart three one-point series.
+                [pscustomobject]@{ Id='a'; Os='Windows'; OsVersion='10.0.22631.3155'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='Windows'; OsVersion='10.0.22631.4169'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='c'; Os='Windows'; OsVersion='10.0.22621.2861'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $row = @(Import-Excel -Path $script:Book -WorksheetName 'DeviceOsVersion')[0]
+        $row.'Windows 11' | Should -Be 3
+        # One release column, not three build columns.
+        @($row.PSObject.Properties.Name | Where-Object { $_ -like 'Windows*' }).Count | Should -Be 1
+    }
+
+    It 'collects Intune once when several device measurements are asked for' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='Windows'; OsVersion='10.0.22631.3155'; ComplianceState='compliant'; IsEncrypted=$true }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceCompliance,DevicePlatform,DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+
+            # Three sheets off ONE read - they all describe the same device list.
+            Should -Invoke Get-MsecIntuneDevice -Times 1 -Exactly
+        }
+
+        $names = @(Open-ExcelPackage -Path $script:Book | ForEach-Object { $_.Workbook.Worksheets.Name })
+        $names | Should -Contain 'DeviceCompliance'
+        $names | Should -Contain 'DevicePlatform'
+        $names | Should -Contain 'DeviceOsVersion'
+    }
+
+
+    It 'reports a release nobody is on any more as 0, not as blank' {
+        # A blank is a GAP in an Excel line chart, so the line stops dead exactly where it
+        # should have descended to zero - "we stopped measuring" instead of "nobody is on it
+        # any more", which is the good news you most want to see. Columns here are discovered
+        # from the data, so the run where the last device leaves a release simply stops
+        # producing that column, and -Append maps by name and leaves the cell empty.
+        $rows = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='26.1'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS'; OsVersion='26.1'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+
+            # Everyone upgrades. 'iOS 26' is no longer produced by the collection at all.
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='27.0'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS'; OsVersion='27.0'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+
+            @(Import-Excel -Path $Book -WorksheetName 'DeviceOsVersion')
+        }
+
+        @($rows).Count | Should -Be 2
+        $rows[1].'iOS 27' | Should -Be 2
+        # 0, and specifically NOT blank.
+        $rows[1].'iOS 26' | Should -Be 0
+        $rows[1].'iOS 26' | Should -Not -BeNullOrEmpty
+        # The columns still account for every device.
+        ([int] $rows[1].'iOS 26' + [int] $rows[1].'iOS 27') | Should -Be $rows[1].TotalDevices
+    }
+
+    It 'does not rewrite the sheet when a release merely empties out' {
+        # A column going missing is schema drift as much as a column appearing, and a rewrite
+        # is the one operation that discards manual formatting. Backfilling the zero avoids it.
+        $warnings = @()
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='26.1'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS'; OsVersion='27.0'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+        }
+
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            # The iOS 26 device upgrades; the release set SHRINKS.
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='27.0'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS'; OsVersion='27.0'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion
+        } -WarningVariable warnings -WarningAction SilentlyContinue | Out-Null
+
+        ($warnings -join ' ') | Should -Not -Match 'different column set'
+    }
+
+    It 'still adds a column and a chart series when a NEW release appears' {
+        # The other direction, which cannot avoid a reshape - and must not.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='26.1'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='iOS'; OsVersion='26.1'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS'; OsVersion='28.0'; ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $rows = @(Import-Excel -Path $script:Book -WorksheetName 'DeviceOsVersion')
+        $rows[1].'iOS 28' | Should -Be 1
+        # The earlier row keeps its history rather than being invented as 0 - that release did
+        # not exist yet, which is different from nobody being on it.
+        $rows[0].'iOS 26' | Should -Be 1
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $chart = $package.Workbook.Worksheets['Dashboard'].Drawings |
+                Where-Object Name -eq 'chartDeviceOsVersion'
+            @($chart.Series | ForEach-Object { $_.Header }) | Should -Contain 'iOS 28'
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+    It 'charts both device sheets on the dashboard' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Get-MsecIntuneDevice -MockWith {
+                [pscustomobject]@{ Id='a'; Os='Windows'; OsVersion='10.0.22631.3155'; ComplianceState='compliant' }
+                [pscustomobject]@{ Id='b'; Os='iOS';     OsVersion='17.4.1';          ComplianceState='compliant' }
+            }
+            Export-MsecPostureReport -Path $Book -Measurement DevicePlatform,DeviceOsVersion -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $drawings = @($package.Workbook.Worksheets['Dashboard'].Drawings)
+            @($drawings | ForEach-Object { $_.Name }) | Should -Contain 'chartDevicePlatform'
+            @($drawings | ForEach-Object { $_.Name }) | Should -Contain 'chartDeviceOsVersion'
+
+            # Series follow the columns actually discovered this run.
+            $platform = $drawings | Where-Object Name -eq 'chartDevicePlatform'
+            @($platform.Series | ForEach-Object { $_.Header } | Sort-Object) | Should -Be @('iOS', 'Windows')
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
     It 'writes a Target column and plots it, only on the sheets named' {
         InModuleScope Msec -Parameters @{ Book = $script:Book } {
             param($Book)

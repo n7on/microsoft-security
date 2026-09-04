@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Export-MsecPostureReport` now measures the device estate itself, on two new sheets fed by
+  the Intune device list it already collects - no extra API call:
+  - `DevicePlatform` - one column per OS family (Windows, macOS, iOS, Android), device counts.
+  - `DeviceOsVersion` - one column per OS RELEASE (Windows 11, Windows 10, iOS 17, macOS 14).
+
+  COUNTS, NOT PERCENTAGES. The question is "how many are still on the old one", and a
+  percentage hides an estate that is growing or shrinking underneath it. `TotalDevices` is on
+  both sheets so the columns can be checked against it, and a device Intune reported no OS for
+  lands in an `Unknown` column rather than being dropped and quietly shrinking the total.
+
+  THE RELEASE, NOT THE RAW VERSION. `10.0.22631.3155` would be a different column on every
+  patch Tuesday - the sheet would reshape every run and the chart would become a hundred
+  one-point series. `ConvertTo-MsecDeviceOsRelease` collapses builds into their release.
+
+  WINDOWS 11 REPORTS ITSELF AS 10.0, so the build is the only thing separating it from
+  Windows 10 - 22000 and above is 11. Splitting on the version string, which is the obvious
+  implementation, files every Windows 11 device as Windows 10: exactly backwards for the
+  question this exists to answer. Windows Server is NOT guessed at and is documented as such:
+  Server 2019 and Windows 10 1809 are both build 17763, and Intune calls both 'Windows'.
 - `Export-MsecEntraGroupMemberReport` - the evidence shape applied to group membership: one
   worksheet per group holding its members, a Summary with one row per group, and a chart.
 
@@ -443,7 +462,24 @@ All notable changes to this project will be documented in this file.
   a non-interactive host is an error rather than a default.
 
   `Confirm-MsecEvidenceOverwrite` also takes a SET of subjects, so a report writing many sheets
-  in one run asks a single question naming all of them.### Fixed
+  in one run asks a single question naming all of them.
+
+### Fixed
+- An OS release or device platform that EMPTIES OUT now reports 0 rather than blank. Those
+  columns are discovered from the data, so the run where the last device leaves iOS 26 simply
+  stops producing that column - and `Export-Excel -Append` maps by name, leaving the cell
+  empty. Excel plots a blank as a GAP, so the line stopped dead exactly where it should have
+  descended to zero: "we stopped measuring" instead of "nobody is on it any more", which is the
+  good news the sheet exists to show.
+
+  It also stops the sheet being rewritten every time the release set shrinks - a column going
+  missing is schema drift as much as a column appearing, and a rewrite is the one operation
+  that discards manual formatting.
+
+  Deliberately NOT done generally: this is right for counts and wrong for scores. A
+  subscription that drops out of AzureSecureScore was not measured, and writing 0 there would
+  report a perfect-zero score rather than an absence. History is left alone too - a release that
+  did not exist yet keeps its blank, which is different from nobody being on it.
 - A DAMAGED WORKBOOK COULD BE SILENTLY REPLACED BY A FRESH ONE, losing every sheet in it rather
   than just one. Export-Excel can CREATE the file, so it treats "cannot read this" and "nothing
   here yet" identically - and a zero-byte file is indistinguishable from a new one. A OneDrive

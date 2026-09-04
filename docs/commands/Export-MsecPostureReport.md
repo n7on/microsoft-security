@@ -89,6 +89,8 @@ Sheets, each data sheet written as an Excel table:
   PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
   MfaCoverage            MFA capability overall and for admins
   DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
+  DevicePlatform         one column per OS family (Windows, macOS, iOS, Android, ...)
+  DeviceOsVersion        one column per OS release (Windows 11, iOS 17, ...)
   Incidents              Defender XDR volume, severity mix and time-to-resolve
   Email                  inbound volume, delivery actions, threat types
   ConditionalAccess      sign-in outcomes, risk, report-only would-blocks

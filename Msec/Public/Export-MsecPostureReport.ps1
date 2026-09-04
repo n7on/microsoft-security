@@ -61,6 +61,8 @@ function Export-MsecPostureReport {
           PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
           MfaCoverage            MFA capability overall and for admins
           DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
+          DevicePlatform         one column per OS family (Windows, macOS, iOS, Android, ...)
+          DeviceOsVersion        one column per OS release (Windows 11, iOS 17, ...)
           Incidents              Defender XDR volume, severity mix and time-to-resolve
           Email                  inbound volume, delivery actions, threat types
           ConditionalAccess      sign-in outcomes, risk, report-only would-blocks
@@ -203,7 +205,8 @@ function Export-MsecPostureReport {
 
         [ValidateSet('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
                      'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
-                     'PolicyCompliance', 'PrivilegedAccess')]
+                     'PolicyCompliance', 'PrivilegedAccess',
+                     'DevicePlatform', 'DeviceOsVersion')]
         [string[]] $Measurement,
 
         [string[]] $Subscription,
@@ -275,7 +278,8 @@ function Export-MsecPostureReport {
     $wanted   = if ($Measurement) { $Measurement } else {
         @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'MfaCoverage',
           'Incidents', 'Email', 'ConditionalAccess', 'TenantSettings', 'DeviceCompliance',
-          'PolicyCompliance', 'PrivilegedAccess')
+          'PolicyCompliance', 'PrivilegedAccess',
+          'DevicePlatform', 'DeviceOsVersion')
     }
 
     # Resolved up front, outside the per-measurement try/catch, so a name that matches
@@ -355,7 +359,9 @@ function Export-MsecPostureReport {
 
     # Get-MsecIntuneDevice returns one row PER DEVICE, so the compliance mix is aggregated
     # here rather than read off a summary property - there isn't one.
-    $devices = if ('DeviceCompliance' -in $wanted) { Get-Source 'Get-MsecIntuneDevice' { Get-MsecIntuneDevice } }
+    $needDevices = @('DeviceCompliance', 'DevicePlatform', 'DeviceOsVersion') |
+                       Where-Object { $_ -in $wanted }
+    $devices = if ($needDevices) { Get-Source 'Get-MsecIntuneDevice' { Get-MsecIntuneDevice } }
 
     # Every role holder, not just the highly privileged ones: the counts below need to tell
     # 'privileged' from 'any role', and filtering here would make that impossible. Groups are
@@ -415,6 +421,8 @@ function Export-MsecPostureReport {
     $secureScoreCategories   = @()
     $azureSubscriptionColumn = @()
     $policyInitiativeColumn  = @()
+    $devicePlatformColumn    = @()
+    $deviceOsVersionColumn   = @()
 
     if ('Scores' -in $wanted) {
         $overall = $secureScore | Where-Object ScoreType -eq 'Overall' | Select-Object -First 1
@@ -638,6 +646,103 @@ function Export-MsecPostureReport {
             }
         })
     }
+    # ONE COLUMN PER OS FAMILY, and per RELEASE on the sheet below. Both are counts of devices
+    # rather than percentages, because the question is "how many are still on the old one" and
+    # a percentage hides an estate that is shrinking or growing underneath it. TotalDevices is
+    # carried on both so the columns can be checked against it.
+    if (('DevicePlatform' -in $wanted) -and $devices) {
+        $all = @($devices)
+
+        $row = [ordered]@{ RunUtc = $runUtc; TenantId = $tenantId; TotalDevices = $all.Count }
+
+        # Sorted, so the column order is stable from run to run rather than following whatever
+        # order Intune answered in. A NEW platform still lands at the end - Add-MsecExcelRow
+        # takes the union and never reorders history.
+        $platforms = @($all | ForEach-Object {
+            if ([string]::IsNullOrWhiteSpace($_.Os)) { 'Unknown' } else { $_.Os.Trim() }
+        } | Sort-Object -Unique)
+
+        foreach ($platform in $platforms) {
+            $row[$platform] = @($all | Where-Object {
+                $name = if ([string]::IsNullOrWhiteSpace($_.Os)) { 'Unknown' } else { $_.Os.Trim() }
+                $name -eq $platform
+            }).Count
+        }
+        $devicePlatformColumn = @($platforms)
+
+        # A RELEASE THAT EMPTIES OUT MUST READ AS 0, NOT AS BLANK. Columns here are discovered
+        # from the data, so the run where the last device leaves iOS 26 simply stops producing
+        # that column - and Export-Excel -Append maps by name, leaving the cell EMPTY. Excel
+        # plots a blank as a GAP, so the line stops dead exactly where it should have descended
+        # to zero: "we stopped measuring" instead of "nobody is on it any more", which is the
+        # good news you most want to see.
+        #
+        # It also stops the sheet being rewritten every time the release set changes - a column
+        # going missing is schema drift as much as a column appearing.
+        #
+        # This is right for COUNTS and wrong for scores, which is why it is not done generally:
+        # a subscription that drops out of AzureSecureScore was not measured, and writing 0
+        # there would report a perfect-zero score rather than an absence.
+        foreach ($column in (Get-MsecExcelHeader -Path $Path -WorksheetName 'DevicePlatform')) {
+            if ($column -in 'RunUtc', 'TenantId', 'TotalDevices', 'Target') { continue }
+            if (-not $row.Contains($column)) { $row[$column] = 0 }
+        }
+        $sheets.Add([pscustomobject]@{
+            Sheet = 'DevicePlatform'
+            Table = 'tblDevicePlatform'
+            Row   = [pscustomobject] $row
+        })
+    }
+
+    if (('DeviceOsVersion' -in $wanted) -and $devices) {
+        $all = @($devices)
+
+        # The RELEASE, not the raw version: '10.0.22631.3155' would be a different column on
+        # every patch Tuesday, reshaping the sheet every run and turning the chart into a
+        # hundred one-point series. See ConvertTo-MsecDeviceOsRelease for why Windows 11 needs
+        # the build number to be told from Windows 10 at all.
+        $releases = @{}
+        foreach ($device in $all) {
+            $release = ConvertTo-MsecDeviceOsRelease -Os $device.Os -Version $device.OsVersion
+            if (-not $releases.ContainsKey($release)) { $releases[$release] = 0 }
+            $releases[$release]++
+        }
+
+        $row = [ordered]@{ RunUtc = $runUtc; TenantId = $tenantId; TotalDevices = $all.Count }
+        foreach ($release in @($releases.Keys | Sort-Object)) { $row[$release] = $releases[$release] }
+        $deviceOsVersionColumn = @($releases.Keys | Sort-Object)
+
+        # A RELEASE THAT EMPTIES OUT MUST READ AS 0, NOT AS BLANK. Columns here are discovered
+        # from the data, so the run where the last device leaves iOS 26 simply stops producing
+        # that column - and Export-Excel -Append maps by name, leaving the cell EMPTY. Excel
+        # plots a blank as a GAP, so the line stops dead exactly where it should have descended
+        # to zero: "we stopped measuring" instead of "nobody is on it any more", which is the
+        # good news you most want to see.
+        #
+        # It also stops the sheet being rewritten every time the release set changes - a column
+        # going missing is schema drift as much as a column appearing.
+        #
+        # This is right for COUNTS and wrong for scores, which is why it is not done generally:
+        # a subscription that drops out of AzureSecureScore was not measured, and writing 0
+        # there would report a perfect-zero score rather than an absence.
+        foreach ($column in (Get-MsecExcelHeader -Path $Path -WorksheetName 'DeviceOsVersion')) {
+            if ($column -in 'RunUtc', 'TenantId', 'TotalDevices', 'Target') { continue }
+            if (-not $row.Contains($column)) { $row[$column] = 0 }
+        }
+
+        # Same reasoning as the policy initiative warning: past a certain number of series the
+        # chart stops being readable, and it is better to say so than to draw it anyway.
+        if ($deviceOsVersionColumn.Count -gt 12) {
+            Write-Warning "$($deviceOsVersionColumn.Count) distinct OS releases are in scope, which is more lines than one chart can carry legibly. The DeviceOsVersion sheet still holds every column; consider reading it as a table rather than a chart."
+        }
+
+        $sheets.Add([pscustomobject]@{
+            Sheet = 'DeviceOsVersion'
+            Table = 'tblDeviceOsVersion'
+            Row   = [pscustomobject] $row
+        })
+    }
+
 
     if ($policy) {
         # One column per INITIATIVE, aggregated across the subscriptions in scope. The
@@ -762,7 +867,8 @@ function Export-MsecPostureReport {
     # a step in the line. "We moved the bar in March and the number followed" is exactly the
     # thing a posture report should be able to show, and a single stored constant could not.
     $chartSheets = @('Scores', 'SecureScoreByCategory', 'AzureSecureScore', 'PolicyCompliance',
-                     'PrivilegedAccess', 'MfaCoverage', 'DeviceCompliance', 'Incidents', 'Email',
+                     'PrivilegedAccess', 'MfaCoverage', 'DeviceCompliance',
+                     'DevicePlatform', 'DeviceOsVersion', 'Incidents', 'Email',
                      'ConditionalAccess', 'TenantSettings')
 
     foreach ($key in @($Target.Keys)) {
@@ -833,6 +939,8 @@ function Export-MsecPostureReport {
         [pscustomobject]@{ Sheet = 'PrivilegedAccess';       Table = 'tblPrivilegedAccess';       XColumn = 'RunUtc'; Title = 'Privileged access over time';                            Series = @('StandingPrivileged', 'EligiblePrivileged', 'PrivilegedServicePrincipals', 'PrivilegedGuests', 'PrivilegedDisabled') }
         [pscustomobject]@{ Sheet = 'MfaCoverage';           Table = 'tblMfaCoverage';           XColumn = 'RunUtc'; Title = 'MFA capability over time (%)';                          Series = @('MfaCapablePercent', 'AdminMfaCapablePercent', 'PasswordlessCapablePercent', 'PhoneOnlyMfaCapablePercent', 'SsprCapablePercent') }
         [pscustomobject]@{ Sheet = 'DeviceCompliance';      Table = 'tblDeviceCompliance';      XColumn = 'RunUtc'; Title = 'Intune device compliance over time';                    Series = @('Compliant', 'Noncompliant', 'InGracePeriod') }
+        [pscustomobject]@{ Sheet = 'DevicePlatform';        Table = 'tblDevicePlatform';        XColumn = 'RunUtc'; Title = 'Managed devices by platform';                              Series = @($devicePlatformColumn) }
+        [pscustomobject]@{ Sheet = 'DeviceOsVersion';       Table = 'tblDeviceOsVersion';       XColumn = 'RunUtc'; Title = 'Managed devices by OS release';                            Series = @($deviceOsVersionColumn) }
         [pscustomobject]@{ Sheet = 'Incidents';             Table = 'tblIncidents';             XColumn = 'RunUtc'; Title = "Defender XDR incidents by severity (last $Days days)";   Series = @('High', 'Medium', 'Low', 'Informational') }
         [pscustomobject]@{ Sheet = 'Email';                 Table = 'tblEmail';                 XColumn = 'RunUtc'; Title = "Inbound email threats (last $Days days)";                Series = @('Phishing', 'Spam', 'Malware') }
         [pscustomobject]@{ Sheet = 'ConditionalAccess';     Table = 'tblConditionalAccess';     XColumn = 'RunUtc'; Title = "Conditional Access sign-in outcomes (last $Days days)"; Series = @('CaSuccess', 'CaFailure', 'CaNotApplied') }

@@ -60,6 +60,11 @@ function Write-MsecVMEvidenceWorkbook {
         [Parameter(Mandatory)] [string] $Heading,
         [Parameter(Mandatory)] [string] $ChartTitlePrefix,
 
+        # The caller's $PSCmdlet, so the overwrite prompt belongs to the public command and
+        # honours its -Confirm. Optional: without it the prompt is skipped rather than crashing.
+        $Cmdlet,
+        [switch] $Force,
+
         [int]    $ThrottleLimit  = 8,
         [int]    $TimeoutSeconds = 300,
         [switch] $IncludeStopped,
@@ -76,6 +81,15 @@ function Write-MsecVMEvidenceWorkbook {
     $subscriptionName = [string] $context.Subscription.Name
     $subscriptionId   = [string] $context.Subscription.Id
     if (-not $subscriptionName) { $subscriptionName = $subscriptionId }
+
+    # BEFORE ANYTHING IS COLLECTED. Declining here costs nothing; asking after the collection
+    # would mean running scripts on every VM in the subscription first, then throwing the
+    # answers away.
+    if ($Cmdlet -and -not (Confirm-MsecEvidenceOverwrite -Path $Path -OwnerName $subscriptionName `
+                              -OwnerId $subscriptionId -OwnerColumn 'SubscriptionId' `
+                              -Cmdlet $Cmdlet -Force:$Force)) {
+        return
+    }
 
     $collectedUtc = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')
 

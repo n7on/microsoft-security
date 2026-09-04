@@ -16,7 +16,7 @@ machine, on a worksheet named after the subscription.
 ```
 Export-MsecVMUpdateReport [-Path] <String> [-StaleAfterDays <Int32>] [-ThrottleLimit <Int32>]
  [-TimeoutSeconds <Int32>] [-IncludeStopped] [-TableStyle <String>] [-ChartWidth <Int32>]
- [-ChartHeight <Int32>] [-PassThru] [-WhatIf] [-Confirm]
+ [-ChartHeight <Int32>] [-PassThru] [-Force] [-WhatIf] [-Confirm]
  [<CommonParameters>]
 ```
 
@@ -220,6 +220,26 @@ Accept wildcard characters: False
 
 ### -PassThru
 Emit the per-VM rows as objects as well as writing them.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -Force
+Replace an existing worksheet without asking.
+A snapshot report REPLACES rather than
+appends, so writing to a path that already holds this subject's evidence discards it -
+which is worth a question when the path was a typo, and worth suppressing when the run
+is scheduled.
+Unattended runs need this: there is no one to answer the prompt.
 
 ```yaml
 Type: SwitchParameter

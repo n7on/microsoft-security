@@ -60,6 +60,11 @@ function Export-MsecVMUpdateReport {
     .PARAMETER ChartHeight
         Chart height in pixels, default 370.
 
+    .PARAMETER Force
+        Replace an existing worksheet without asking. A snapshot report REPLACES rather than
+        appends, so writing to a path that already holds this subject's evidence discards it -
+        which is worth a question when the path was a typo, and worth suppressing when the run
+        is scheduled. Unattended runs need this: there is no one to answer the prompt.
     .PARAMETER PassThru
         Emit the per-VM rows as objects as well as writing them.
 
@@ -121,7 +126,9 @@ function Export-MsecVMUpdateReport {
         [ValidateRange(150, 1200)]
         [int] $ChartHeight = 370,
 
-        [switch] $PassThru
+        [switch] $PassThru,
+
+        [switch] $Force
     )
 
     if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
@@ -144,7 +151,7 @@ function Export-MsecVMUpdateReport {
     $stale = $StaleAfterDays
     $stopped = $IncludeStopped
 
-    $rows = Write-MsecVMEvidenceWorkbook -Path $Path -ScriptName 'update-status' `
+    $rows = Write-MsecVMEvidenceWorkbook -Path $Path -Cmdlet $PSCmdlet -Force:$Force -ScriptName 'update-status' `
         -AssessmentOrder $order `
         -Heading 'VM patching evidence' -ChartTitlePrefix 'VM patch assessment' `
         -ThrottleLimit $ThrottleLimit -TimeoutSeconds $TimeoutSeconds -IncludeStopped:$IncludeStopped `

@@ -43,6 +43,9 @@ function Write-MsecExcelTable {
         [string] $TableStyle = 'Medium2'
     )
 
+    # A damaged workbook must never be silently replaced by a fresh one.
+    Assert-MsecExcelWorkbook -Path $Path
+
     if (-not $Row.Count) {
         Write-Verbose "No rows for '$WorksheetName'; nothing written."
         return 0

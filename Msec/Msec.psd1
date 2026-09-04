@@ -43,6 +43,7 @@
         'Get-MsecAzureSecureScore',
         'Get-MsecDefenderScoreExposure',
         'Get-MsecDefenderScoreDeviceConfiguration',
+        'Get-MsecDefenderDevice',
         'Get-MsecDefenderEmailStats',
         'Get-MsecDefenderIncidentStats',
         'Get-MsecIntuneConfigurationProfile',
@@ -69,7 +70,8 @@
         'Export-MsecPostureReport',
         'Export-MsecVMUpdateReport',
         'Export-MsecVMNtpReport',
-        'Export-MsecEntraDisabledUserReport'
+        'Export-MsecEntraDisabledUserReport',
+        'Export-MsecDefenderDeviceReport'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

@@ -192,9 +192,11 @@ Describe 'Export-MsecVMUpdateReport' -Skip:(-not $script:HasExcel) {
             Export-MsecVMUpdateReport -Path $Book -WarningAction SilentlyContinue | Out-Null
             $first = @(Import-Excel -Path $Book -WorksheetName 'PROD').Count
 
-            # A VM was decommissioned between collections.
+            # A VM was decommissioned between collections. -Force because this test is about
+            # REPLACE semantics, not about the overwrite prompt - which is exactly what would
+            # otherwise fire here, since re-writing the same subscription is what it guards.
             $script:VmCount = 2
-            Export-MsecVMUpdateReport -Path $Book -WarningAction SilentlyContinue | Out-Null
+            Export-MsecVMUpdateReport -Path $Book -Force -WarningAction SilentlyContinue | Out-Null
             $second = @(Import-Excel -Path $Book -WorksheetName 'PROD').Count
 
             @($first, $second)

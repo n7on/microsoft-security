@@ -47,6 +47,11 @@ function Export-MsecEntraDisabledUserReport {
     .PARAMETER ChartHeight
         Chart height in pixels, default 370.
 
+    .PARAMETER Force
+        Replace an existing worksheet without asking. A snapshot report REPLACES rather than
+        appends, so writing to a path that already holds this subject's evidence discards it -
+        which is worth a question when the path was a typo, and worth suppressing when the run
+        is scheduled. Unattended runs need this: there is no one to answer the prompt.
     .PARAMETER PassThru
         Emit the per-account rows as objects as well as writing them.
 
@@ -92,7 +97,9 @@ function Export-MsecEntraDisabledUserReport {
         [ValidateRange(150, 1200)]
         [int] $ChartHeight = 370,
 
-        [switch] $PassThru
+        [switch] $PassThru,
+
+        [switch] $Force
     )
 
     Assert-MsecSession
@@ -123,6 +130,13 @@ function Export-MsecEntraDisabledUserReport {
     }
     catch {
         Write-Verbose "Could not read the tenant display name, using the id: $($_.Exception.Message)"
+    }
+
+    # BEFORE ANYTHING IS COLLECTED, so declining costs nothing rather than throwing away a
+    # full directory enumeration.
+    if (-not (Confirm-MsecEvidenceOverwrite -Path $Path -OwnerName $tenantName -OwnerId $tenantId `
+                  -OwnerColumn 'TenantId' -Cmdlet $PSCmdlet -Force:$Force)) {
+        return
     }
 
     # ---- collect ------------------------------------------------------------------------------

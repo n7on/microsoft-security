@@ -60,7 +60,9 @@ Mock Invoke-RestMethod -MockWith {
     }
     if ($u -match "servicePrincipals\(appId='fc780465-") {
         return [pscustomobject]@{ id = 'sp-mdatp'; appRoles = @(
-            [pscustomobject]@{ value = 'Score.Read.All'; id = 'role-score'; allowedMemberTypes = @('Application') }) }
+            [pscustomobject]@{ value = 'Score.Read.All';         id = 'role-score'; allowedMemberTypes = @('Application') }
+            [pscustomobject]@{ value = 'Machine.Read.All';       id = 'role-machine'; allowedMemberTypes = @('Application') }
+            [pscustomobject]@{ value = 'Vulnerability.Read.All'; id = 'role-vuln'; allowedMemberTypes = @('Application') }) }
     }
     if ($u -match '/applications\?\$filter=') {
         return [pscustomobject]@{ value = @([pscustomobject]@{
@@ -124,16 +126,18 @@ Describe 'New-MsecApp' {
                 [pscustomobject]@{ Result = $result; Calls = @($script:Calls) }
             }
 
-            # 14 Graph roles + 1 Defender role = 15 desired, 2 already consented.
-            @($out.Result.GrantedNow).Count     | Should -Be 13
+            # 14 Graph roles + 3 Defender roles = 17 desired, 2 already consented.
+            @($out.Result.GrantedNow).Count     | Should -Be 15
             @($out.Result.AlreadyGranted).Count | Should -Be 2
 
             # One POST per newly granted pair, and none for the two that were already there.
             $posts = @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/appRoleAssignments' })
-            @($posts).Count | Should -Be 13
+            @($posts).Count | Should -Be 15
             $posts.Body.appRoleId | Should -Not -Contain 'role-SecurityEvents.Read.All'
             $posts.Body.appRoleId | Should -Contain 'role-DeviceManagementManagedDevices.Read.All'
             $posts.Body.appRoleId | Should -Contain 'role-score'
+            $posts.Body.appRoleId | Should -Contain 'role-machine'
+            $posts.Body.appRoleId | Should -Contain 'role-vuln'
 
             # Every grant targets the app's own SP as principal, and the resource's SP as
             # resource - transposing those two silently grants nothing useful.
@@ -174,7 +178,7 @@ Describe 'New-MsecApp' {
                 New-MsecApp -KeyVaultName 'kv-test' 6>&1 | Out-String
             }
 
-            $text | Should -Match '13 granted now'
+            $text | Should -Match '15 granted now'
             $text | Should -Match '2 already present'
             $text | Should -Match 'Group\.Read\.All'
             # And the instruction without which a caller re-runs this, retries, gets the same
@@ -195,12 +199,18 @@ Describe 'New-MsecApp' {
                     }
                     [pscustomobject]@{
                         resourceAppId  = 'fc780465-2017-40d4-a0c5-307022471b92'
-                        resourceAccess = @([pscustomobject]@{ id = 'role-score'; type = 'Role' })
+                        resourceAccess = @(
+                            [pscustomobject]@{ id = 'role-score';   type = 'Role' }
+                            [pscustomobject]@{ id = 'role-machine'; type = 'Role' }
+                            [pscustomobject]@{ id = 'role-vuln';    type = 'Role' }
+                        )
                     }
                 )
                 $script:ExistingGrants = @(
                     [pscustomobject]@{ resourceId = 'sp-graph'; appRoleId = 'role-SecurityEvents.Read.All' }
                     [pscustomobject]@{ resourceId = 'sp-mdatp'; appRoleId = 'role-score' }
+                    [pscustomobject]@{ resourceId = 'sp-mdatp'; appRoleId = 'role-machine' }
+                    [pscustomobject]@{ resourceId = 'sp-mdatp'; appRoleId = 'role-vuln' }
                 )
             }
         }
@@ -241,9 +251,12 @@ Describe 'New-MsecApp' {
                 [pscustomobject]@{ Result = $result; Warnings = @($w) }
             }
 
-            # Two Graph roles exist here, plus the Defender one.
-            @($out.Result.GrantedNow).Count | Should -Be 3
-            # The twelve that do not exist in this cloud are named rather than silently lost.
+            # Two Graph roles exist here, plus the three Defender ones - the reduced set this
+            # context stands for is a GRAPH reduction; a cloud with no Defender at all skips
+            # that resource entirely rather than finding its roles missing.
+            @($out.Result.GrantedNow).Count | Should -Be 5
+            # The twelve Graph roles that do not exist in this cloud are named rather than
+            # silently lost.
             # This count is deliberately literal: it has to be updated by hand whenever a
             # permission is added to $resources, which is the point - a role that vanishes
             # from the list should fail a test rather than quietly stop being requested.

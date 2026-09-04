@@ -94,27 +94,17 @@ function Write-MsecEvidenceWorkbook {
         New-Item -Path $parent -ItemType Directory -Force | Out-Null
     }
 
-    $existingSheets = @()
-    if (Test-Path -LiteralPath $Path) {
-        $package = Open-ExcelPackage -Path $Path
-        try { $existingSheets = @($package.Workbook.Worksheets | ForEach-Object { $_.Name }) }
-        finally { Close-ExcelPackage $package -NoSave }
-    }
-
     # An existing sheet with our name is this owner's own - replaced, not collided with. A
     # genuine collision is two DIFFERENT owners whose names truncate to the same 31 characters,
     # told apart by the id already on the sheet.
-    $sheetName = ConvertTo-MsecExcelSheetName -Name $OwnerName
+    #
+    # Resolved by the same function the overwrite prompt uses, so the sheet the caller was
+    # asked about is necessarily the sheet that gets written.
+    $sheet = Resolve-MsecEvidenceSheet -Path $Path -OwnerName $OwnerName -OwnerId $OwnerId -OwnerColumn $OwnerColumn
+    $sheetName = $sheet.SheetName
 
-    if ($sheetName -in $existingSheets) {
-        $owner = $null
-        try   { $owner = @(Import-Excel -Path $Path -WorksheetName $sheetName -ErrorAction Stop)[0].$OwnerColumn }
-        catch { Write-Verbose "Could not read the owner of sheet '$sheetName': $($_.Exception.Message)" }
-
-        if ($owner -and $OwnerId -and $owner -ne $OwnerId) {
-            $sheetName = ConvertTo-MsecExcelSheetName -Name $OwnerName -Existing $existingSheets
-            Write-Warning "'$OwnerName' truncates to a worksheet name already used by $owner, so this one is on '$sheetName' instead."
-        }
+    if ($sheet.CollidedWith) {
+        Write-Warning "'$OwnerName' truncates to a worksheet name already used by $($sheet.CollidedWith), so this one is on '$sheetName' instead."
     }
 
     $tableName = 'tbl' + ($sheetName -replace '[^A-Za-z0-9]', '')

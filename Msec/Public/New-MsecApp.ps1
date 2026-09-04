@@ -35,7 +35,8 @@ function New-MsecApp {
                              Organization.Read.All, RoleManagement.Read.Directory,
                              User.Read.All, Group.Read.All, Application.Read.All,
                              PrivilegedEligibilitySchedule.Read.AzureADGroup
-          - WindowsDefenderATP: Score.Read.All - commercial-only. Skipped automatically in
+          - WindowsDefenderATP: Score.Read.All, Machine.Read.All, Vulnerability.Read.All -
+            commercial-only. Skipped automatically in
             clouds without a Defender for Endpoint presence (e.g. Azure China), since its
             service principal doesn't exist there; the rest of the app is still created.
 
@@ -159,11 +160,15 @@ function New-MsecApp {
         $resources += @{
             Name       = 'WindowsDefenderATP'
             AppId      = 'fc780465-2017-40d4-a0c5-307022471b92'
-            RoleValues = @('Score.Read.All')              # Defender exposure + device config score
+            RoleValues = @(
+                'Score.Read.All',          # Defender exposure + device config score
+                'Machine.Read.All',        # the device inventory behind Get-MsecDefenderDevice
+                'Vulnerability.Read.All'   # the per-device vulnerability assessment export
+            )
         }
     }
     else {
-        Write-Warning "Defender for Endpoint is not available in '$($envInfo.EnvironmentName)' - skipping the WindowsDefenderATP (Score.Read.All) permission. Defender score functions will be unavailable in this cloud."
+        Write-Warning "Defender for Endpoint is not available in '$($envInfo.EnvironmentName)' - skipping the WindowsDefenderATP permissions (Score.Read.All, Machine.Read.All, Vulnerability.Read.All). Defender score, device and vulnerability functions will be unavailable in this cloud."
     }
 
     # Resolve each requested role to its app-role GUID. Sovereign clouds (notably Azure

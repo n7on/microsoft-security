@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Export-MsecDefenderDeviceReport` - the evidence shape applied to the Defender estate: one
+  row per onboarded device, a worksheet named after the tenant, and a chart per tenant.
+
+  THE CHART IS A DISTRIBUTION, NOT A TOTAL. Devices are banded by discovered-vulnerability
+  count (None / 1 to 10 / 11 to 25 / 26 to 50 / 51 to 100 / Over 100), so the chart shows how
+  the estate is spread rather than a tenant-wide sum. A long tail of clean machines with three
+  disasters and a broad middle where everything is equally behind produce the SAME total and
+  need completely different responses.
+
+  It counts twice per band: devices, and how many of those carry at least one CRITICAL
+  vulnerability. Critical is a subset of each band rather than its own band, because the two
+  do not share an axis - a device with 200 vulnerabilities might have three criticals, so
+  plotting them as peers would flatten one into the floor. As a subset it stays readable and
+  answers what decides the work order: are the criticals concentrated in the worst machines or
+  spread through ones that otherwise look fine?
+
+  'Not assessed' is a band in its own right and sorts to the TOP. It means the vulnerability
+  export could not be read at all - no Defender Vulnerability Management licence, or a missing
+  permission - so the count is unknown rather than zero, and a warning says how many. Folding
+  those into 'None' would report an unmeasured estate as a clean one.
+- `Get-MsecDefenderDevice` - the Assets > Devices view from the Defender portal as flat rows:
+  one per onboarded device, with its exposure level, risk score and how many vulnerabilities
+  have been discovered on it, broken down by severity.
+
+  TWO BULK CALLS, NOT ONE PER DEVICE. The inventory comes from `/api/machines` and the counts
+  from `/api/vulnerabilities/machinesVulnerabilities`, the assessment export that returns every
+  (device, software, CVE) finding in one paged stream. Per-device
+  `/api/machines/{id}/vulnerabilities` would be one round trip per machine - a few thousand
+  requests and a throttling wall on a real estate.
+
+  COUNTED AS DISTINCT CVEs, which is what the portal shows. The export is one row per
+  (software, CVE), so one CVE affecting three installed versions of a product is three rows and
+  one vulnerability; counting rows would inflate every device by a factor that varies with how
+  much software it has. `FindingCount` carries the raw row count alongside - the gap between
+  the two is the remediation workload.
+
+  A FAILED VULNERABILITY READ GIVES NULL COUNTS, NOT ZERO. Defender Vulnerability Management is
+  a separate licence and answers 403 without it; reporting 0 would read as "no device has any
+  vulnerability", the most dangerous wrong answer here. The device rows still come back, every
+  count is null, and a warning names the permission. A device absent from a SUCCESSFUL export
+  reports 0 - which for an inactive device means nobody has looked rather than that it is
+  clean, so `HealthStatus` and `LastSeen` are on every row to separate the two.
+
+  The id and severity fields are read under BOTH names Defender uses for them - `machineId` /
+  `severity` from `/api/vulnerabilities/machinesVulnerabilities`, and `deviceId` /
+  `vulnerabilitySeverityLevel` from `/api/machines/SoftwareVulnerabilitiesByMachine`. Reading
+  only one pair is how this first shipped, and against a live tenant it produced a full device
+  list with every count reading 0: the call succeeded, every row streamed in, and every row was
+  discarded for carrying no id under the name being looked for. A second guard backs it up - if
+  rows arrive and NONE can be attributed to a device, the counts are reported as null with a
+  warning, because "a response shape this code does not understand" and "an estate with no
+  vulnerabilities" are indistinguishable in the output unless one of them says so.
+  `Invoke-MsecDefenderRequest` gained `-All`, following `@odata.nextLink`. Reading only the
+  first page of an assessment export would silently under-report, which on a vulnerability
+  report looks exactly like a clean answer.
+
+  `New-MsecApp` now also requests the WindowsDefenderATP roles `Machine.Read.All` and
+  `Vulnerability.Read.All`. An app created before this needs a re-run to pick them up.
 - App Service KQL: `Kql/Graph/AppService/All.kql` (one row per site - TLS enforcement, public
   network access, client certificates, vnet integration, managed identity, plan SKU) and
   `Kql/Graph/AppService/StackSettings.kql` (the runtime stack, for the end-of-life question).
@@ -61,7 +119,6 @@ All notable changes to this project will be documented in this file.
   They are not in conflict: this one counts effective holders, including group-inherited and
   PIM-eligible ones; the other counts the assignment side.
 
-### Fixed
 - The posture report Dashboard now PACKS CHARTS DENSELY instead of reserving a slot for every
   measurement in the canonical list. A measurement that has never produced a row cost a blank
   page before, so a workbook holding only one measurement put its single chart several pages
@@ -283,7 +340,69 @@ All notable changes to this project will be documented in this file.
   was absent - so on CI and on most machines it was shipped but never exercised. Pipe to
   `Export-Csv`, or to `Export-Excel` from the ImportExcel module, for the same evidence.
 
+### Changed
+- The four snapshot reports (`Export-MsecVMUpdateReport`, `Export-MsecVMNtpReport`,
+  `Export-MsecEntraDisabledUserReport`, `Export-MsecDefenderDeviceReport`) now ASK before
+  replacing a worksheet that already holds evidence, and take `-Force` to skip the question.
+  They replace rather than append - that is the point of a snapshot - which also means a
+  mistyped path silently destroyed last month's evidence.
+
+  Asked only when something would actually be lost. A new file, or a new tenant or subscription
+  inside an existing file, is not a question worth interrupting for; a sheet already holding
+  THIS subject's rows is. Two owners whose names truncate to the same 31 characters are a
+  collision rather than an overwrite - the newcomer gets its own suffixed sheet - so that does
+  not prompt either. The prompt names the sheet, its row count and when it was collected, so
+  the answer can be given on the facts.
+
+  ASKED BEFORE THE COLLECTION, NOT AFTER, so declining costs nothing: no directory enumeration,
+  and on the VM reports no Run Command invocations against live machines.
+
+  `Resolve-MsecEvidenceSheet` is shared by the prompt and by the writer, so the sheet the
+  caller was asked about is necessarily the sheet that gets written - asking the question in
+  two places is how a confirmation ends up guarding the wrong one.
+
+  Unattended runs need `-Force`: a scheduled task has no one to answer, and `ShouldContinue` in
+  a non-interactive host is an error rather than a default.
 ### Fixed
+- A DAMAGED WORKBOOK COULD BE SILENTLY REPLACED BY A FRESH ONE, losing every sheet in it rather
+  than just one. Export-Excel can CREATE the file, so it treats "cannot read this" and "nothing
+  here yet" identically - and a zero-byte file is indistinguishable from a new one. A OneDrive
+  placeholder that never downloaded, or a run killed mid-save, therefore got replaced by a
+  workbook holding one sheet and one row, and the write reported success. Reproduced.
+
+  `Assert-MsecExcelWorkbook` now runs before either writer touches the path: a file that exists
+  but is empty, unopenable, or holds no worksheets is refused, and left exactly as found so
+  version history can still restore it. A path that does not exist is still a normal first run.
+- A SHEET REWRITE COULD SILENTLY DISCARD EVERY ROW EVER COLLECTED. `Write-MsecExcelSheet`
+  rewrites with `-ClearSheet`, so whatever it reads back first is the entire surviving record -
+  and it caught every failure of that read and carried on with an empty history, reporting the
+  loss only through `Write-Verbose`. Any transient failure to read the workbook (open in Excel,
+  a sync client mid-write) therefore reduced a posture sheet to the single row from that run.
+  Reproduced at five rows in, one row out.
+
+  It now reads the sheet's row count from the package BEFORE reading its contents, which is
+  what makes "there is nothing to preserve" distinguishable from "I could not read what is
+  there". Only the first proceeds; the second throws, and the file is left untouched. Reading
+  back FEWER rows than the sheet holds is refused on the same grounds - a truncated history is
+  not recoverable, a refusal is.
+
+  This only ever fired on a RESHAPE (a measurement changing its column set); ordinary appends
+  go through `Export-Excel -Append` and never took this path.
+- A sheet that cannot be written now costs only its own row rather than the whole run, matching
+  how the collect half already degraded. The refusal above would otherwise throw away nine
+  successfully collected measurements to protect one, and the failure is recorded in RunLog.
+- A column that appeared AFTER a posture-report chart was first drawn now gets a series on it.
+  The sheets with dynamic columns - one per Azure subscription, per Secure Score category, per
+  policy initiative - grow a column whenever the estate does, and the dashboard only ever
+  refreshed the ranges of series the chart already carried. So a new subscription landed on the
+  AzureSecureScore sheet, appeared in the schema-drift warning, and was then absent from the
+  chart indefinitely: the report quietly under-reported the estate while looking complete.
+  Series are only ever ADDED, so one added by hand in Excel still survives.
+- A series whose column is still on the sheet but which this run did not collect now keeps
+  growing with the sheet. A subscription that drops out of the Az context keeps its column
+  (`Write-MsecExcelSheet` takes the UNION of old and new columns, so history is never dropped)
+  but its chart range stopped at the row count it had when last collected - so the line ended
+  early, reading as the data stopping rather than the subscription leaving.
 - `New-MsecApp` now requests `DeviceManagementScripts.Read.All`. Intune scripts are a
   separate scope from `DeviceManagementConfiguration.Read.All`, which does not cover
   deviceHealthScripts or deviceCustomAttributeShellScripts even though both sit under

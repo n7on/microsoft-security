@@ -63,7 +63,8 @@ Current required permissions (configured at the top of the function in $resource
                      Organization.Read.All, RoleManagement.Read.Directory,
                      User.Read.All, Group.Read.All, Application.Read.All,
                      PrivilegedEligibilitySchedule.Read.AzureADGroup
-  - WindowsDefenderATP: Score.Read.All - commercial-only.
+  - WindowsDefenderATP: Score.Read.All, Machine.Read.All, Vulnerability.Read.All -
+    commercial-only.
 Skipped automatically in
     clouds without a Defender for Endpoint presence (e.g.
 Azure China), since its

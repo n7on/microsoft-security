@@ -125,6 +125,94 @@ Describe 'Add-MsecExcelRow' -Skip:(-not $script:HasExcel) {
         $rows[1].SANDBOX | Should -Be 33
     }
 
+    It 'refuses to replace a damaged workbook with a fresh one' {
+        # THE OTHER WIPE. Export-Excel can CREATE the file, so it treats "cannot read this" and
+        # "nothing here yet" identically - and a zero-byte file (a OneDrive placeholder that
+        # never downloaded, a run killed mid-save) is indistinguishable from new. The old
+        # behaviour replaced it with a workbook holding one sheet and one row, reported success,
+        # and took every other tenant and every row ever collected with it.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            foreach ($i in 1..4) {
+                Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                    -Row ([pscustomobject]@{ RunUtc = "day$i"; SecureScorePercent = 60 + $i }) | Out-Null
+            }
+        }
+        (Get-Item $script:Book).Length | Should -BeGreaterThan 0
+
+        # The file survives sync as an empty husk.
+        Set-Content -Path $script:Book -Value '' -NoNewline
+
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            {
+                Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                    -Row ([pscustomobject]@{ RunUtc = 'day5'; SecureScorePercent = 65 })
+            } | Should -Throw '*0 bytes*'
+        }
+
+        # Left exactly as found, so version history can still restore it.
+        (Get-Item $script:Book).Length | Should -Be 0
+    }
+
+    It 'still creates a workbook that does not exist yet' {
+        # The guard must not break a genuine first run.
+        $fresh = Join-Path ([System.IO.Path]::GetTempPath()) "msec-new-$([guid]::NewGuid().Guid).xlsx"
+        try {
+            $count = InModuleScope Msec -Parameters @{ Book = $fresh } {
+                param($Book)
+                Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                    -Row ([pscustomobject]@{ RunUtc = 'day1'; SecureScorePercent = 61 })
+            }
+            $count | Should -Be 1
+            Test-Path $fresh | Should -BeTrue
+        }
+        finally { Remove-Item $fresh -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'refuses to rewrite a sheet whose history it could not read back' {
+        # THE WIPE THIS EXISTS FOR. A reshape rewrites the sheet with -ClearSheet, so whatever
+        # was read back is the entire surviving record. An earlier version caught every read
+        # failure and carried on with an empty history, which turned a transient lock - the
+        # file open in Excel, a sync client mid-write - into the silent loss of every row ever
+        # collected, reported only through Write-Verbose.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            foreach ($i in 1..5) {
+                Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                    -Row ([pscustomobject]@{ RunUtc = "day$i"; SecureScorePercent = 60 + $i }) | Out-Null
+            }
+        }
+
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Import-Excel -MockWith { throw 'The process cannot access the file because it is being used by another process.' }
+
+            # A new column arrives, so this is a reshape - the destructive path.
+            {
+                Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                    -Row ([pscustomobject]@{ RunUtc = 'day6'; SecureScorePercent = 66; ExposurePercent = 20 }) `
+                    -WarningAction SilentlyContinue
+            } | Should -Throw '*Refusing to rewrite*'
+        }
+
+        # The file is untouched: all five rows still there, and the new one was NOT written.
+        $rows = @(Import-Excel -Path $script:Book -WorksheetName 'Scores')
+        @($rows).Count | Should -Be 5
+        @($rows | ForEach-Object { $_.RunUtc }) | Should -Not -Contain 'day6'
+    }
+
+    It 'still writes a sheet that genuinely has no rows yet' {
+        # The other side of the guard: an absent or header-only sheet is a real "nothing to
+        # preserve", and must not be turned into a refusal.
+        $count = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Add-MsecExcelRow -Path $Book -WorksheetName 'Scores' -TableName 'tblScores' `
+                -Row ([pscustomobject]@{ RunUtc = 'day1'; SecureScorePercent = 61 })
+        }
+        $count | Should -Be 1
+    }
+
     It 'warns when it reshapes, because that is the one case that discards manual changes' {
         $captured = InModuleScope Msec -Parameters @{ Book = $script:Book } {
             param($Book)
@@ -507,6 +595,79 @@ Describe 'Add-MsecExcelDashboard' -Skip:(-not $script:HasExcel) {
                     ($charts | Where-Object Name -eq 'chartA').From.Row
             ($charts | Where-Object Name -eq 'chartD').From.Row | Should -Be (2 + 2 * $band)
             ($charts | Where-Object Name -eq 'chartC').From.Row | Should -Be (2 + 3 * $band)
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'adds a series for a column that appeared after the chart was drawn' {
+        # These sheets grow a column whenever the estate does - a new Azure subscription, a new
+        # Secure Score category, a new policy initiative. Without this the column lands on the
+        # data sheet while the chart silently keeps plotting only what existed the day it was
+        # first drawn, so the report quietly under-reports the estate.
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+
+            # A third subscription turns up.
+            Add-MsecExcelRow -Path $Book -WorksheetName 'AzureSecureScore' -TableName 'tblAzureSecureScore' `
+                -Row ([pscustomobject]@{ RunUtc = 'd4'; PROD = 44; SANDBOX = 24; NEWSUB = 10 }) -WarningAction SilentlyContinue | Out-Null
+
+            $grown = @(
+                $Specs[0]
+                [pscustomobject]@{ Sheet = 'AzureSecureScore'; Table = 'tblAzureSecureScore'
+                                   XColumn = 'RunUtc'; Title = 'Azure'; Series = @('PROD', 'SANDBOX', 'NEWSUB') }
+            )
+            Add-MsecExcelDashboard -Path $Book -Chart $grown
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $chart = $package.Workbook.Worksheets['Dashboard'].Drawings |
+                Where-Object Name -eq 'chartAzureSecureScore'
+            @($chart.Series | ForEach-Object { $_.Header }) | Should -Contain 'NEWSUB'
+            @($chart.Series).Count | Should -Be 3
+
+            # Every series spans the full row range, the newcomer included.
+            foreach ($series in $chart.Series) {
+                $series.Series | Should -Match '\$5$'
+            }
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+    }
+
+    It 'keeps growing the range of a series this run did not produce' {
+        # A subscription that dropped out of the Az context. Its column stays on the sheet
+        # (Write-MsecExcelSheet takes the UNION, so history is never dropped), and its series
+        # must keep spanning the sheet - otherwise the line stops dead at the row count it had
+        # when it was last collected, which reads as the data ending rather than the
+        # subscription leaving.
+        InModuleScope Msec -Parameters @{ Book = $script:Book; Specs = $script:Specs } {
+            param($Book, $Specs)
+            Add-MsecExcelDashboard -Path $Book -Chart $Specs
+
+            Add-MsecExcelRow -Path $Book -WorksheetName 'AzureSecureScore' -TableName 'tblAzureSecureScore' `
+                -Row ([pscustomobject]@{ RunUtc = 'd4'; PROD = 44; SANDBOX = 24 }) | Out-Null
+
+            # SANDBOX is gone from this run's spec, the way a vanished subscription would be.
+            $shrunk = @(
+                $Specs[0]
+                [pscustomobject]@{ Sheet = 'AzureSecureScore'; Table = 'tblAzureSecureScore'
+                                   XColumn = 'RunUtc'; Title = 'Azure'; Series = @('PROD') }
+            )
+            Add-MsecExcelDashboard -Path $Book -Chart $shrunk
+        }
+
+        $package = Open-ExcelPackage -Path $script:Book
+        try {
+            $chart = $package.Workbook.Worksheets['Dashboard'].Drawings |
+                Where-Object Name -eq 'chartAzureSecureScore'
+            # Not removed - the history it plots is still real.
+            @($chart.Series | ForEach-Object { $_.Header }) | Should -Contain 'SANDBOX'
+
+            $sandbox = $chart.Series | Where-Object Header -eq 'SANDBOX'
+            $prod    = $chart.Series | Where-Object Header -eq 'PROD'
+            $sandbox.Series | Should -Match '\$5$'
+            $prod.Series    | Should -Match '\$5$'
         }
         finally { Close-ExcelPackage $package -NoSave }
     }

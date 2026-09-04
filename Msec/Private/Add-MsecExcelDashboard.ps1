@@ -142,6 +142,27 @@ function Add-MsecExcelDashboard {
         # ever settles further. Position is reasserted every run anyway (see below), so this
         # adds no new instability; it only makes the existing kind more visible. Blank pages
         # between charts are the worse cost, because they are permanent rather than one-off.
+        # LINE SERIES ONLY. Smooth and Marker live on ExcelLineChartSerie; a column chart's
+        # series is an ExcelBarChartSerie and has neither, so setting them unconditionally
+        # throws the moment a spec asks for anything but a line. Tested by property rather than
+        # by chart type, so a future type is handled by whether it actually supports these
+        # rather than by a list to keep in sync.
+        #
+        # Neither is styling:
+        #   Smooth off - a smoothed line invents values between two monthly samples, which on a
+        #                trend reads as movement that never happened.
+        #   Markers on - with a handful of points, the dots show where a real sample sits as
+        #                opposed to interpolation between them.
+        # Colour and width are left to Excel's theme.
+        $styleSeries = {
+            param($Series)
+            $properties = $Series.PSObject.Properties.Name
+            if ($properties -contains 'Smooth') { $Series.Smooth = $false }
+            if ($properties -contains 'Marker') {
+                $Series.Marker = [OfficeOpenXml.Drawing.Chart.eMarkerStyle]::Circle
+            }
+        }
+
         $slot = 0
         foreach ($spec in $Chart) {
 
@@ -156,6 +177,11 @@ function Add-MsecExcelDashboard {
             # error - that measurement has simply never succeeded.
             $plot   = [ordered]@{}
             $xRange = $null
+            # Hoisted: the refresh branch below needs them to repoint a series this run's
+            # spec did not name - see the note there.
+            $headers      = @()
+            $firstDataRow = 2
+            $lastRow      = 0
 
             $dataSheet = $package.Workbook.Worksheets[$spec.Sheet]
             if ($dataSheet -and $dataSheet.Dimension) {
@@ -195,12 +221,41 @@ function Add-MsecExcelDashboard {
             if ($existing) {
                 # REFRESH ONLY THE RANGES. Everything else about the chart is the reader's -
                 # title, colours, size, series they added themselves - and stays.
-                if ($plot.Count) {
+                if ($xRange) {
                     foreach ($series in $existing.Series) {
-                        if ($plot.Contains($series.Header)) {
-                            $series.Series = $plot[$series.Header]
-                            $series.XSeries = $xRange
+                        $header = $series.Header
+                        if ($plot.Contains($header)) {
+                            $series.Series = $plot[$header]
                         }
+                        else {
+                            # A series this run's spec did not name, but whose column is still
+                            # on the sheet - an Azure subscription that dropped out of the Az
+                            # context, an initiative no longer in -PolicyInitiative. Its range
+                            # must still grow with the sheet, or the line stops dead at the row
+                            # count it had when it was last collected, which reads as the data
+                            # ending rather than the subscription leaving.
+                            $index = [array]::IndexOf($headers, $header)
+                            if ($index -lt 0) { continue }
+                            $letter = ConvertTo-MsecExcelColumn -Index $index
+                            $series.Series = "$($spec.Sheet)!`$$letter`$$firstDataRow`:`$$letter`$$lastRow"
+                        }
+                        $series.XSeries = $xRange
+                    }
+
+                    # Series this run produced that the chart does not carry yet: a NEW Azure
+                    # subscription, a new Secure Score category, a new policy initiative. These
+                    # sheets grow a column whenever the estate does, and without this the column
+                    # lands on the data sheet while the chart silently keeps plotting only the
+                    # subscriptions that existed the day it was first drawn.
+                    #
+                    # Additive on purpose - nothing is removed, so a series added by hand in
+                    # Excel still survives.
+                    $present = @($existing.Series | ForEach-Object { $_.Header })
+                    foreach ($name in $plot.Keys) {
+                        if ($name -in $present) { continue }
+                        $added = $existing.Series.Add($plot[$name], $xRange)
+                        $added.Header = $name
+                        & $styleSeries $added
                     }
                 }
 
@@ -230,24 +285,7 @@ function Add-MsecExcelDashboard {
             foreach ($name in $plot.Keys) {
                 $series = $drawing.Series.Add($plot[$name], $xRange)
                 $series.Header = $name
-
-                # LINE SERIES ONLY. Smooth and Marker live on ExcelLineChartSerie; a column
-                # chart's series is an ExcelBarChartSerie and has neither, so setting them
-                # unconditionally throws the moment a spec asks for anything but a line.
-                # Tested by property rather than by chart type, so a future type is handled
-                # by whether it actually supports these rather than by a list to keep in sync.
-                #
-                # Neither is styling:
-                #   Smooth off - a smoothed line invents values between two monthly samples,
-                #                which on a trend reads as movement that never happened.
-                #   Markers on - with a handful of points, the dots show where a real sample
-                #                sits as opposed to interpolation between them.
-                # Colour and width are left to Excel's theme.
-                $properties = $series.PSObject.Properties.Name
-                if ($properties -contains 'Smooth') { $series.Smooth = $false }
-                if ($properties -contains 'Marker') {
-                    $series.Marker = [OfficeOpenXml.Drawing.Chart.eMarkerStyle]::Circle
-                }
+                & $styleSeries $series
             }
 
             $slot++

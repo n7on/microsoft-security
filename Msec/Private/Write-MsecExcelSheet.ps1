@@ -28,10 +28,48 @@ function Write-MsecExcelSheet {
         [string] $TableStyle = 'Medium2'
     )
 
+    # A damaged workbook must never be silently replaced by a fresh one.
+    Assert-MsecExcelWorkbook -Path $Path
+
+    # THE HISTORY IS READ BEFORE IT IS OVERWRITTEN, AND A FAILED READ MUST NOT LOOK LIKE AN
+    # EMPTY ONE. This function rewrites the sheet with -ClearSheet, so whatever is in $existing
+    # is the entire surviving record. An earlier version caught every read failure and carried
+    # on with an empty $existing, which turned a transient lock - a sync client mid-write, the
+    # file open in Excel - into the silent loss of every row ever collected, reported only
+    # through Write-Verbose.
+    #
+    # So the row count is taken from the package FIRST, which is what makes "there is nothing
+    # to preserve" distinguishable from "I could not read what is there". Only the first is
+    # allowed to proceed.
     $existing = @()
+    $existingRows = 0
+
     if (Test-Path -LiteralPath $Path) {
-        try { $existing = @(Import-Excel -Path $Path -WorksheetName $WorksheetName -ErrorAction Stop) }
-        catch { Write-Verbose "No readable '$WorksheetName' sheet yet in '$Path': $($_.Exception.Message)" }
+        $package = Open-ExcelPackage -Path $Path
+        try {
+            $worksheet = $package.Workbook.Worksheets[$WorksheetName]
+            # Row 1 is the header, so anything at or below 1 means no data yet.
+            if ($worksheet -and $worksheet.Dimension) {
+                $existingRows = [Math]::Max(0, $worksheet.Dimension.Rows - 1)
+            }
+        }
+        finally { Close-ExcelPackage $package -NoSave }
+
+        if ($existingRows -gt 0) {
+            try { $existing = @(Import-Excel -Path $Path -WorksheetName $WorksheetName -ErrorAction Stop) }
+            catch {
+                throw "Refusing to rewrite worksheet '$WorksheetName' in '$Path': it holds $existingRows data row(s) that could not be read back, and rewriting now would discard them. The file has NOT been modified. This is usually the file being open in Excel or mid-sync; close it and run again. Original error: $($_.Exception.Message)"
+            }
+
+            # Read back fewer rows than the sheet holds and the difference would be dropped on
+            # the rewrite just as silently. Refusing is recoverable; a truncated history is not.
+            if ($existing.Count -lt $existingRows) {
+                throw "Refusing to rewrite worksheet '$WorksheetName' in '$Path': it holds $existingRows data row(s) but only $($existing.Count) could be read back, so rewriting would discard the rest. The file has NOT been modified."
+            }
+        }
+        else {
+            Write-Verbose "No data rows in '$WorksheetName' yet in '$Path' - writing it fresh."
+        }
     }
 
     $all = @($existing) + @($NewRow)

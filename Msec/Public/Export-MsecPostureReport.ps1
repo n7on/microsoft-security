@@ -787,11 +787,26 @@ function Export-MsecPostureReport {
         New-Item -Path $parent -ItemType Directory -Force | Out-Null
     }
 
+    # ONE SHEET FAILING COSTS ONLY ITS OWN ROW. The write half degrades the same way the
+    # collect half does. The failure this matters for is Add-MsecExcelRow refusing to rewrite
+    # a sheet whose history it could not read back - the file is open in Excel, or mid-sync -
+    # where aborting the run would throw away nine successfully collected measurements to
+    # protect one.
     $written = foreach ($sheet in $sheets) {
-        $count = Add-MsecExcelRow -Path $Path -WorksheetName $sheet.Sheet -Row $sheet.Row `
-                                  -TableName $sheet.Table -TableStyle $TableStyle
-        Write-Verbose "$($sheet.Sheet): $count row(s)"
-        [pscustomobject]@{ Sheet = $sheet.Sheet; RowCount = $count; Row = $sheet.Row }
+        try {
+            $count = Add-MsecExcelRow -Path $Path -WorksheetName $sheet.Sheet -Row $sheet.Row `
+                                      -TableName $sheet.Table -TableStyle $TableStyle
+            Write-Verbose "$($sheet.Sheet): $count row(s)"
+            [pscustomobject]@{ Sheet = $sheet.Sheet; RowCount = $count; Row = $sheet.Row }
+        }
+        catch {
+            Write-Warning "Could not write the '$($sheet.Sheet)' sheet, so this run contributed no row to it. Every other measurement still landed. $($_.Exception.Message)"
+            $runLog.Add([pscustomobject]@{
+                RunUtc = $runUtc; TenantId = $tenantId
+                Source = "Write $($sheet.Sheet)"; Status = 'Failed'
+                Detail = $_.Exception.Message
+            })
+        }
     }
 
     # RunLog last, so it records the collection outcome of everything above it. No chart -

@@ -171,6 +171,111 @@ Describe 'Export-MsecEntraDisabledUserReport' -Skip:(-not $script:HasExcel) {
         $order | Should -Be @('old-paid@x.com', 'old-free@x.com', 'fresh@x.com')
     }
 
+    It 'asks before replacing a sheet that already holds evidence, and honours no' {
+        # The mistyped-path guard. A snapshot report REPLACES, so pointing it at last month's
+        # file destroys last month's evidence - and the old behaviour did that silently.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Invoke-MsecGraphRequest -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ displayName = 'Contoso' }) }
+            }
+            Mock Get-MsecEntraDisabledUser -MockWith {
+                [pscustomobject]@{ UserPrincipalName = 'a@x.com'; DisabledDays = 400; LicenseCount = 2 }
+                [pscustomobject]@{ UserPrincipalName = 'b@x.com'; DisabledDays = 500; LicenseCount = 0 }
+            }
+            Export-MsecEntraDisabledUserReport -Path $Book -WarningAction SilentlyContinue | Out-Null
+        }
+        @(Import-Excel -Path $script:Book -WorksheetName 'Contoso').Count | Should -Be 2
+
+        # Second run against the same path, answering NO.
+        $rows = InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Invoke-MsecGraphRequest -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ displayName = 'Contoso' }) }
+            }
+            # Would have produced a single row, wiping the two already there.
+            Mock Get-MsecEntraDisabledUser -MockWith {
+                [pscustomobject]@{ UserPrincipalName = 'c@x.com'; DisabledDays = 10; LicenseCount = 0 }
+            }
+            Mock Confirm-MsecEvidenceOverwrite -MockWith { $false }
+            Export-MsecEntraDisabledUserReport -Path $Book -PassThru -WarningAction SilentlyContinue
+        }
+
+        # Nothing written, nothing emitted, and the earlier evidence intact.
+        @($rows).Count | Should -Be 0
+        $kept = @(Import-Excel -Path $script:Book -WorksheetName 'Contoso')
+        @($kept).Count | Should -Be 2
+        @($kept | ForEach-Object { $_.UserPrincipalName }) | Should -Not -Contain 'c@x.com'
+    }
+
+    It 'does not collect anything when the overwrite is declined' {
+        # Declining must cost nothing. Asking after the collection would mean a full directory
+        # enumeration - and on the VM reports, Run Commands against live machines - thrown away.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Invoke-MsecGraphRequest -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ displayName = 'Contoso' }) }
+            }
+            Mock Get-MsecEntraDisabledUser -MockWith { [pscustomobject]@{ UserPrincipalName = 'a@x.com'; DisabledDays = 5; LicenseCount = 0 } }
+            Mock Confirm-MsecEvidenceOverwrite -MockWith { $false }
+
+            Export-MsecEntraDisabledUserReport -Path $Book -WarningAction SilentlyContinue | Out-Null
+
+            Should -Invoke Get-MsecEntraDisabledUser -Times 0 -Exactly
+        }
+    }
+
+    It 'does not ask when nothing would be lost' {
+        # A new file, and a new tenant inside an existing file, are not questions worth
+        # interrupting for - only a genuine replace is.
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            $resolved = Resolve-MsecEvidenceSheet -Path $Book -OwnerName 'Contoso' -OwnerId 't1' -OwnerColumn 'TenantId'
+            $resolved.IsReplace | Should -BeFalse       # file does not exist yet
+
+            Mock Invoke-MsecGraphRequest -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ displayName = 'Contoso' }) }
+            }
+            Mock Get-MsecEntraDisabledUser -MockWith { [pscustomobject]@{ UserPrincipalName = 'a@x.com'; DisabledDays = 5; LicenseCount = 0 } }
+            Export-MsecEntraDisabledUserReport -Path $Book -WarningAction SilentlyContinue | Out-Null
+
+            # Now the sheet exists and holds this tenant's rows - that IS a replace.
+            $again = Resolve-MsecEvidenceSheet -Path $Book -OwnerName 'Contoso' -OwnerId 'tenant-1' -OwnerColumn 'TenantId'
+            $again.IsReplace | Should -BeTrue
+            $again.RowCount  | Should -Be 1
+
+            # A DIFFERENT tenant whose name lands on the same sheet is a collision, not a
+            # replace: it gets its own suffixed sheet and nothing is overwritten.
+            $other = Resolve-MsecEvidenceSheet -Path $Book -OwnerName 'Contoso' -OwnerId 'tenant-2' -OwnerColumn 'TenantId'
+            $other.IsReplace    | Should -BeFalse
+            $other.CollidedWith | Should -Be 'tenant-1'
+            $other.SheetName    | Should -Not -Be 'Contoso'
+        }
+    }
+
+    It '-Force replaces without asking' {
+        InModuleScope Msec -Parameters @{ Book = $script:Book } {
+            param($Book)
+            Mock Invoke-MsecGraphRequest -MockWith {
+                [pscustomobject]@{ value = @([pscustomobject]@{ displayName = 'Contoso' }) }
+            }
+            Mock Get-MsecEntraDisabledUser -MockWith { [pscustomobject]@{ UserPrincipalName = 'a@x.com'; DisabledDays = 400; LicenseCount = 0 } }
+            Export-MsecEntraDisabledUserReport -Path $Book -WarningAction SilentlyContinue | Out-Null
+
+            Mock Get-MsecEntraDisabledUser -MockWith {
+                [pscustomobject]@{ UserPrincipalName = 'b@x.com'; DisabledDays = 500; LicenseCount = 0 }
+                [pscustomobject]@{ UserPrincipalName = 'c@x.com'; DisabledDays = 600; LicenseCount = 0 }
+            }
+            # No prompt mock at all: -Force must not reach ShouldContinue, which would hang or
+            # throw in a non-interactive host like this one.
+            Export-MsecEntraDisabledUserReport -Path $Book -Force -WarningAction SilentlyContinue | Out-Null
+        }
+
+        $rows = @(Import-Excel -Path $script:Book -WorksheetName 'Contoso')
+        @($rows).Count | Should -Be 2
+        @($rows | ForEach-Object { $_.UserPrincipalName }) | Should -Not -Contain 'a@x.com'
+    }
+
     It 'throws a clear error when not connected' {
         InModuleScope Msec -Parameters @{ Book = $script:Book } {
             param($Book)

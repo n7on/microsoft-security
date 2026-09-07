@@ -1,12 +1,12 @@
 @{
     RootModule        = 'Msec.psm1'
-    ModuleVersion     = '0.1.1'
+    ModuleVersion     = '0.2.0'
     GUID              = '5a8c1f2b-9d4e-4b7c-8a3f-1e6d2b9c4a7f'
     Author            = 'Anton Lindstrom'
     Copyright         = '(c) 2026 Anton Lindström. Licensed under the MIT License.'
     # Shown at the top of the Gallery listing, so it names every area the module covers.
     # Kept in step with the first paragraph of README.md.
-    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by design: every Get-Msec* command reads, and nothing writes to a tenant except New-MsecApp, which creates its own app registration. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there.'
+    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Exchange Online, SharePoint Online, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by design: every Get-Msec* command reads, and the only command that writes is New-MsecApp, which creates its own app registration and grants it read permissions - and, when asked with -Workload Exchange, assigns it a directory role, which Exchange requires and which is a tenant-wide privilege grant rather than an API permission. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there, so no key material reaches the machine running the module.'
     PowerShellVersion = '7.0'
 
     # Az.Accounts: the user logs into Azure (their own identity) to reach Key Vault and is used for
@@ -95,6 +95,7 @@
                 'MicrosoftSecurity', 'Security', 'SecureScore', 'Defender', 'DefenderXDR',
                 'ExposureManagement', 'Entra', 'EntraID', 'AzureAD', 'ConditionalAccess',
                 'MFA', 'PIM', 'PrivilegedAccess', 'Intune', 'MDM', 'Compliance', 'Azure',
+                'ExchangeOnline', 'SharePointOnline', 'Microsoft365',
                 'KeyVault', 'Graph', 'Audit', 'Posture', 'CrossPlatform', 'Windows',
                 'Linux', 'macOS'
             )
@@ -103,6 +104,22 @@
             ProjectUri = 'https://github.com/n7on/microsoft-security'
 
             ReleaseNotes = @'
+v0.2.0
+- Exchange Online and SharePoint Online: mailbox permissions, site inventory, and site
+  owners/members with security groups expanded to the people inside them.
+- Bridges that let the Microsoft.Graph SDK, ExchangeOnlineManagement and PnP.PowerShell
+  run as the msec app without the certificate's private key reaching the machine.
+- Azure: unused resources, network exposure across twelve resource types, Key Vault
+  certificate expiry, Cost Management, App Service inventory and stack settings.
+- Entra: group members (nested groups expanded, PIM-eligible included), app registration
+  and service principal credential expiry.
+- Defender: device inventory with per-device vulnerability counts.
+- Evidence reports for Defender devices and Entra group membership; the posture report
+  gained privileged access, device platform and OS release measurements.
+- New-MsecApp -Workload Exchange, SharePoint grants those workloads' permissions. Exchange
+  additionally needs a DIRECTORY ROLE - an app role alone is not enough, and without one
+  every Exchange call fails with an authorisation error that names nothing.
+
 v0.1.0
 - First release. Read-only Microsoft security posture as flat objects: Secure Score,
   Defender XDR, Entra ID (roles, Conditional Access, MFA, licensing), Intune and Azure.

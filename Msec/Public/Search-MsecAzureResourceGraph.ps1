@@ -194,9 +194,29 @@ function Search-MsecAzureResourceGraph {
                   elseif ($Subscription)    { 'subs:' + (($Subscription | Sort-Object) -join ',') }
                   else                      { 'all' }
 
-    if (-not $NoCache) {
+    # A FINGERPRINT OF THE QUERY ITSELF, so editing a bundled .kql invalidates its cached
+    # results. Without it the cache key is only the resource type, the name and the scope - none
+    # of which change when the query does - so an edited query keeps serving rows in the OLD
+    # shape and the author concludes the edit did not apply. That is a genuinely confusing hour,
+    # and it costs one hash to avoid.
+    $queryHash = $null
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($query)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $queryHash = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '') }
+        finally { $sha.Dispose() }
+    }
+    catch {
+        # Hashing cannot realistically fail, but a cache is a convenience: losing the
+        # fingerprint must not lose the query.
+        Write-Verbose "Could not fingerprint the query, so the cache is bypassed this run: $($_.Exception.Message)"
+    }
+
+    if (-not $NoCache -and $queryHash) {
         $cached = Read-MsecCache -Name $cacheName -Envelope
-        if ($cached -and $cached.Scope -eq $scopeLabel -and $cached.UpdatedUtc) {
+        # A cached result written before fingerprinting existed has no QueryHash and is treated
+        # as a miss rather than trusted - it may well have been written by a different query.
+        if ($cached -and $cached.Scope -eq $scopeLabel -and $cached.QueryHash -eq $queryHash -and $cached.UpdatedUtc) {
             $age = [DateTime]::UtcNow - [DateTime]::Parse($cached.UpdatedUtc, $null,
                         [System.Globalization.DateTimeStyles]::RoundtripKind)
             if ($age -le $script:MsecGraphCacheMaxAge) {
@@ -301,6 +321,7 @@ function Search-MsecAzureResourceGraph {
     Save-MsecCache -Name $cacheName -Item $collected.ToArray() -Metadata @{
         Scope        = $scopeLabel
         ScopeDetail  = if ($SubscriptionId) { ($SubscriptionId -join ', ') } else { 'all accessible subscriptions' }
+        QueryHash    = $queryHash
     }
 
     Write-Verbose "Returned $emitted row(s) across $page page(s)."

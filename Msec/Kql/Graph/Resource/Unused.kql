@@ -1,0 +1,117 @@
+// Candidate UNUSED resources across every accessible subscription - the cleanup list.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Resource -Name Unused.
+// No filtering is applied here - filter the output in PowerShell:
+//   # the cleanup list:
+//   Search-MsecAzureResourceGraph -ResourceType Resource -Name Unused |
+//       Where-Object Unused
+//
+//   # ...minus anything your own deferral convention keeps, e.g. an ArchivedUntil tag:
+//   ... | Where-Object { $_.Unused -and -not (Test-MyArchiveTag $_.Tags) }
+//
+// ONE QUERY INSTEAD OF A SUBSCRIPTION LOOP. The obvious implementation walks Get-AzSubscription
+// calling Set-AzContext and then seven Get-Az* cmdlets per subscription. Resource Graph is
+// cross-subscription natively, so this is one request however many subscriptions there are -
+// and it never mutates the caller's Az context, which a Set-AzContext loop does and has to
+// remember to put back.
+//
+// Unused IS ALWAYS PROJECTED, TRUE OR FALSE, rather than filtered here. Two reasons: the module
+// filters in PowerShell by convention, and the caller needs the denominator - "8 of 47 public
+// IPs are unattached" is a report, "8 rows" is not.
+//
+// TAGS ARE RETURNED, POLICY IS NOT APPLIED. Deferral conventions - an ArchivedUntil tag, a
+// ticket reference, an owner - are organisational rather than Azure facts, so the whole tag bag
+// comes back and the caller decides. Doing it here would also be wrong on the merits: Resource
+// Graph's todynamic() re-parses tag JSON and INFERS types, so a date-valued tag read back
+// through a lowercased copy of the bag arrives as '6/15/2026 12:00:00 AM' rather than the
+// '2026-06-15' that was stored. In PowerShell the same filter is a case-insensitive dictionary
+// and a TryParseExact, with no round-trip to corrupt the value.
+//
+// WHAT 'UNUSED' MEANS, PER TYPE - each is the signal the resource is not attached to anything,
+// NOT a claim that nobody wants it:
+//   Public IP           no ipConfiguration
+//   Disk                diskState is Unattached. NOT managedBy: that lives at the TOP level of
+//                       the resource, not under properties, and reading properties.managedBy
+//                       returns empty for every disk - reporting the whole estate as unused.
+//   Network interface   no virtualMachine AND not a private endpoint NIC. The second half
+//                       matters more than the first: a private endpoint's NIC never has a VM,
+//                       and without excluding them a real tenant reports 58 unused NICs where
+//                       the answer is 1.
+//   Security group      attached to no NIC and no subnet
+//   Virtual machine     deallocated - still billed for its disks, still costing storage
+//   App service         not Running (stopped)
+//   App service plan    hosting zero sites, and still billed
+//
+// NOT COVERED: storage accounts. The Az-based version called Get-AzMetric for UsedCapacity,
+// which is Azure Monitor rather than Resource Graph - there is no metric data here to test, and
+// guessing from configuration would be wrong. Left out rather than answered badly.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type in~ (
+    'microsoft.network/publicipaddresses',
+    'microsoft.compute/disks',
+    'microsoft.network/networkinterfaces',
+    'microsoft.network/networksecuritygroups',
+    'microsoft.compute/virtualmachines',
+    'microsoft.web/sites',
+    'microsoft.web/serverfarms')
+| extend ResourceKind = case(
+             type =~ 'microsoft.network/publicipaddresses',     'Public IP',
+             type =~ 'microsoft.compute/disks',                 'Disk',
+             type =~ 'microsoft.network/networkinterfaces',     'Network Interface',
+             type =~ 'microsoft.network/networksecuritygroups', 'Security Group',
+             type =~ 'microsoft.compute/virtualmachines',       'VM',
+             type =~ 'microsoft.web/sites',                     'App Service',
+             type =~ 'microsoft.web/serverfarms',               'App Service Plan',
+             type)
+| extend PowerState = tostring(properties.extended.instanceView.powerState.code),
+         DiskState  = tostring(properties.diskState),
+         SiteState  = tostring(properties.state),
+         SiteCount  = toint(properties.numberOfSites),
+         IsPrivateEndpointNic = isnotempty(tostring(properties.privateEndpoint.id))
+| extend Unused = case(
+             type =~ 'microsoft.network/publicipaddresses',     isnull(properties.ipConfiguration),
+             type =~ 'microsoft.compute/disks',                 DiskState =~ 'Unattached',
+             type =~ 'microsoft.network/networkinterfaces',     isempty(tostring(properties.virtualMachine.id)) and not(IsPrivateEndpointNic),
+             type =~ 'microsoft.network/networksecuritygroups', coalesce(array_length(properties.networkInterfaces), 0) == 0
+                                                                   and coalesce(array_length(properties.subnets), 0) == 0,
+             type =~ 'microsoft.compute/virtualmachines',       PowerState =~ 'PowerState/deallocated',
+             type =~ 'microsoft.web/sites',                     isnotempty(SiteState) and SiteState !~ 'Running',
+             type =~ 'microsoft.web/serverfarms',               coalesce(SiteCount, 0) < 1,
+             false)
+// Why each row is or is not a candidate, so a reviewer can argue with the verdict rather than
+// having to take it on trust.
+| extend Reason = case(
+             not(Unused),                                       '',
+             type =~ 'microsoft.network/publicipaddresses',     'Not attached to any IP configuration',
+             type =~ 'microsoft.compute/disks',                 'Unattached',
+             type =~ 'microsoft.network/networkinterfaces',     'No virtual machine, and not a private endpoint',
+             type =~ 'microsoft.network/networksecuritygroups', 'Attached to no NIC and no subnet',
+             type =~ 'microsoft.compute/virtualmachines',       'Deallocated - still billed for its disks',
+             type =~ 'microsoft.web/sites',                     strcat('Not running (', SiteState, ')'),
+             type =~ 'microsoft.web/serverfarms',               'Hosting no sites - still billed',
+             '')
+
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project ResourceKind,
+          Name              = name,
+          Unused,
+          Reason,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          Tags              = tags,
+          PowerState,
+          DiskState,
+          SiteState,
+          SiteCount,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by Unused desc, ResourceKind asc, SubscriptionName asc, Name asc

@@ -787,4 +787,94 @@ Describe 'Bundled KQL files' {
 
         $offenders | Should -BeNullOrEmpty
     }
+
+    It 'invalidates a cached result when the bundled query itself changes' {
+        # The cache key is the resource type, the name and the scope - none of which change when
+        # the .kql does. Without fingerprinting the query, editing a bundled query keeps serving
+        # rows in the OLD shape and the author concludes the edit did not apply.
+        InModuleScope Msec {
+            $script:Queried = 0
+            Mock Search-AzGraph -MockWith {
+                $script:Queried++
+                @([pscustomobject]@{ name = 'r1'; Shape = 'original' })
+            }
+            Mock Get-AzContext -MockWith {
+                [pscustomobject]@{ Tenant = [pscustomobject]@{ Id = 'tenant-1' }
+                                   Subscription = [pscustomobject]@{ Id = 'sub-1'; Name = 'PROD' } }
+            }
+            Mock Get-AzSubscription -MockWith {
+                [pscustomobject]@{ Id = 'sub-1'; Name = 'PROD'; TenantId = 'tenant-1'; State = 'Enabled' }
+            }
+
+            # The query text the command reads off disk.
+            $script:QueryText = 'Resources | project name'
+            Mock Get-Content -ParameterFilter { $LiteralPath -like '*.kql' } -MockWith { $script:QueryText }
+
+            Search-MsecAzureResourceGraph -ResourceType Resource -Name All | Out-Null
+            $afterFirst = $script:Queried
+
+            # Same query: served from cache, Azure not asked again.
+            Search-MsecAzureResourceGraph -ResourceType Resource -Name All | Out-Null
+            $script:Queried | Should -Be $afterFirst -Because 'an unchanged query should hit the cache'
+
+            # Edited query: the fingerprint differs, so Azure IS asked again.
+            $script:QueryText = 'Resources | extend Extra = 1 | project name, Extra'
+            Search-MsecAzureResourceGraph -ResourceType Resource -Name All | Out-Null
+            $script:Queried | Should -Be ($afterFirst + 1) -Because 'an edited query must not serve stale rows'
+        }
+    }
+}
+
+Describe 'Kql/Graph/Resource NetworkExposure' {
+
+    BeforeAll {
+        $script:NetworkExposureQuery = Get-Content -Raw `
+            (Join-Path $PSScriptRoot '..' 'Kql' 'Graph' 'Resource' 'NetworkExposure.kql')
+    }
+
+    It 'reads the nested publicNetworkAccess path before the top-level one' {
+        # MySQL flexible servers carry the setting at properties.network.publicNetworkAccess and
+        # NOTHING at the top level - verified 6 of 6 against a live estate. Coalescing the other
+        # way round reports every one of them as having no setting, which then defaults to
+        # Enabled and looks like a deliberate answer.
+        $nested = $script:NetworkExposureQuery.IndexOf('properties.network.publicNetworkAccess')
+        $top    = $script:NetworkExposureQuery.IndexOf('tostring(properties.publicNetworkAccess)')
+        $nested | Should -BeGreaterThan 0
+        $top    | Should -BeGreaterThan 0
+        $nested | Should -BeLessThan $top -Because 'the nested path must be tried first'
+    }
+
+    It 'treats an absent publicNetworkAccess as Enabled' {
+        # Defaulting it the safe-looking way would under-report exposure on every resource that
+        # never had it explicitly set - most of a mature estate.
+        $script:NetworkExposureQuery | Should -Match "isempty\(PublicNetworkAccess\), 'Enabled'"
+    }
+
+    It 'reports App Service IP rules as unknown rather than zero' {
+        # siteConfig.ipSecurityRestrictions comes back trimmed from the ARM GET - empty on 315
+        # of 315 sites - so a site that IS restricted would read as having no rules. int(null)
+        # keeps that visible as a gap instead of an answer.
+        $script:NetworkExposureQuery | Should -Match "microsoft\.web/sites', int\(null\)"
+    }
+
+    It 'separates "reachable from any IP" from "restricted"' {
+        # Not the same question. A resource with a Deny default and no rules at all is
+        # restricted to nobody - a different finding from one that lets anyone in.
+        $script:NetworkExposureQuery | Should -Match 'ReachableFromAnyIp'
+        $script:NetworkExposureQuery | Should -Match "NetworkExposure == 'OpenToAllNetworks'"
+    }
+
+    It 'covers the resource types whose firewalls block a build agent' {
+        foreach ($type in 'microsoft.keyvault/vaults', 'microsoft.storage/storageaccounts',
+                          'microsoft.containerregistry/registries', 'microsoft.sql/servers',
+                          'microsoft.dbformysql/flexibleservers') {
+            $script:NetworkExposureQuery | Should -Match ([regex]::Escape($type))
+        }
+    }
+
+    It 'does not filter, so the denominator survives' {
+        # "1039 of 1309 are open to all networks" is a report; "1039 rows" is not.
+        $script:NetworkExposureQuery | Should -Not -Match '(?m)^\| where ReachableFromAnyIp'
+        $script:NetworkExposureQuery | Should -Not -Match "(?m)^\| where NetworkExposure"
+    }
 }

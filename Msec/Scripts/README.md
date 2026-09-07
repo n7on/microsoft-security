@@ -6,12 +6,48 @@ accidentally be invoked through another.
 
 ```
 Msec/Scripts/
-└── VM/                ← Azure VM Run-Command (Invoke-MsecAzureVMScript)
-    ├── Linux/
-    │   └── *.sh      ← bash scripts (CommandId: RunShellScript)
-    └── Windows/
-        └── *.ps1     ← PowerShell scripts (CommandId: RunPowerShellScript)
+├── VM/                ← Azure VM Run-Command (Invoke-MsecAzureVMScript)
+│   ├── Linux/
+│   │   └── *.sh      ← bash scripts (CommandId: RunShellScript)
+│   └── Windows/
+│       └── *.ps1     ← PowerShell scripts (CommandId: RunPowerShellScript)
+└── Intune/            ← uploaded to Intune, not run by any msec function
+    ├── Windows/
+    │   └── <name>/
+    │       ├── detect.ps1     ← exit 0 clean, exit 1 run the remediation
+    │       ├── remediate.ps1  ← the fix. OPTIONAL - see below
+    │       └── README.md
+    └── macOS/
+        └── <name>/
+            ├── custom-attribute.sh  ← Custom attributes for macOS, not a Remediation
+            └── README.md
 ```
+
+**The remediation half is optional.** Intune allows a remediation with a detection
+script and nothing else, which turns the *Pre-remediation detection output* column
+into a fleet-wide inventory report. `entra-local-admins` is that shape;
+`remove-local-admin` is a full pair.
+
+**macOS has no Remediations feature.** Its equivalent is *Custom attributes for
+macOS* — one script, returns one string, no detect/remediate split. Same folder
+convention so the two platforms sit together.
+
+## Intune/ is the exception to read-only
+
+Every script under `VM/` is read-only and safe to run blindly across a fleet.
+**Scripts under `Intune/` WRITE.** They are Intune Remediations: a detection half
+that reports, and a remediation half that changes the machine on every device the
+assignment covers.
+
+They are also the one channel msec does not execute — you upload them to Intune,
+which runs them on its own schedule. `Get-MsecIntuneScriptResult -Source Remediation`
+reads back what they did.
+
+Each remediation is a folder holding both halves plus a README covering the
+settings it needs and the safety rails it relies on. Detection and remediation
+are separate uploads and nothing in Intune enforces that they agree, so anything
+configured in both — the account to act on, most obviously — is guarded by a test
+in `Msec/Tests/IntuneRemediationScripts.Tests.ps1`.
 
 Future channels follow the same shape — one folder per channel, OS subfolders
 inside:

@@ -199,6 +199,47 @@ Describe 'Get-MsecEntraAppCredential' {
         $saml.SignInAudience  | Should -BeNullOrEmpty
     }
 
+
+    It 'tells a managed identity from an app registration' {
+        # A managed identity's credential is rotated by Azure and is not yours to renew;
+        # listing it beside secrets that need a human is noise. An app registration's
+        # certificate IS yours, and missing it is an outage. Conflating them makes an expiry
+        # report read wrongly in both directions.
+        $rows = InModuleScope Msec {
+            Mock Invoke-MsecGraphRequest -ParameterFilter { $Path -match '/applications' } -MockWith {
+                [pscustomobject]@{ id = 'a1'; appId = 'app-1'; displayName = 'Billing sync'
+                                   passwordCredentials = @([pscustomobject]@{ keyId = 'k1'; endDateTime = [DateTime]::UtcNow.AddDays(30).ToString('o') })
+                                   keyCredentials = @() }
+            }
+            Mock Invoke-MsecGraphRequest -ParameterFilter { $Path -match '/servicePrincipals' } -MockWith {
+                # Graph answers directly where it can.
+                [pscustomobject]@{ id = 'sp1'; appId = 'mi-1'; displayName = 'aks-kubelet'
+                                   servicePrincipalType = 'ManagedIdentity'
+                                   passwordCredentials = @()
+                                   keyCredentials = @([pscustomobject]@{ keyId = 'k2'; endDateTime = [DateTime]::UtcNow.AddDays(60).ToString('o') }) }
+                # No servicePrincipalType: the App Service tag is the fallback, which is how
+                # the Az-based inventories told them apart before that property existed.
+                [pscustomobject]@{ id = 'sp2'; appId = 'mi-2'; displayName = 'web-app-identity'
+                                   tags = @('AppServiceIntegratedApp')
+                                   passwordCredentials = @()
+                                   keyCredentials = @([pscustomobject]@{ keyId = 'k3'; endDateTime = [DateTime]::UtcNow.AddDays(90).ToString('o') }) }
+                # A real SAML app: neither, so it must not be guessed at.
+                [pscustomobject]@{ id = 'sp3'; appId = 'saml-1'; displayName = 'HR portal'
+                                   passwordCredentials = @()
+                                   keyCredentials = @([pscustomobject]@{ keyId = 'k4'; usage = 'Sign'; endDateTime = [DateTime]::UtcNow.AddDays(45).ToString('o') }) }
+            }
+            Get-MsecEntraAppCredential -IncludeServicePrincipal
+        }
+
+        ($rows | Where-Object DisplayName -eq 'Billing sync').PrincipalType     | Should -Be 'Application'
+        ($rows | Where-Object DisplayName -eq 'aks-kubelet').PrincipalType      | Should -Be 'ManagedIdentity'
+        ($rows | Where-Object DisplayName -eq 'web-app-identity').PrincipalType | Should -Be 'ManagedIdentity'
+        # Not invented as 'Application' - an unknown kind is unknown.
+        ($rows | Where-Object DisplayName -eq 'HR portal').PrincipalType        | Should -Be 'Unknown'
+
+        # The rotation list a human actually owns.
+        @($rows | Where-Object PrincipalType -eq 'Application').Count | Should -Be 1
+    }
     It 'names the missing permission on a 403 rather than passing the raw error up' {
         InModuleScope Msec {
             Mock Invoke-MsecGraphRequest -MockWith { throw 'Response status code does not indicate success: 403 (Forbidden).' }

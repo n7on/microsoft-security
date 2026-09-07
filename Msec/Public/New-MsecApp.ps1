@@ -35,6 +35,16 @@ function New-MsecApp {
                              Organization.Read.All, RoleManagement.Read.Directory,
                              User.Read.All, Group.Read.All, Application.Read.All,
                              PrivilegedEligibilitySchedule.Read.AzureADGroup
+          - Office 365 Exchange Online: Exchange.ManageAsApp - only with -Workload Exchange,
+            and NOT sufficient on its own; see the directory role note below.
+          - Office 365 SharePoint Online: Sites.Read.All - only with -Workload SharePoint.
+          - Microsoft Graph: Sites.Read.All - also added by -Workload SharePoint, and NOT the
+            same permission as the line above despite the name. Graph's enumerates sites;
+            SharePoint's reads what is inside one. Enumerating through PnP instead would need
+            Sites.FullControl.All, which is write access to every site in the tenant.
+            This is a DIFFERENT permission from the identically-named one on Microsoft Graph:
+            a token is issued for a resource and carries only the roles granted on THAT
+            resource, so PnP presenting a SharePoint-audience token needs the SharePoint one.
           - WindowsDefenderATP: Score.Read.All, Machine.Read.All, Vulnerability.Read.All -
             commercial-only. Skipped automatically in
             clouds without a Defender for Endpoint presence (e.g. Azure China), since its
@@ -49,6 +59,25 @@ function New-MsecApp {
     .PARAMETER DisplayName
         Display name for the new app registration. Default: 'msec'.
 
+        EXCHANGE ALSO NEEDS A DIRECTORY ROLE, and this is the step that is easy to miss.
+        Exchange.ManageAsApp is necessary but not sufficient: the app's service principal must
+        also hold a directory role. Without one, Connect-MsecExchangeOnline succeeds and then
+        every Get-EXO* call fails with a plain authorisation error naming no permission,
+        because from Exchange's point of view the app authenticated and has no rights.
+
+        -Workload Exchange assigns it. That is a real tenant-wide privilege grant rather than
+        an API permission, which is why the workloads are opt-in and why creating the
+        assignment needs Privileged Role Administrator - a higher bar than the rest of this
+        command. If the caller lacks it, everything else is still configured and a warning says
+        exactly what to assign by hand.
+
+    .PARAMETER Workload
+        Extra workloads to configure: Exchange, SharePoint, or both. Omitted by default -
+        each needs fresh admin consent, and Exchange needs a directory role.
+
+    .PARAMETER ExchangeDirectoryRole
+        Which directory role to give the app for Exchange. Default 'Global Reader', the
+        least-privilege option that can read mailbox permissions.
     .PARAMETER KeyVaultName
         Name of an existing Azure Key Vault that will store the certificate.
 
@@ -69,7 +98,30 @@ function New-MsecApp {
         [Parameter()][string] $DisplayName = 'msec',
         [Parameter(Mandatory)][string] $KeyVaultName,
         [Parameter()][string] $CertificateName = 'msec-app',
-        [Parameter()][ValidateRange(1, 24)][int] $ValidityMonths = 24
+        [Parameter()][ValidateRange(1, 24)][int] $ValidityMonths = 24,
+
+        # Workloads beyond Graph and Defender. OPT-IN, and deliberately not the default:
+        #
+        #   Exchange   needs Exchange.ManageAsApp AND a DIRECTORY ROLE on the app's service
+        #              principal. A directory role is a real privilege grant, it is not
+        #              something to hand out as a side effect of running a bootstrap, and
+        #              creating one needs Privileged Role Administrator - a higher bar than
+        #              the rest of this command.
+        #   SharePoint needs Sites.Read.All on the SHAREPOINT service principal, which is a
+        #              different permission from the identically-named one on Microsoft Graph.
+        #
+        # Both need fresh admin consent. Ask for them only when the Exchange or SharePoint
+        # commands are actually going to be used.
+        [Parameter()]
+        [ValidateSet('Exchange', 'SharePoint')]
+        [string[]] $Workload,
+
+        # The directory role to give the app for Exchange. Global Reader is the least-privilege
+        # option that works for reading mailbox permissions; Exchange Administrator is the
+        # alternative and grants far more than this module needs.
+        [Parameter()]
+        [ValidateSet('Global Reader', 'Exchange Administrator', 'Exchange Recipient Administrator')]
+        [string] $ExchangeDirectoryRole = 'Global Reader'
     )
 
     $ctx = Get-AzContext -ErrorAction SilentlyContinue
@@ -171,6 +223,44 @@ function New-MsecApp {
         Write-Warning "Defender for Endpoint is not available in '$($envInfo.EnvironmentName)' - skipping the WindowsDefenderATP permissions (Score.Read.All, Machine.Read.All, Vulnerability.Read.All). Defender score, device and vulnerability functions will be unavailable in this cloud."
     }
 
+    # Exchange and SharePoint, when asked for. Their permissions live on their OWN service
+    # principals, not on Microsoft Graph - a token is issued FOR a resource and carries only
+    # the roles granted on that resource, so Graph's User.Read.All buys nothing in either.
+    #
+    # Sites.Read.All in particular exists on BOTH Microsoft Graph and the SharePoint service
+    # principal, with the same name and different meanings. PnP presents a SharePoint-audience
+    # token, so it is the SharePoint one that matters; granting the Graph one looks correct in
+    # the portal and still fails.
+    if ($Workload -contains 'Exchange') {
+        $resources += @{
+            Name       = 'Office 365 Exchange Online'
+            AppId      = '00000002-0000-0ff1-ce00-000000000000'
+            RoleValues = @('Exchange.ManageAsApp')   # necessary, and NOT sufficient - see the role assignment below
+        }
+    }
+    if ($Workload -contains 'SharePoint') {
+        $resources += @{
+            Name       = 'Office 365 SharePoint Online'
+            AppId      = '00000003-0000-0ff1-ce00-000000000000'
+            RoleValues = @('Sites.Read.All')
+        }
+
+        # AND the Graph one, which despite the identical name is a separate permission on a
+        # separate resource. Both are needed and they do different jobs:
+        #
+        #   SharePoint's  reads a site's CONTENTS through PnP - its own Owners/Members groups,
+        #                 which Graph does not expose at all.
+        #   Graph's       ENUMERATES sites. The alternative is Get-PnPTenantSite, which talks to
+        #                 the SharePoint tenant-admin API and accepts nothing less than
+        #                 Sites.FullControl.All - full write and delete over every site in the
+        #                 tenant, for a list of site names. Not a trade worth making for a
+        #                 read-only module.
+        $graphResource = $resources | Where-Object Name -eq 'Microsoft Graph' | Select-Object -First 1
+        if ($graphResource -and $graphResource.RoleValues -notcontains 'Sites.Read.All') {
+            $graphResource.RoleValues += 'Sites.Read.All'
+        }
+    }
+
     # Resolve each requested role to its app-role GUID. Sovereign clouds (notably Azure
     # China) expose a REDUCED set of Microsoft Graph app roles - some security permissions
     # like SecurityEvents.Read.All simply don't exist there. Rather than hard-fail on the
@@ -180,7 +270,21 @@ function New-MsecApp {
     $missingRoles = @()
     foreach ($r in $resources) {
         Write-Verbose "Resolving $($r.Name) service principal and app roles"
-        $sp = & $graph GET "/v1.0/servicePrincipals(appId='$($r.AppId)')"
+
+        # A resource whose service principal is absent must not abort the whole bootstrap. It
+        # happens for real: a tenant with no Exchange Online, a sovereign cloud without
+        # SharePoint. Same philosophy as the Defender skip - warn, drop that resource, and
+        # configure everything else.
+        $sp = $null
+        try { $sp = & $graph GET "/v1.0/servicePrincipals(appId='$($r.AppId)')" }
+        catch {
+            Write-Warning "The '$($r.Name)' service principal (appId $($r.AppId)) could not be resolved in this tenant, so its permissions are skipped: $($_.Exception.Message)"
+            $missingRoles += @($r.RoleValues | ForEach-Object { "$($r.Name): $_ (service principal not found)" })
+            $r.ResourceSpId = $null
+            $r.Roles = @()
+            continue
+        }
+
         $r.ResourceSpId = $sp.id
         $r.Roles = @(foreach ($rv in $r.RoleValues) {
             $role = $sp.appRoles | Where-Object {
@@ -382,6 +486,70 @@ function New-MsecApp {
         Write-Host 'Run Disconnect-Msec then Connect-Msec to pick up the new permissions - a cached token predates the grant and will still be refused.' -ForegroundColor Yellow
     }
 
+    # ---- Exchange needs a DIRECTORY ROLE, not just an app role -------------------------------
+    #
+    # This is the step people miss, and Exchange gives no help finding it: with
+    # Exchange.ManageAsApp granted and consented but no directory role, every EXO cmdlet fails
+    # with a plain authorisation error that names no missing permission. From Exchange's point
+    # of view the app authenticated correctly and simply has no rights.
+    #
+    # A directory role is a REAL privilege grant on the tenant, which is why the whole thing is
+    # behind -Workload rather than being done by default, and why it is confirmed separately
+    # below. Global Reader is the least-privilege option that can read mailbox permissions.
+    $directoryRole = $null
+
+    if ($Workload -contains 'Exchange') {
+        $roleAssigned = $false
+        try {
+            # Role DEFINITIONS are per tenant but their templateIds are well known. Resolved by
+            # displayName so this does not carry a table of GUIDs that drift.
+            $filter = [uri]::EscapeDataString("displayName eq '$ExchangeDirectoryRole'")
+            $definition = @((& $graph GET "/v1.0/roleManagement/directory/roleDefinitions?`$filter=$filter").value)[0]
+
+            if (-not $definition) {
+                Write-Warning "The directory role '$ExchangeDirectoryRole' does not exist in this tenant, so it was NOT assigned. Exchange commands will fail until the app holds a directory role."
+            }
+            else {
+                # Already assigned? Re-running must be a no-op, like the rest of this command.
+                $assignFilter = [uri]::EscapeDataString("principalId eq '$($appSp.id)' and roleDefinitionId eq '$($definition.id)'")
+                $existing = @((& $graph GET "/v1.0/roleManagement/directory/roleAssignments?`$filter=$assignFilter").value)
+
+                if ($existing.Count) {
+                    $roleAssigned = $true
+                    $directoryRole = "$ExchangeDirectoryRole (already assigned)"
+                    Write-Host "  Directory role '$ExchangeDirectoryRole' already assigned." -ForegroundColor DarkGray
+                }
+                else {
+                    Write-Host ''
+                    Write-Host "About to assign the DIRECTORY ROLE '$ExchangeDirectoryRole' to this app." -ForegroundColor Yellow
+                    Write-Host '  This is a tenant-wide privilege grant, not an API permission. Exchange will not' -ForegroundColor Yellow
+                    Write-Host '  work without it, but it is worth knowing you are making it.' -ForegroundColor Yellow
+
+                    & $graph POST '/v1.0/roleManagement/directory/roleAssignments' @{
+                        '@odata.type'    = '#microsoft.graph.unifiedRoleAssignment'
+                        roleDefinitionId = $definition.id
+                        principalId      = $appSp.id
+                        directoryScopeId = '/'
+                    } | Out-Null
+
+                    $roleAssigned = $true
+                    $directoryRole = $ExchangeDirectoryRole
+                    Write-Host "  Assigned directory role '$ExchangeDirectoryRole'." -ForegroundColor Green
+                }
+            }
+        }
+        catch {
+            # Creating a role assignment needs Privileged Role Administrator - a higher bar than
+            # the rest of this command, so the caller may legitimately not have it. Said clearly
+            # rather than failing the whole bootstrap, since everything else did work.
+            Write-Warning "Could not assign the directory role '$ExchangeDirectoryRole' to the app. Exchange commands will fail until someone with Privileged Role Administrator assigns it - in the portal: Entra ID > Roles and administrators > $ExchangeDirectoryRole > Add assignment > pick the '$($app.displayName)' application. Original error: $($_.Exception.Message)"
+        }
+
+        if (-not $roleAssigned) {
+            Write-Warning "Exchange.ManageAsApp on its own is NOT enough. Until the app holds a directory role, Connect-MsecExchangeOnline will connect and every Get-EXO* call will then fail with an authorisation error that names nothing."
+        }
+    }
+
     [PSCustomObject]@{
         TenantId        = $tenantId
         ClientId        = $clientId
@@ -395,5 +563,8 @@ function New-MsecApp {
         GrantedNow      = $grantedNow.ToArray()
         AlreadyGranted  = $alreadyGranted.ToArray()
         UnavailableRoles = @($missingRoles)
+        # Null unless -Workload included Exchange. Worth asserting on: it is the difference
+        # between an Exchange connection that works and one that authenticates and then fails.
+        DirectoryRole   = $directoryRole
     }
 }

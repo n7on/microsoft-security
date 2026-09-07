@@ -165,6 +165,7 @@ Projection (Graph field path -\> output property):
   *Credentials\[\].endDateTime        -\> EndDateTime
   \<derived\>                         -\> DaysUntilExpiry, IsExpired, LifetimeDays
   signInAudience                    -\> SignInAudience  (null on service principals)
+  servicePrincipalType / tags       -\> PrincipalType   ('Application' / 'ManagedIdentity' / ...)
   createdDateTime                   -\> CreatedDateTime
   \<entire app / SP object verbatim\> -\> Raw
 

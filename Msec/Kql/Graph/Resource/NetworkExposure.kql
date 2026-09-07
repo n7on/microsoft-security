@@ -1,0 +1,123 @@
+// One row per resource that has a network exposure setting, across every accessible
+// subscription - "what can be reached from the public internet, and what restricts by IP".
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Resource -Name NetworkExposure.
+// No filtering is applied here - filter the output in PowerShell:
+//   # everything reachable from anywhere:
+//   Search-MsecAzureResourceGraph -ResourceType Resource -Name NetworkExposure |
+//       Where-Object NetworkExposure -eq 'OpenToAllNetworks'
+//
+//   # would a build agent on a dynamic IP be blocked?
+//   ... | Where-Object { $_.NetworkExposure -eq 'Restricted' -and $_.IpRuleCount -gt 0 }
+//
+// WHY THIS EXISTS ALONGSIDE KeyVault/NetworkRules.kql AND Storage/NetworkRules.kql. Those two
+// answer the question per RULE for one resource type - which addresses are allowed into this
+// vault, and is each rule actually enforcing. This one answers it per RESOURCE across twelve
+// types, so the estate-wide question needs one query rather than one per type. Use those for
+// the detail; use this to find where to look.
+//
+// EVERY TYPE STORES THIS SOMEWHERE DIFFERENT, and the differences are real rather than
+// cosmetic. Verified against a live estate of ~1300 resources:
+//   publicNetworkAccess              vaults, storage, app services, SQL, registries, Redis,
+//                                    Event Hub, Service Bus, Search, Cognitive Services
+//   properties.network.publicNetworkAccess    MySQL flexible servers - NESTED, and reading the
+//                                    top-level path returns empty for all of them
+//   networkAcls.defaultAction        vaults, storage, Cognitive Services
+//   networkRuleSet.defaultAction     container registries
+// Coalescing across the paths is what keeps a type from silently reporting 'Unknown' because
+// its setting lives one level down.
+//
+// ABSENT publicNetworkAccess MEANS ENABLED, not unknown. Defaulting it the safe-looking way
+// would under-report exposure on every resource that never had it explicitly set, which on a
+// mature estate is most of them.
+//
+// NOT COVERED: App Service access restrictions. They live in siteConfig.ipSecurityRestrictions,
+// which the ARM GET returns trimmed - verified empty on 315 of 315 sites - so a site that IS
+// IP-restricted reads here as open. IpRuleCount is null rather than 0 for that type, so the
+// gap is visible rather than looking like an answer. See AppService/All.kql for the same note.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type in~ (
+    'microsoft.keyvault/vaults',
+    'microsoft.storage/storageaccounts',
+    'microsoft.web/sites',
+    'microsoft.sql/servers',
+    'microsoft.dbformysql/flexibleservers',
+    'microsoft.containerregistry/registries',
+    'microsoft.documentdb/databaseaccounts',
+    'microsoft.cache/redis',
+    'microsoft.eventhub/namespaces',
+    'microsoft.servicebus/namespaces',
+    'microsoft.search/searchservices',
+    'microsoft.cognitiveservices/accounts')
+| extend ResourceKind = case(
+             type =~ 'microsoft.keyvault/vaults',              'Key Vault',
+             type =~ 'microsoft.storage/storageaccounts',      'Storage Account',
+             type =~ 'microsoft.web/sites',                    'App Service',
+             type =~ 'microsoft.sql/servers',                  'SQL Server',
+             type =~ 'microsoft.dbformysql/flexibleservers',   'MySQL Flexible Server',
+             type =~ 'microsoft.containerregistry/registries', 'Container Registry',
+             type =~ 'microsoft.documentdb/databaseaccounts',  'Cosmos DB',
+             type =~ 'microsoft.cache/redis',                  'Redis',
+             type =~ 'microsoft.eventhub/namespaces',          'Event Hub',
+             type =~ 'microsoft.servicebus/namespaces',        'Service Bus',
+             type =~ 'microsoft.search/searchservices',        'Search Service',
+             type =~ 'microsoft.cognitiveservices/accounts',   'Cognitive Services',
+             type)
+// The nested path is tried first: MySQL flexible servers carry nothing at the top level, so
+// the other order would report every one of them as having no setting.
+| extend PublicNetworkAccess = coalesce(
+             tostring(properties.network.publicNetworkAccess),
+             tostring(properties.publicNetworkAccess),
+             '')
+| extend DefaultAction = coalesce(
+             tostring(properties.networkAcls.defaultAction),
+             tostring(properties.networkRuleSet.defaultAction),
+             '')
+| extend IpRuleCount = case(
+             // See the note above: siteConfig is trimmed, so this is unknown rather than zero.
+             type =~ 'microsoft.web/sites', int(null),
+             coalesce(array_length(properties.networkAcls.ipRules),
+                      array_length(properties.networkRuleSet.ipRules),
+                      array_length(properties.ipRules),
+                      0))
+| extend VnetRuleCount = coalesce(array_length(properties.networkAcls.virtualNetworkRules),
+                                  array_length(properties.networkRuleSet.virtualNetworkRules),
+                                  0),
+         PrivateEndpointCount = coalesce(array_length(properties.privateEndpointConnections), 0)
+// Absent means Enabled - see the note above.
+| extend PublicNetworkAccess = iff(isempty(PublicNetworkAccess), 'Enabled', PublicNetworkAccess)
+| extend NetworkExposure = case(
+             PublicNetworkAccess =~ 'Disabled',           'PrivateOnly',
+             // Network Security Perimeter governs access instead of the resource firewall.
+             PublicNetworkAccess =~ 'SecuredByPerimeter', 'SecuredByPerimeter',
+             isempty(DefaultAction) or DefaultAction =~ 'Allow', 'OpenToAllNetworks',
+             'Restricted')
+// Would a caller on an unpredictable address get in? That is the practical question behind a
+// build agent, a home connection or anything else without a fixed IP - and it is not the same
+// as 'is this restricted': a resource with a Deny default and no rules at all is restricted to
+// nobody, which is a different finding again.
+| extend ReachableFromAnyIp = NetworkExposure == 'OpenToAllNetworks'
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project ResourceKind,
+          Name              = name,
+          NetworkExposure,
+          ReachableFromAnyIp,
+          PublicNetworkAccess,
+          DefaultAction,
+          IpRuleCount,
+          VnetRuleCount,
+          PrivateEndpointCount,
+          ResourceGroupName = resourceGroup,
+          Location          = location,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Id                = id
+| order by ReachableFromAnyIp desc, ResourceKind asc, SubscriptionName asc, Name asc

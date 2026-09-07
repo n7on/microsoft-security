@@ -49,7 +49,7 @@ Mock Invoke-RestMethod -MockWith {
     $script:Calls.Add([pscustomobject]@{ Method = [string]$Method; Uri = [string]$Uri; Body = $parsed })
     $u = [string]$Uri
 
-    if ($u -match "servicePrincipals\(appId='00000003-") {
+    if ($u -match "servicePrincipals\(appId='00000003-0000-0000-c000-") {
         # Graph exposes every application role msec asks for.
         return [pscustomobject]@{
             id = 'sp-graph'
@@ -63,6 +63,27 @@ Mock Invoke-RestMethod -MockWith {
             [pscustomobject]@{ value = 'Score.Read.All';         id = 'role-score'; allowedMemberTypes = @('Application') }
             [pscustomobject]@{ value = 'Machine.Read.All';       id = 'role-machine'; allowedMemberTypes = @('Application') }
             [pscustomobject]@{ value = 'Vulnerability.Read.All'; id = 'role-vuln'; allowedMemberTypes = @('Application') }) }
+    }
+    # Office 365 Exchange Online and SharePoint - only reached with -Workload.
+    if ($u -match "servicePrincipals\(appId='00000002-0000-0ff1-ce00-") {
+        if ($script:ExchangeSpMissing) { throw 'Request_ResourceNotFound' }
+        return [pscustomobject]@{ id = 'sp-exo'; appRoles = @(
+            [pscustomobject]@{ value = 'Exchange.ManageAsApp'; id = 'role-exo'; allowedMemberTypes = @('Application') }) }
+    }
+    if ($u -match "servicePrincipals\(appId='00000003-0000-0ff1-ce00-") {
+        return [pscustomobject]@{ id = 'sp-spo'; appRoles = @(
+            [pscustomobject]@{ value = 'Sites.Read.All'; id = 'role-spo-sites'; allowedMemberTypes = @('Application') }) }
+    }
+    if ($u -match '/roleManagement/directory/roleDefinitions') {
+        if ($script:RoleDefinitionMissing) { return [pscustomobject]@{ value = @() } }
+        return [pscustomobject]@{ value = @([pscustomobject]@{ id = 'roledef-globalreader'; displayName = 'Global Reader' }) }
+    }
+    if ($u -match '/roleManagement/directory/roleAssignments') {
+        if ($Method -eq 'POST') {
+            if ($script:RoleAssignDenied) { throw 'Authorization_RequestDenied' }
+            return [pscustomobject]@{ id = 'assignment-1' }
+        }
+        return [pscustomobject]@{ value = @($script:ExistingRoleAssignments) }
     }
     if ($u -match '/applications\?\$filter=') {
         return [pscustomobject]@{ value = @([pscustomobject]@{
@@ -263,6 +284,131 @@ Describe 'New-MsecApp' {
             @($out.Result.UnavailableRoles).Count | Should -Be 12
             ($out.Warnings -join "`n") | Should -Match 'not available'
             ($out.Warnings -join "`n") | Should -Match 'Group\.Read\.All'
+        }
+    }
+
+    Context 'workloads beyond Graph and Defender' {
+
+        BeforeEach {
+            InModuleScope Msec {
+                $script:GraphRoleValues = @('SecurityEvents.Read.All', 'Policy.Read.All')
+                $script:ExistingRRA = @()
+                $script:ExistingGrants = @()
+                $script:ExistingRoleAssignments = @()
+                $script:RoleAssignDenied = $false
+                $script:RoleDefinitionMissing = $false
+                $script:ExchangeSpMissing = $false
+                # Shared across the whole file and never cleared otherwise, so "no calls of
+                # this kind were made" would be answered by an earlier test's calls.
+                $script:Calls = [System.Collections.Generic.List[object]]::new()
+            }
+        }
+
+        It 'grants nothing extra unless a workload is asked for' {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                New-MsecApp -KeyVaultName 'kv-test' -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Calls = @($script:Calls) }
+            }
+
+            # Exchange needs a directory role and SharePoint needs fresh consent, so neither is
+            # a side effect of an ordinary bootstrap.
+            @($out.Calls | Where-Object Uri -match '0ff1-ce00').Count | Should -Be 0
+            # The DIRECTORY role path specifically. Matching bare 'roleAssignments' also
+            # catches '/appRoleAssignments', which every ordinary grant uses - so the loose
+            # pattern counts six routine calls and reads as a failure.
+            @($out.Calls | Where-Object Uri -match '/roleManagement/directory/roleAssignments').Count | Should -Be 0
+        }
+
+        It 'grants SharePoint on the SharePoint service principal, not on Graph' {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $result = New-MsecApp -KeyVaultName 'kv-test' -Workload SharePoint -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Result = $result; Calls = @($script:Calls) }
+            }
+
+            # Sites.Read.All exists on BOTH Microsoft Graph and SharePoint with the same name.
+            # PnP presents a SharePoint-audience token, so the grant must target sp-spo -
+            # granting the Graph one looks right in the portal and still fails.
+            $grant = @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/appRoleAssignments' -and $_.Body.appRoleId -eq 'role-spo-sites' })
+            @($grant).Count | Should -Be 1
+            $grant[0].Body.resourceId | Should -Be 'sp-spo'
+
+            $out.Result.GrantedNow | Should -Contain 'Office 365 SharePoint Online: Sites.Read.All'
+            # SharePoint needs no directory role - that is Exchange's problem alone.
+            $out.Result.DirectoryRole | Should -BeNullOrEmpty
+        }
+
+        It 'assigns the directory role for Exchange, because the app role alone is not enough' {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $result = New-MsecApp -KeyVaultName 'kv-test' -Workload Exchange -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Result = $result; Calls = @($script:Calls) }
+            }
+
+            # The app role...
+            @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Body.appRoleId -eq 'role-exo' }).Count | Should -Be 1
+
+            # ...AND the directory role. Without the second, every Get-EXO* fails with an
+            # authorisation error that names no missing permission.
+            $assign = @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/roleManagement/directory/roleAssignments' })
+            @($assign).Count | Should -Be 1
+            $assign[0].Body.roleDefinitionId | Should -Be 'roledef-globalreader'
+            $assign[0].Body.principalId      | Should -Be 'sp-app-1'
+            $assign[0].Body.directoryScopeId | Should -Be '/'
+
+            $out.Result.DirectoryRole | Should -Be 'Global Reader'
+        }
+
+        It 'does not re-assign a directory role the app already holds' {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $script:ExistingRoleAssignments = @([pscustomobject]@{ id = 'existing'; principalId = 'sp-app-1'; roleDefinitionId = 'roledef-globalreader' })
+                $result = New-MsecApp -KeyVaultName 'kv-test' -Workload Exchange -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Result = $result; Calls = @($script:Calls) }
+            }
+
+            # Re-running must be a no-op, like the rest of this command.
+            @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/roleManagement/directory/roleAssignments' }).Count | Should -Be 0
+            $out.Result.DirectoryRole | Should -Match 'already assigned'
+        }
+
+        It 'configures everything else when the caller cannot assign a directory role' {
+            $warnings = @()
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                # Creating a role assignment needs Privileged Role Administrator - a higher bar
+                # than the rest of this command, so a caller may legitimately not have it.
+                $script:RoleAssignDenied = $true
+                New-MsecApp -KeyVaultName 'kv-test' -Workload Exchange 6>$null
+            } -WarningVariable warnings -WarningAction SilentlyContinue
+
+            # The app roles still landed; only the role assignment failed.
+            $out.GrantedNow | Should -Contain 'Office 365 Exchange Online: Exchange.ManageAsApp'
+            $out.DirectoryRole | Should -BeNullOrEmpty
+            ($warnings -join ' ') | Should -Match 'Privileged Role Administrator'
+            ($warnings -join ' ') | Should -Match 'NOT enough'
+        }
+
+        It 'skips a workload whose service principal does not exist in the tenant' {
+            $warnings = @()
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                # A tenant with no Exchange Online. Must not abort the whole bootstrap.
+                $script:ExchangeSpMissing = $true
+                New-MsecApp -KeyVaultName 'kv-test' -Workload Exchange 6>$null
+            } -WarningVariable warnings -WarningAction SilentlyContinue
+
+            $out.UnavailableRoles -join ' ' | Should -Match 'service principal not found'
+            ($warnings -join ' ') | Should -Match 'could not be resolved'
+            # The Graph roles were still configured.
+            @($out.GrantedNow).Count | Should -BeGreaterThan 0
         }
     }
 }

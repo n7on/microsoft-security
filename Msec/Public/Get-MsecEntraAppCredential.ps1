@@ -97,6 +97,7 @@ function Get-MsecEntraAppCredential {
           *Credentials[].endDateTime        -> EndDateTime
           <derived>                         -> DaysUntilExpiry, IsExpired, LifetimeDays
           signInAudience                    -> SignInAudience  (null on service principals)
+          servicePrincipalType / tags       -> PrincipalType   ('Application' / 'ManagedIdentity' / ...)
           createdDateTime                   -> CreatedDateTime
           <entire app / SP object verbatim> -> Raw
 
@@ -173,8 +174,26 @@ function Get-MsecEntraAppCredential {
         # No signInAudience on a service principal - it is a property of the registration,
         # not of the tenant-local object - so it is left out of the $select rather than
         # asked for and silently returned null.
-        $spSelect = 'id,appId,displayName,createdDateTime,passwordCredentials,keyCredentials'
+        $spSelect = 'id,appId,displayName,createdDateTime,servicePrincipalType,tags,passwordCredentials,keyCredentials'
         $servicePrincipals = & $get "/v1.0/servicePrincipals?`$select=$spSelect" '/servicePrincipals' 'Application.Read.All'
+    }
+
+    # MANAGED IDENTITIES ARE NOT APP REGISTRATIONS, and conflating them makes an expiry report
+    # read wrongly in both directions. A managed identity's credential is rotated by Azure and
+    # is not yours to renew - listing it beside secrets that need a human is noise. An app
+    # registration's certificate IS yours, and missing it is an outage.
+    #
+    # servicePrincipalType is the authoritative answer where Graph gives one
+    # ('ManagedIdentity', 'Application', 'Legacy', 'SocialIdp'). The tag is the fallback: an
+    # App Service with a system-assigned identity carries 'AppServiceIntegratedApp', which is
+    # how the Az-based inventories told them apart before that property existed.
+    $principalType = {
+        param($Object, $ObjectType)
+        if ($ObjectType -ne 'ServicePrincipal') { return 'Application' }
+        $type = [string] $Object.servicePrincipalType
+        if ($type) { return $type }
+        if (@($Object.tags) -contains 'AppServiceIntegratedApp') { return 'ManagedIdentity' }
+        return 'Unknown'
     }
 
     $emit = {
@@ -210,6 +229,7 @@ function Get-MsecEntraAppCredential {
                 IsExpired       = $null
                 LifetimeDays    = $null
                 SignInAudience  = $Object.signInAudience
+                PrincipalType   = & $principalType $Object $ObjectType
                 CreatedDateTime = & $toUtc $Object.createdDateTime
                 Raw             = $Object
             }
@@ -246,6 +266,7 @@ function Get-MsecEntraAppCredential {
                 IsExpired       = $isExpired
                 LifetimeDays    = $lifetime
                 SignInAudience  = $Object.signInAudience
+                PrincipalType   = & $principalType $Object $ObjectType
                 CreatedDateTime = & $toUtc $Object.createdDateTime
                 Raw             = $Object
             }

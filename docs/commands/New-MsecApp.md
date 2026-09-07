@@ -16,7 +16,7 @@ Safe to re-run.
 
 ```
 New-MsecApp [[-DisplayName] <String>] [-KeyVaultName] <String> [[-CertificateName] <String>]
- [[-ValidityMonths] <Int32>] [<CommonParameters>]
+ [[-ValidityMonths] <Int32>] [[-Workload] <String[]>] [[-ExchangeDirectoryRole] <String>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -63,6 +63,18 @@ Current required permissions (configured at the top of the function in $resource
                      Organization.Read.All, RoleManagement.Read.Directory,
                      User.Read.All, Group.Read.All, Application.Read.All,
                      PrivilegedEligibilitySchedule.Read.AzureADGroup
+  - Office 365 Exchange Online: Exchange.ManageAsApp - only with -Workload Exchange,
+    and NOT sufficient on its own; see the directory role note below.
+  - Office 365 SharePoint Online: Sites.Read.All - only with -Workload SharePoint.
+  - Microsoft Graph: Sites.Read.All - also added by -Workload SharePoint, and NOT the
+    same permission as the line above despite the name.
+Graph's enumerates sites;
+    SharePoint's reads what is inside one.
+Enumerating through PnP instead would need
+    Sites.FullControl.All, which is write access to every site in the tenant.
+    This is a DIFFERENT permission from the identically-named one on Microsoft Graph:
+    a token is issued for a resource and carries only the roles granted on THAT
+    resource, so PnP presenting a SharePoint-audience token needs the SharePoint one.
   - WindowsDefenderATP: Score.Read.All, Machine.Read.All, Vulnerability.Read.All -
     commercial-only.
 Skipped automatically in
@@ -91,6 +103,21 @@ $app = New-MsecApp -KeyVaultName 'kv-mysec'
 ### -DisplayName
 Display name for the new app registration.
 Default: 'msec'.
+
+EXCHANGE ALSO NEEDS A DIRECTORY ROLE, and this is the step that is easy to miss.
+Exchange.ManageAsApp is necessary but not sufficient: the app's service principal must
+also hold a directory role.
+Without one, Connect-MsecExchangeOnline succeeds and then
+every Get-EXO* call fails with a plain authorisation error naming no permission,
+because from Exchange's point of view the app authenticated and has no rights.
+
+-Workload Exchange assigns it.
+That is a real tenant-wide privilege grant rather than
+an API permission, which is why the workloads are opt-in and why creating the
+assignment needs Privileged Role Administrator - a higher bar than the rest of this
+command.
+If the caller lacks it, everything else is still configured and a warning says
+exactly what to assign by hand.
 
 ```yaml
 Type: String
@@ -147,6 +174,40 @@ Aliases:
 Required: False
 Position: 4
 Default value: 24
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -Workload
+Extra workloads to configure: Exchange, SharePoint, or both.
+Omitted by default -
+each needs fresh admin consent, and Exchange needs a directory role.
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 5
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -ExchangeDirectoryRole
+Which directory role to give the app for Exchange.
+Default 'Global Reader', the
+least-privilege option that can read mailbox permissions.
+
+```yaml
+Type: String
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 6
+Default value: Global Reader
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

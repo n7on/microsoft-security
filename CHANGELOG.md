@@ -5,6 +5,234 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Get-MsecSharePointSite` - every site in the tenant, classified. Completes the SharePoint
+  access review: enumerate with this, then read each site's owners and members with
+  `Get-MsecSharePointSiteUser -Url`.
+
+  ENUMERATED THROUGH GRAPH, NOT THE TENANT-ADMIN API, and the reason is privilege.
+  `Get-PnPTenantSite` talks to the SharePoint tenant-admin endpoint, which accepts nothing less
+  than `Sites.FullControl.All` - full read, WRITE and DELETE over every site in the tenant. For
+  a list of site names, in a read-only module, that is a bad trade. Graph answers the same
+  question with `Sites.Read.All`.
+
+  MOST OF WHAT GRAPH CALLS A SITE IS NOT ONE. On a live tenant `/sites?search=*` returned 432
+  results of which 286 were app containers - the backing storage for Loop workspaces, Designer
+  files and similar, one per artefact. Running a site access review across those is noise and
+  hundreds of wasted calls, so `SiteType` classifies them (SiteCollection / AppContainer /
+  Personal / Root) and the default excludes all but real sites: 146 instead of 432. `-All`
+  returns everything classified, because "146 of 432" is a finding and "146" is not.
+
+- `New-MsecApp -Workload SharePoint` now also grants `Sites.Read.All` on MICROSOFT GRAPH,
+  alongside the SharePoint one it already granted. Despite the identical name these are
+  separate permissions on separate resources, and both are needed: Graph's enumerates sites,
+  SharePoint's lets PnP read what is inside one. Having either alone fails in a way that looks
+  like the other is missing.
+- Exchange Online and SharePoint support, reached the same way everything else is - a token
+  signed inside Key Vault, so no certificate reaches the machine:
+  - `Connect-MsecExchangeOnline` / `Get-MsecExchangeMailboxPermission` - who can open which
+    shared mailbox. Standing delegated access that appears in NO Entra-side review: not in
+    group membership, not in a directory role, not in Conditional Access.
+  - `Connect-MsecSharePointOnline` / `Get-MsecSharePointSiteUser` - site Owners and Members,
+    with security groups expanded to the people inside them.
+
+  THESE ARE THREE DIFFERENT TOKENS, NOT ONE. Entra issues a token FOR a resource, carrying only
+  the app roles granted on that resource's service principal - so Graph's `User.Read.All` buys
+  nothing in Exchange or SharePoint, and a Graph token presented to either is rejected outright.
+  Only the signing key is shared.
+
+  | Command | Audience | Roles come from |
+  |---|---|---|
+  | `Connect-MsecGraphSdk` | `graph.microsoft.com` | Microsoft Graph SP |
+  | `Connect-MsecExchangeOnline` | `outlook.office365.com` | Office 365 Exchange Online SP |
+  | `Connect-MsecSharePointOnline` | the site HOST | Office 365 SharePoint Online SP |
+
+  A SharePoint token's audience is the site HOST, so `contoso.sharepoint.com` and
+  `contoso-admin.sharepoint.com` need separate tokens - which matters because tenant cmdlets
+  like `Get-PnPTenantSite` only work against the admin host.
+
+  Both modules take `-AccessToken` as a plain STRING; `Connect-MgGraph` is the odd one out in
+  wanting a SecureString. Verified against ExchangeOnlineManagement 3.10.1 and PnP.PowerShell
+  3.4.1. Neither is an msec dependency - both are imported only when their command is called.
+
+  Neither workload could reach Graph anyway: mailbox permissions have no Graph endpoint at all,
+  and a site's own SharePoint groups - the permission model for classic sites - are not exposed
+  there either.
+
+- `New-MsecApp -Workload Exchange, SharePoint` configures the permissions those need. OPT-IN,
+  because each needs fresh admin consent and Exchange needs more than a permission.
+
+  EXCHANGE NEEDS A DIRECTORY ROLE, NOT JUST AN APP ROLE, and this is the step that is missed.
+  With `Exchange.ManageAsApp` granted and consented but no directory role, the connection
+  SUCCEEDS and then every `Get-EXO*` call fails with a plain authorisation error naming no
+  missing permission - from Exchange's point of view the app authenticated and has no rights.
+  `-Workload Exchange` assigns one (`Global Reader` by default, the least-privilege option that
+  can read mailbox permissions).
+
+  That is a real tenant-wide privilege grant rather than an API permission, which is why the
+  workloads are opt-in, why it is announced before being made, and why it is idempotent. It
+  needs Privileged Role Administrator - a higher bar than the rest of the command - and a
+  caller without it still gets everything else configured plus a warning saying exactly what to
+  assign by hand.
+
+  `Sites.Read.All` is granted on the SHAREPOINT service principal, not the Graph one. The two
+  permissions share a name and are not the same: PnP presents a SharePoint-audience token, so
+  granting the Graph one looks right in the portal and still fails.
+
+  A resource whose service principal does not exist in the tenant - no Exchange Online, a
+  sovereign cloud without SharePoint - is now skipped with a warning rather than aborting the
+  bootstrap, matching how unavailable app roles were already handled.
+- `Kql/Graph/Resource/NetworkExposure.kql`, reached as
+  `Search-MsecAzureResourceGraph -ResourceType Resource -Name NetworkExposure` - one row per
+  resource that has a network exposure setting, across twelve types: what is reachable from the
+  public internet and what restricts by IP.
+
+  It complements rather than duplicates `KeyVault/NetworkRules.kql` and
+  `Storage/NetworkRules.kql`. Those answer the question per RULE for one type - which addresses
+  are allowed in, and whether each rule is actually enforcing. This answers it per RESOURCE
+  across the estate, so finding where to look no longer needs one query per type.
+
+  EVERY TYPE STORES IT SOMEWHERE DIFFERENT, verified against ~1300 live resources. MySQL
+  flexible servers carry `publicNetworkAccess` at `properties.network.publicNetworkAccess` and
+  nothing at the top level, so the paths are coalesced nested-first; the other order reports
+  every one of them as unset, which then defaults to Enabled and looks like an answer.
+  Container registries use `networkRuleSet.defaultAction` where vaults and storage use
+  `networkAcls.defaultAction`.
+
+  An absent `publicNetworkAccess` means ENABLED, not unknown - defaulting it the safe-looking
+  way would under-report exposure on every resource that never had it explicitly set.
+
+  App Service IP restrictions are reported as `IpRuleCount = $null` rather than 0: they live in
+  `siteConfig.ipSecurityRestrictions`, which the ARM GET returns trimmed (empty on 315 of 315
+  sites), so a site that IS restricted would otherwise read as having no rules.
+
+  `ReachableFromAnyIp` is deliberately a separate column from `NetworkExposure`. A resource with
+  a Deny default and no rules at all is restricted to nobody, which is a different finding from
+  one that lets anyone in - and the practical question behind a build agent, a home connection
+  or anything else without a fixed address is the former.
+- Three commands that between them replace the ViedocAz module the Reporting repo depended on:
+
+  `Kql/Graph/Resource/Unused.kql`, reached as
+  `Search-MsecAzureResourceGraph -ResourceType Resource -Name Unused` - unattached public IPs,
+  disks, NICs, NSGs, deallocated VMs, stopped app services and empty app service plans, in ONE
+  Resource Graph query rather than a Set-AzContext loop running seven Get-Az* per subscription.
+  Never mutates the caller's Az context, which such a loop does and has to remember to undo.
+
+  Two predicates in the Az-based original were wrong or missing and are fixed here. Disks: the
+  attachment marker is `managedBy` at the TOP level of the resource, not under `properties`,
+  and reading the latter reports every disk in the estate as unused - verified 53 of 53 against
+  a live tenant where the answer is 21. NICs: a private endpoint's NIC has no virtual machine
+  and is very much in use, so excluding them takes the same tenant from 58 unused NICs to 1.
+
+  The query returns the tag bag and applies NO deferral policy. An ArchivedUntil convention is
+  organisational rather than an Azure fact, so it belongs to the caller - and Resource Graph is
+  the wrong place for it anyway: `todynamic()` re-parses tag JSON and infers types, so a tag
+  stored as '2026-06-15' read back through a lowercased copy of the bag arrives as
+  '6/15/2026 12:00:00 AM'. Verified against a real tag in a live tenant. In PowerShell the same
+  filter is a case-insensitive dictionary and a TryParseExact, with no round-trip to corrupt
+  the value.
+
+  `Get-MsecKeyVaultCertificate` - certificate expiry across the accessible vaults. Certificates
+  are DATA-PLANE, so Resource Graph cannot see them (`microsoft.keyvault/vaults/certificates`
+  returns no rows) and this walks the vaults with Az.KeyVault instead.
+
+  A vault that can be LISTED but not READ INTO emits an `Unreadable` row rather than
+  contributing nothing. Listing vaults is control-plane (Reader); listing certificates inside
+  one is data-plane, granted separately - and having the first without the second is the normal
+  state for an auditor's account. On a live tenant 185 of 258 vaults were unreadable, so
+  without that row the inventory would have read as "18 certificates" with nothing to say that
+  71% of the estate was never examined.
+
+  `Get-MsecAzureCost` - actual pre-tax spend per subscription or resource group, from Cost
+  Management.
+
+  THE CURRENCY IS RETURNED AND THE FIGURE IS NOT ROUNDED. The API answers with both; dropping
+  the currency is how a report adds SEK to EUR, and a run spanning two warns rather than
+  summing. Rounding in the collector loses the difference between 0.4 and 0, and 0 reads as
+  free.
+
+  It goes through `Invoke-AzRestMethod` rather than building the call by hand, which fixes two
+  faults in the original: the ARM endpoint had to be branched on per cloud, and since
+  Az.Accounts 5 `Get-AzAccessToken` returns a SecureString - so
+  `"Bearer $($t.Token)"` interpolates to the literal 'Bearer System.Security.SecureString' and
+  every call 401s. Verified against Az.Accounts 5.4.0.
+
+  Cost Management throttles aggressively and the natural use - a loop over every resource group
+  - is the shape that trips it. 429s are retried honouring Retry-After, and a scope still lost
+  after five attempts warns that the total is short by its cost rather than contributing a
+  fabricated 0.
+- `Connect-MsecGraphSdk` - signs the Microsoft.Graph PowerShell SDK in with the msec session's
+  token, so `Get-Mg*` commands run as the msec app while the certificate's private key stays
+  in Key Vault.
+
+  THE USUAL CERTIFICATE ROUTE CANNOT PRESERVE THAT.
+  `Connect-MgGraph -CertificateThumbprint` needs the private key present on the machine, so
+  anything shipping a PFX or a base64 certificate to a build agent is putting the key
+  somewhere it can be copied. The token handoff is the only form that does not.
+
+  The cloud comes from the session and is matched on the Graph ENDPOINT, not by name - the SDK
+  calls the Chinese cloud `China` where Azure calls it `AzureChinaCloud`, and an endpoint no
+  environment matches warns rather than silently signing in to the wrong cloud.
+
+  The SDK is handed a STATIC token and cannot renew it, unlike msec's own commands.
+  `-MinimumMinutes` is how a long report asserts it has the time it needs before starting,
+  rather than working for twenty minutes and then failing partway through.
+
+  Microsoft.Graph.Authentication is NOT a module dependency - it is imported only when this
+  command is called, so msec still installs and runs on a machine without the Graph SDK.
+- `Scripts/Intune/` now also holds the two hand-written scripts that used to live at
+  `windows/intune/` and `macos/intune/`, moved verbatim:
+  - `Windows/entra-local-admins/detect.ps1` - inventories the Entra principals in the local
+    Administrators group. Detection-ONLY: Intune allows a remediation with no remediation
+    script, which turns the detection output column into a fleet inventory report.
+  - `macOS/local-admins/custom-attribute.sh` - the same question for Macs, as a macOS Custom
+    Attribute (macOS has no Remediations feature).
+
+  Their techniques were folded back into `remove-local-admin`, and one of them fixed a real
+  bug there - see below.
+- `Scripts/Intune/Windows/remove-local-admin` - the first bundled Intune Remediation: a
+  detection half that reports whether a named account is in the local Administrators group,
+  and a remediation half that removes it.
+
+  A NEW SCRIPT CHANNEL, AND THE FIRST THAT WRITES. Everything under `Scripts/VM/` is read-only
+  and safe to run blindly across a fleet; these change a security group on every device the
+  Intune assignment covers. `Scripts/README.md` now says so explicitly - an undocumented
+  exception is how someone assigns a destructive script fleet-wide expecting a report. It is
+  also the one channel msec does not execute: Intune runs it, and
+  `Get-MsecIntuneScriptResult -Source Remediation` reads back what happened.
+
+  THE GROUP IS RESOLVED BY SID (`S-1-5-32-544`), NEVER BY NAME. 'Administrators' is localised -
+  Administratoren, Administradores - so a script hard-coding the English name finds no group at
+  all on those builds and reports every one of them as clean, which is the most dangerous way
+  for this to fail.
+
+  MEMBERS ARE ENUMERATED THROUGH ADSI, not `Get-LocalGroupMember`, which throws
+  "Failed to compare two elements in the array" whenever the group holds a SID it cannot
+  resolve - an orphaned domain account, an Entra principal on some builds. It throws rather
+  than skipping, so one stale member makes the whole group unreadable.
+
+  Two safety rails, both checked BEFORE anything is removed so a refusal leaves the group
+  untouched: the built-in Administrator (SID ending -500, whatever it has been renamed to) is
+  protected, and the group is never emptied - a device with no local administrator cannot be
+  recovered locally, and a fleet-wide assignment would do it everywhere at once. After removing,
+  the group is RE-READ rather than the call being trusted: the WinNT provider reports success
+  for a removal that policy quietly undid, and "fixed" while the account is still an
+  administrator is worse than "failed".
+
+  MATCHING AN ENTRA ACCOUNT BY UPN NOW WORKS, AND DID NOT BEFORE. ADSI and LSA give an Entra
+  member its SAM-COMPATIBLE name - 'AzureAD\JaneDoe' - never the UPN, so a `$TargetAccount`
+  written as 'AzureAD\jane@contoso.com' could never match: the account stayed an administrator
+  and the device reported clean. The UPN is recovered from the two IdentityStore caches, and
+  the lookup is UNCONDITIONAL rather than skipped when the name already contains an '@' - the
+  20-character SAM truncation can cut mid-domain and leave 'anton@examp', which looks like a
+  UPN and is not one.
+  Detection throws rather than exiting non-zero when the group cannot be read. Intune treats any
+  non-zero exit as "issue found, run the remediation", so a machine that could not be read would
+  otherwise have its administrators edited on the strength of a failed check.
+
+  `Msec/Tests/IntuneRemediationScripts.Tests.ps1` guards what is testable off-Windows: both
+  halves present and parsing, the group resolved by SID, the safety rails still there, and -
+  the hazard the scripts warn about - `$TargetAccount` identical across the pair, since they are
+  separate uploads and nothing in Intune enforces that they agree.
 - `Export-MsecPostureReport` now measures the device estate itself, on two new sheets fed by
   the Intune device list it already collects - no extra API call:
   - `DevicePlatform` - one column per OS family (Windows, macOS, iOS, Android), device counts.
@@ -417,7 +645,18 @@ All notable changes to this project will be documented in this file.
   `Export-Csv`, or to `Export-Excel` from the ImportExcel module, for the same evidence.
 
 ### Changed
-- `Select-MsecAzureContext` now RECONNECTS THE MSEC APP SESSION to the tenant it switches to,
+- `Get-MsecSharePointSiteUser -Url <site>` now CONNECTS ITSELF. Every other command in the
+  module is one call after `Connect-Msec`; requiring a separate `Connect-MsecSharePointOnline`
+  first made SharePoint the exception for no good reason.
+
+  It does so WITHOUT moving the caller's session. PnP keeps a single ambient connection, so a
+  command that simply called `Connect-PnPOnline` would leave the caller pointed at a different
+  site than they were on - a side effect nobody asked for that only shows up later. The
+  connection is created with `Connect-MsecSharePointOnline -PassThru` (new switch, wrapping
+  PnP's `-ReturnConnection`) and threaded through each PnP call explicitly. Verified live:
+  reading site B left `Get-PnPConnection` pointing at site A.
+
+  Omitting `-Url` still uses the ambient connection, so existing scripts are unaffected.- `Select-MsecAzureContext` now RECONNECTS THE MSEC APP SESSION to the tenant it switches to,
   when that tenant has been connected before. `Connect-Msec` remembers the vault name, client
   id and certificate name per tenant on a successful connection; switching context replays
   them.
@@ -465,7 +704,28 @@ All notable changes to this project will be documented in this file.
   in one run asks a single question naming all of them.
 
 ### Fixed
-- An OS release or device platform that EMPTIES OUT now reports 0 rather than blank. Those
+- `Get-MsecSharePointSiteUser` read no groups at all. `Get-PnPGroup @($spec.Param)` is an ARRAY
+  SUBEXPRESSION, not splatting - it passed a one-element array that bound positionally to
+  `-Identity`, so every call failed. Found on the first real run against a live site.
+
+  The symptom was the more instructive half: the catch block reported "this site has no
+  associated Owner group", asserting a cause it had not checked, so a code defect read as a
+  property of the tenant. The message now says what happened before what might have caused it.
+- `PrincipalType` was inconsistent between the two paths that produce it - SharePoint types a
+  direct member 'User', Graph types an expanded group member '#microsoft.graph.user'. The same
+  person therefore read as 'User' or 'user' depending on how they got access, and a filter on
+  either silently missed the other. Both are normalised to Graph's lowercase form now.
+- A missing msec session no longer degrades silently. Expanding a security group needs a Graph
+  session as well as the PnP one; without it every group came back `IsResolved = $false`, which
+  is exactly what a DELETED group looks like - so the output read as a tenant full of orphaned
+  groups rather than as a missing connection. It now warns up front, and every unresolved row
+  carries an `UnresolvedReason` distinguishing "no session" from "group could not be read".- `Search-MsecAzureResourceGraph` now fingerprints the QUERY into its cache key. The key was the
+  resource type, the name and the subscription scope - none of which change when the .kql does -
+  so editing a bundled query kept serving rows in the old shape, and the author reasonably
+  concluded the edit had not applied. Found the hard way while editing `Resource/Unused.kql`.
+
+  A cached result written before this has no fingerprint and is treated as a miss rather than
+  trusted, since it may have been written by a different query.- An OS release or device platform that EMPTIES OUT now reports 0 rather than blank. Those
   columns are discovered from the data, so the run where the last device leaves iOS 26 simply
   stops producing that column - and `Export-Excel -Append` maps by name, leaving the cell
   empty. Excel plots a blank as a GAP, so the line stopped dead exactly where it should have

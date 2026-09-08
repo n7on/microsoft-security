@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- `Get-MsecAzureRoleAssignment` + `Kql/Graph/Authorization/RoleAssignments.kql` - Azure RBAC
+  assignments across every subscription, with role and principal names resolved.
+
+  THE LOOKUPS ARE DELIBERATELY SPLIT ACROSS TWO IDENTITIES. `Get-AzRoleAssignment` resolves
+  principal names by calling Graph ITSELF, using whatever identity holds the Az context. That
+  works for a person - who has directory read by default - and silently returns BLANK names for
+  a service principal without Graph permissions. A pipeline running the same code as a laptop
+  therefore produces a report full of GUIDs and no error. Here assignments and role names come
+  from ARM, principals from the msec Graph session, so the ARM identity needs no directory
+  access at all and the answer is the same in both places.
+
+  Principals resolve in BULK through `/directoryObjects/getByIds`, up to 1000 per call - one
+  call per assignment would be 2415 round trips on a real tenant. Role names come from ARM REST
+  rather than `Get-AzRoleDefinition`, which lives in Az.Resources and is NOT a msec dependency:
+  using it works on a developer machine and fails on a clean agent.
+
+  An assignment whose principal no longer exists is KEPT, with `IsResolved = $false`. On a live
+  tenant that was 94 of 233 subscription-scope assignments, 85 of them deleted service
+  principals whose Azure rights outlived them - the finding, not an error.
+
+  One Resource Graph query covers the estate: 2415 assignments against the 400
+  `Get-AzRoleAssignment` returns for the current subscription, and without mutating the
+  caller's Az context.
 ## [0.2.0] - 2026-09-07
 
 ### Added

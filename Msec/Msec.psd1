@@ -44,6 +44,7 @@
         'Connect-MsecSharePointOnline',
         'Get-MsecSecureScore',
         'Get-MsecAzureCost',
+        'Get-MsecAzureRoleAssignment',
         'Get-MsecAzureSecureScore',
         'Get-MsecDefenderScoreExposure',
         'Get-MsecDefenderScoreDeviceConfiguration',

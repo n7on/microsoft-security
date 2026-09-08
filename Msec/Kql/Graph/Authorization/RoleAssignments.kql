@@ -1,0 +1,59 @@
+// One row per Azure RBAC role assignment across every accessible subscription - who has what,
+// where.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType Authorization -Name RoleAssignments,
+// and wrapped by Get-MsecAzureRoleAssignment, which resolves the role and principal names.
+// Use the command unless you want the raw ids.
+//
+// PRINCIPALS AND ROLES ARE IDS HERE, NOT NAMES, and that is not laziness. Resource Graph holds
+// no directory data, so a principal id can only be turned into a name through Graph - a
+// different API and a different identity. Get-AzRoleAssignment hides that by calling Graph
+// itself using whatever identity holds the Az context, which works for a person and silently
+// returns blank names for a service principal that has no Graph permissions. Keeping the two
+// apart is what lets the ARM identity stay ARM-only.
+//
+// ONE QUERY ACROSS EVERY SUBSCRIPTION. Get-AzRoleAssignment returns the current context's
+// subscription, so an estate-wide answer means a Set-AzContext loop - which mutates the
+// caller's context and has to remember to put it back. On this tenant that is 2409 assignments
+// in one request against 400 per context.
+//
+// NB: built-in role DEFINITIONS are not in authorizationresources - only custom ones are, and
+// there were 6 of those here against 2409 assignments. So the role name cannot be joined in
+// KQL; Get-MsecAzureRoleAssignment resolves it through ARM instead, which needs no Graph.
+
+authorizationresources
+| where type =~ 'microsoft.authorization/roleassignments'
+| extend PrincipalId      = tostring(properties.principalId),
+         PrincipalType    = tostring(properties.principalType),
+         RoleDefinitionId = tostring(properties.roleDefinitionId),
+         Scope            = tostring(properties.scope),
+         CreatedOn        = todatetime(properties.createdOn),
+         CreatedBy        = tostring(properties.createdBy)
+// The last segment is the role's GUID; the rest is the subscription or tenant path it was
+// defined at, which differs between a built-in and a custom role and is not wanted here.
+| extend RoleDefinitionGuid = tostring(split(RoleDefinitionId, '/')[-1])
+// What the assignment is ON, which is what makes a row actionable - a Contributor at
+// subscription scope is a very different finding from one on a single storage account.
+| extend ScopeLevel = case(
+             Scope matches regex @'(?i)^/subscriptions/[^/]+$',                          'Subscription',
+             Scope matches regex @'(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+$',     'ResourceGroup',
+             Scope matches regex @'(?i)^/providers/Microsoft\.Management/managementGroups/', 'ManagementGroup',
+             Scope == '/',                                                               'Root',
+             'Resource')
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project PrincipalId,
+          PrincipalType,
+          RoleDefinitionGuid,
+          ScopeLevel,
+          Scope,
+          ScopeName = tostring(split(Scope, '/')[-1]),
+          CreatedOn,
+          CreatedBy,
+          SubscriptionName,
+          SubscriptionId = subscriptionId,
+          Id = id
+| order by ScopeLevel asc, PrincipalType asc

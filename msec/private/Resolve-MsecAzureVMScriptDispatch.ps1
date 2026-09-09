@@ -28,7 +28,7 @@ function Resolve-MsecAzureVMScriptDispatch {
     }
 
     $info = $map[$Os]
-    $path = Join-Path $script:MsecModuleRoot "Scripts/VM/$Os/$ScriptName$($info.Extension)"
+    $path = Join-Path $script:MsecModuleRoot "scripts/VM/$Os/$ScriptName$($info.Extension)"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "$Os script not found: $path"
     }

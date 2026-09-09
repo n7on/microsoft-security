@@ -12,16 +12,16 @@
 
 BeforeAll {
     $script:ModuleRoot   = Join-Path $PSScriptRoot '..'
-    $script:ManifestPath = Join-Path $script:ModuleRoot 'Msec.psd1'
+    $script:ManifestPath = Join-Path $script:ModuleRoot 'msec.psd1'
 
     $script:Exported = @((Test-ModuleManifest -Path $script:ManifestPath -ErrorAction Stop).ExportedFunctions.Keys)
     $script:PublicFunctions = @(
-        Get-ChildItem -Path (Join-Path $script:ModuleRoot 'Public') -Filter '*.ps1' -File |
+        Get-ChildItem -Path (Join-Path $script:ModuleRoot 'public') -Filter '*.ps1' -File |
             ForEach-Object BaseName
     )
 }
 
-Describe 'Msec.psd1' {
+Describe 'msec.psd1' {
     It 'exports every command in Public/' {
         # The failure this exists for: the file is there, the function is defined, the tests
         # pass, and Get-Command finds nothing because the manifest was never updated.
@@ -41,7 +41,7 @@ Describe 'Msec.psd1' {
         # if that convention holds - a file defining a differently-named function would pass
         # both while exporting nothing usable.
         foreach ($name in $script:PublicFunctions) {
-            $path = Join-Path $script:ModuleRoot "Public/$name.ps1"
+            $path = Join-Path $script:ModuleRoot "public/$name.ps1"
             $content = Get-Content -Path $path -Raw
             $content | Should -Match "function\s+$([regex]::Escape($name))\s*\{" -Because "$name.ps1 should define function $name"
         }

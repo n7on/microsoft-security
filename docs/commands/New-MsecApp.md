@@ -1,6 +1,6 @@
 ---
-external help file: Msec-help.xml
-Module Name: Msec
+external help file: msec-help.xml
+Module Name: msec
 online version:
 schema: 2.0.0
 ---
@@ -16,7 +16,7 @@ Safe to re-run.
 
 ```
 New-MsecApp [[-DisplayName] <String>] [-KeyVaultName] <String> [[-CertificateName] <String>]
- [[-ValidityMonths] <Int32>] [[-Workload] <String[]>] [[-ExchangeDirectoryRole] <String>] [<CommonParameters>]
+ [[-ValidityMonths] <Int32>] [[-Workload] <String[]>] [[-DirectoryRole] <String>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -65,7 +65,17 @@ Current required permissions (configured at the top of the function in $resource
                      PrivilegedEligibilitySchedule.Read.AzureADGroup
   - Office 365 Exchange Online: Exchange.ManageAsApp - only with -Workload Exchange,
     and NOT sufficient on its own; see the directory role note below.
+  - Skype and Teams Tenant Admin API: application_access - only with -Workload Teams.
+    A separate audience from Graph: Connect-MicrosoftTeams needs a token for each, and
+    Graph permissions buy nothing against it.
   - Office 365 SharePoint Online: Sites.Read.All - only with -Workload SharePoint.
+  - Microsoft Graph: SharePointTenantSettings.Read.All - also added by -Workload
+    SharePoint.
+Reads /admin/sharepoint/settings: the tenant-wide sharing capability,
+    domain allow/block-list and restriction mode.
+Sites.Read.All does NOT cover these -
+    they are tenant settings, not site properties - and without it the call returns a
+    403 naming no permission.
   - Microsoft Graph: Sites.Read.All - also added by -Workload SharePoint, and NOT the
     same permission as the line above despite the name.
 Graph's enumerates sites;
@@ -88,6 +98,23 @@ Prerequisites (the user running this command needs):
     permissions (Global Administrator, Privileged Role Administrator, or Application
     Administrator + Cloud Application Administrator).
 
+EXCHANGE AND TEAMS ALSO NEED A DIRECTORY ROLE, and this is the step that is easy to
+miss.
+The app role is necessary but not sufficient: the app's service principal must
+also hold a directory role.
+Without one, Connect-MsecExchangeOnline and Connect-MsecTeams
+both SUCCEED and then every Get-EXO* / Get-Cs* call fails with a plain authorisation
+error naming no permission - from the service's point of view the app authenticated and
+has no rights.
+
+-Workload Exchange or -Workload Teams assigns it.
+That is a real tenant-wide
+privilege grant rather than an API permission, which is why the workloads are
+opt-in and why creating the assignment needs Privileged Role Administrator - a
+higher bar than the rest of this command.
+If the caller lacks it, everything else
+is still configured and a warning says exactly what to assign by hand.
+
 ## EXAMPLES
 
 ### EXAMPLE 1
@@ -103,21 +130,6 @@ $app = New-MsecApp -KeyVaultName 'kv-mysec'
 ### -DisplayName
 Display name for the new app registration.
 Default: 'msec'.
-
-EXCHANGE ALSO NEEDS A DIRECTORY ROLE, and this is the step that is easy to miss.
-Exchange.ManageAsApp is necessary but not sufficient: the app's service principal must
-also hold a directory role.
-Without one, Connect-MsecExchangeOnline succeeds and then
-every Get-EXO* call fails with a plain authorisation error naming no permission,
-because from Exchange's point of view the app authenticated and has no rights.
-
--Workload Exchange assigns it.
-That is a real tenant-wide privilege grant rather than
-an API permission, which is why the workloads are opt-in and why creating the
-assignment needs Privileged Role Administrator - a higher bar than the rest of this
-command.
-If the caller lacks it, everything else is still configured and a warning says
-exactly what to assign by hand.
 
 ```yaml
 Type: String
@@ -179,9 +191,10 @@ Accept wildcard characters: False
 ```
 
 ### -Workload
-Extra workloads to configure: Exchange, SharePoint, or both.
-Omitted by default -
-each needs fresh admin consent, and Exchange needs a directory role.
+Extra workloads to configure: any of Exchange, SharePoint and Teams.
+Omitted by
+default - each needs fresh admin consent, and Exchange and Teams each need a
+directory role on top of their app role.
 
 ```yaml
 Type: String[]
@@ -195,15 +208,18 @@ Accept pipeline input: False
 Accept wildcard characters: False
 ```
 
-### -ExchangeDirectoryRole
-Which directory role to give the app for Exchange.
-Default 'Global Reader', the
-least-privilege option that can read mailbox permissions.
+### -DirectoryRole
+Which directory role to give the app.
+Assigned when -Workload includes Exchange or
+Teams; neither works without one.
+Default 'Global Reader' - the least-privilege option
+that satisfies both.
+Aliased to -ExchangeDirectoryRole, the name this had in 0.2.0.
 
 ```yaml
 Type: String
 Parameter Sets: (All)
-Aliases:
+Aliases: ExchangeDirectoryRole
 
 Required: False
 Position: 6
@@ -220,5 +236,24 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 ## OUTPUTS
 
 ## NOTES
+AZURE DEVOPS IS NOT CONFIGURED HERE, AND CANNOT BE.
+There is no -Workload for it and
+nothing useful to grant.
+The Azure DevOps resource exposes exactly two application app
+roles - vso.loadtest and vso.loadtest_write, both load testing - and neither touches the
+identity graph, organization settings or service endpoints that msec reads.
+Those are
+not exposed as application permissions at all: authorisation for them happens inside
+Azure DevOps rather than in Entra, so the token this app can already mint for Azure
+DevOps is not the missing piece.
+
+What IS needed is a manual step, once per organization: add the app's service principal
+under Organization Settings \> Users, with at least Basic access and Reader on the
+project collection.
+Until that is done Get-MsecAzureDevOpsUser, Get-MsecAzureDevOpsOrganizationPolicy
+and Get-MsecAzureDevOpsServiceConnection all fail with a 401 that reads like a missing API
+permission and is not one - so running New-MsecApp again will never fix it.
+Those
+commands say as much in their own errors.
 
 ## RELATED LINKS

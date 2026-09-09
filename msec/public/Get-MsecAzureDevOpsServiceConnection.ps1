@@ -1,4 +1,4 @@
-function Get-MsecAdoServiceConnection {
+function Get-MsecAzureDevOpsServiceConnection {
     <#
     .SYNOPSIS
         Lists every service connection (service endpoint) in an Azure DevOps
@@ -21,14 +21,14 @@ function Get-MsecAdoServiceConnection {
 
     .EXAMPLE
         # All service connections, sorted by what they connect to.
-        Get-MsecAdoServiceConnection -Organization 'contoso' |
+        Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' |
             Sort-Object Type | Format-Table Name, Type, AuthScheme, IsShared
 
     .EXAMPLE
         # Connections to Azure subscriptions specifically: find forgotten ones, and audit
         # the auth scheme - Service Principal vs Managed Identity vs Federated Workload
         # Identity. A long-lived secret here is a standing key to a subscription.
-        Get-MsecAdoServiceConnection -Organization 'contoso' |
+        Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' |
             Where-Object Type -eq 'azurerm' |
             Select-Object Name, AuthScheme, @{ n = 'SubId'; e = { $_.Raw.data.subscriptionId } },
                           CreatedByName, Projects
@@ -36,7 +36,7 @@ function Get-MsecAdoServiceConnection {
     .EXAMPLE
         # Highly shared connections - broad blast radius if one is compromised, because
         # any pipeline in any of those projects can use it.
-        Get-MsecAdoServiceConnection -Organization 'contoso' |
+        Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' |
             Where-Object { $_.Projects.Count -gt 3 } |
             Sort-Object { $_.Projects.Count } -Descending
 
@@ -57,7 +57,7 @@ function Get-MsecAdoServiceConnection {
         NOT via Entra API permissions - so it's NOT something New-MsecApp can
         provision. A clearer error is raised on the typical 401/403.
 
-        Each row is a [PSCustomObject] with PSTypeName 'MsecAdoServiceConnection'.
+        Each row is a [PSCustomObject] with PSTypeName 'MsecAzureDevOpsServiceConnection'.
         Default Format-Table view: Name, Type, AuthScheme, IsShared - registered
         in Msec.psm1. Raw and other columns remain accessible via property
         access or Format-List.
@@ -133,7 +133,7 @@ function Get-MsecAdoServiceConnection {
             $projectNames = @($e.serviceEndpointProjectReferences.projectReference.name)
 
             [PSCustomObject]@{
-                PSTypeName    = 'MsecAdoServiceConnection'
+                PSTypeName    = 'MsecAzureDevOpsServiceConnection'
                 Id            = $e.id
                 Name          = $e.name
                 Type          = $e.type

@@ -6,7 +6,7 @@
 # field, so a plan that is present-but-disabled must not read as available.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)

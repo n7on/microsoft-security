@@ -54,6 +54,22 @@ function Connect-MsecSharePointOnline {
         Needs Connect-Msec first, and the PnP.PowerShell module - which is NOT a dependency of
         msec.
 
+        THERE IS NO -AsCurrentUser HERE, unlike Connect-MsecTeams, and it is not an oversight.
+        Borrowing the Az session works for Teams because that API accepts a token whose audience
+        is the service. SharePoint does not: it validates the audience against the HOST it is
+        presented to, and Get-AzAccessToken -ResourceUrl normalises every sharepoint.com URL -
+        tenant root and admin host alike - to the service principal's GUID,
+        00000003-0000-0ff1-ce00-000000000000. The token is issued, carries user_impersonation,
+        and is then refused by every site with a bare 401 and an empty content type. Verified
+        against a live tenant on both hosts.
+
+        So for a delegated SharePoint session, either use the SharePoint admin centre, or
+        register a PUBLIC CLIENT app with delegated SharePoint permissions and a redirect URI
+        and use PnP's own browser flow: Connect-PnPOnline -Url <site> -Interactive -ClientId
+        <appid>. That flow does not touch the Windows broker, so it works on macOS and Linux,
+        where Connect-MicrosoftTeams's interactive sign-in does not. The msec app cannot be used
+        for it - it holds APPLICATION permissions and has no redirect URI.
+
         Tenant-level cmdlets (Get-PnPTenantSite, Set-PnPTenant) require the ADMIN host -
         contoso-admin.sharepoint.com - not the tenant root. PnP will say so if you connect to
         the wrong one, but the message is easy to misread as a permission failure.

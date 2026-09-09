@@ -12,7 +12,7 @@
 #     the API reorders and it starts returning a currency code as a number.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:Ok = {

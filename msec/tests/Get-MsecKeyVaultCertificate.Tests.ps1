@@ -11,7 +11,7 @@
 # certificates" with no hint that 71% of the estate was never examined.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

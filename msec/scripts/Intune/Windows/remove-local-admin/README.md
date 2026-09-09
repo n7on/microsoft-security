@@ -13,7 +13,7 @@ Removes a specific account from the local Administrators group, as an Intune
 **Edit `$TargetAccount` in BOTH files.** Intune remediation scripts take no
 parameters, so the account is baked in. The two files are separate uploads and
 nothing in Intune enforces that they agree — a mismatch means detection fires on
-one account while remediation removes another. `Msec/Tests/IntuneRemediationScripts.Tests.ps1`
+one account while remediation removes another. `msec/tests/IntuneRemediationScripts.Tests.ps1`
 fails if they drift apart in this repo.
 
 Accepted forms, most to least precise:

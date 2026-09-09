@@ -10,7 +10,7 @@ function Search-MsecLogAnalytics {
 
         The query is loaded by convention from:
 
-            Msec/Kql/Law/<Subject>/<Name>.kql
+            msec/kql/Law/<Subject>/<Name>.kql
 
         For example, Search-MsecLogAnalytics -Subject Waf loads Kql/Law/Waf/All.kql. Each
         subject folder has at least an All.kql; named variants (e.g. "TopRules.kql") live
@@ -138,7 +138,7 @@ function Search-MsecLogAnalytics {
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
-            $lawFolder = Join-Path $base 'Kql/Law'
+            $lawFolder = Join-Path $base 'kql/Law'
             if (-not (Test-Path -LiteralPath $lawFolder)) { return }
             Get-ChildItem -LiteralPath $lawFolder -Filter *.kql -File -Recurse |
                 ForEach-Object { Split-Path $_.Directory.FullName -Leaf } |
@@ -159,7 +159,7 @@ function Search-MsecLogAnalytics {
             if (-not $subject) { return }
             $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
-            $folder = Join-Path $base "Kql/Law/$subject"
+            $folder = Join-Path $base "kql/Law/$subject"
             if (-not (Test-Path -LiteralPath $folder)) { return }
             Get-ChildItem -LiteralPath $folder -Filter *.kql -File |
                 Where-Object { $_.BaseName -like "$wordToComplete*" } |
@@ -254,7 +254,7 @@ function Search-MsecLogAnalytics {
         throw 'No Azure context. Run Connect-AzAccount before Search-MsecLogAnalytics.'
     }
 
-    $path = Join-Path $script:MsecModuleRoot "Kql/Law/$Subject/$Name.kql"
+    $path = Join-Path $script:MsecModuleRoot "kql/Law/$Subject/$Name.kql"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "KQL query file not found: $path"
     }

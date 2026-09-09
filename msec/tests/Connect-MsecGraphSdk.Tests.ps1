@@ -15,7 +15,7 @@
 $script:HasGraphSdk = $null -ne (Get-Module -ListAvailable Microsoft.Graph.Authentication)
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

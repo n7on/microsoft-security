@@ -19,6 +19,16 @@ function Get-MsecSharePointSite {
         across those is noise and hundreds of wasted calls. They are classified and excluded by
         default rather than filtered out silently, so the count you see is the count you meant.
 
+        SUBWEBS COME BACK TOO, not only site collections. /sites?search=* indexes them, so
+        '.../sites/Finance/Archive' appears as its own row. Worth knowing because the obvious
+        alternative - walking Get-PnPSubWeb per site - CANNOT work app-only: enumerating
+        Web.Webs needs the Browse Directories right, which the Read level that Sites.Read.All
+        maps to does not include, and every call returns a bare E_ACCESSDENIED.
+
+        The corollary is that a subweb is classified by its URL like anything else, so it
+        reports SiteType 'SiteCollection'. The type describes the shape of the URL, not the
+        object's place in the hierarchy.
+
         SiteType is one of:
           SiteCollection  a real site - /sites/ or /teams/. What a review is about.
           AppContainer    /contentstorage/ - Loop, Designer and other app-created storage.

@@ -17,7 +17,7 @@
 #   * a failed reconnect must not fail the context switch that was actually asked for
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:CacheDir = Join-Path ([System.IO.Path]::GetTempPath()) "msec-profile-$([guid]::NewGuid().Guid)"

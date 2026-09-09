@@ -1,15 +1,15 @@
 #Requires -Module Pester
 #
-# Tests for Msec.format.ps1xml. A malformed or unloaded format file does not fail loudly -
+# Tests for msec.format.ps1xml. A malformed or unloaded format file does not fail loudly -
 # it silently falls back to the default rendering, which is exactly the '{a, b}' output the
 # file exists to fix. So the checks here are that it is registered at all, that it renders
 # collections flattened, and - most importantly - that flattening the DISPLAY did not
 # flatten the DATA, because the arrays are what make -contains an exact test.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
-    $script:FormatFile = (Resolve-Path (Join-Path $PSScriptRoot '..' 'Msec.format.ps1xml')).Path
+    $script:FormatFile = (Resolve-Path (Join-Path $PSScriptRoot '..' 'msec.format.ps1xml')).Path
 }
 
 AfterAll {
@@ -118,7 +118,7 @@ Describe 'msec format data' {
     It 'ships the format file alongside the module so an installed copy gets it too' {
         # Update-FormatData resolves it relative to $PSScriptRoot, so it has to travel
         # with the module rather than being found on a dev machine only.
-        Join-Path (Get-Module Msec).ModuleBase 'Msec.format.ps1xml' |
+        Join-Path (Get-Module Msec).ModuleBase 'msec.format.ps1xml' |
             Should -Exist
     }
 }

@@ -1,6 +1,6 @@
 #Requires -Module Pester
 #
-# Tests for Get-MsecAdoServiceConnection. The function makes two kinds of REST
+# Tests for Get-MsecAzureDevOpsServiceConnection. The function makes two kinds of REST
 # calls to dev.azure.com:
 #   1. /_apis/projects                              -> list projects
 #   2. /{project}/_apis/serviceendpoint/endpoints   -> list connections per project
@@ -13,7 +13,7 @@
 #   - 401/403 on the projects call rewrites to a helpful org-membership hint
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)
@@ -23,7 +23,7 @@ AfterAll {
     Remove-Module Msec -Force -ErrorAction SilentlyContinue
 }
 
-Describe 'Get-MsecAdoServiceConnection' {
+Describe 'Get-MsecAzureDevOpsServiceConnection' {
     BeforeEach {
         InModuleScope Msec -Parameters @{ Thumb = $script:TestThumbBytes } {
             param($Thumb)
@@ -107,7 +107,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                 ) }
             }
 
-            Get-MsecAdoServiceConnection -Organization 'contoso'
+            Get-MsecAzureDevOpsServiceConnection -Organization 'contoso'
         }
 
         # 3 unique endpoints (Docker-Registry dedup'd to one row even though it
@@ -138,7 +138,7 @@ Describe 'Get-MsecAdoServiceConnection' {
         $gh.AuthScheme  | Should -Be 'OAuth'
 
         # PSTypeName tag set so the .psm1 DefaultDisplayPropertySet works.
-        $azurerm.PSObject.TypeNames | Should -Contain 'MsecAdoServiceConnection'
+        $azurerm.PSObject.TypeNames | Should -Contain 'MsecAzureDevOpsServiceConnection'
     }
 
     It 'passes the bare ADO resource ID to Get-MsecAccessToken (no /.default suffix)' {
@@ -155,7 +155,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                 [pscustomobject]@{ value = @() }
             }
 
-            Get-MsecAdoServiceConnection -Organization 'contoso' | Out-Null
+            Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' | Out-Null
 
             $script:CapturedResource | Should -Not -BeNullOrEmpty
             $script:CapturedResource | Should -Be '499b84ac-1321-427f-aa17-267ca6975798'
@@ -184,7 +184,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                 ) }
             }
 
-            $r = Get-MsecAdoServiceConnection -Organization 'contoso' -Project 'MyProject'
+            $r = Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' -Project 'MyProject'
             $r.Count                       | Should -Be 1
             # The /_apis/projects list endpoint should NOT have been called.
             $script:ProjectsListCalls      | Should -Be 0
@@ -198,7 +198,7 @@ Describe 'Get-MsecAdoServiceConnection' {
                 throw 'Response status code does not indicate success: 401 (Unauthorized).'
             }
 
-            { Get-MsecAdoServiceConnection -Organization 'contoso' } |
+            { Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' } |
                 Should -Throw -ExpectedMessage '*added as a member of the ADO organization*'
         }
     }

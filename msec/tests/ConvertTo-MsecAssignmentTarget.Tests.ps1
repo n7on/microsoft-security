@@ -9,7 +9,7 @@
 # values - which is the property that lets callers use -contains instead of -match.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Builds one assignment the way Graph expands it onto a policy. Passed to

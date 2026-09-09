@@ -9,7 +9,7 @@
 #   4. A 403 is rewritten to mention ThreatHunting.Read.All.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:TestThumbBytes = [byte[]](1..20)

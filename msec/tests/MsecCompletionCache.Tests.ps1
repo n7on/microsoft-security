@@ -7,7 +7,7 @@
 # every Tab, and when ARM is unhealthy it hangs rather than failing fast.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     $script:PrevCacheEnv = $env:MSEC_CACHE_DIR
@@ -128,7 +128,7 @@ Describe '-Subscription completion' {
     It 'never makes a network call from the completer' {
         # Structural guard, so that "improving" this into a live Get-AzSubscription fails here
         # first rather than hanging someone's prompt during an ARM outage.
-        $psm1  = Get-Content -LiteralPath (Join-Path (Get-Module Msec).ModuleBase 'Msec.psm1') -Raw
+        $psm1  = Get-Content -LiteralPath (Join-Path (Get-Module Msec).ModuleBase 'msec.psm1') -Raw
         $start = $psm1.IndexOf('$msecSubscriptionCompleter = {')
         $body  = $psm1.Substring($start, $psm1.IndexOf('Register-ArgumentCompleter') - $start)
 

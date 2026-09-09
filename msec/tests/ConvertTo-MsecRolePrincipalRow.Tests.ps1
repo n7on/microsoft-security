@@ -6,7 +6,7 @@
 # principal, an unexpanded group) are the ones hardest to reach through the full stack.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

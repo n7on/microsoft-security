@@ -72,7 +72,7 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Export-MsecEntraDisabledUserReport](./docs/commands/Export-MsecEntraDisabledUserReport.md) - Evidence of every disabled account, how long it has been disabled, and what it still costs in licences
 
 ### Azure DevOps
-- [Get-MsecAdoServiceConnection](./docs/commands/Get-MsecAdoServiceConnection.md) - Every service connection in an organization, with its auth scheme
+- [Get-MsecAzureDevOpsServiceConnection](./docs/commands/Get-MsecAzureDevOpsServiceConnection.md) - Every service connection in an organization, with its auth scheme
 
 Every command has full help, including the reasoning behind its output shape:
 

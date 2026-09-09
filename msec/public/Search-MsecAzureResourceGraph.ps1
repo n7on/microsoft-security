@@ -6,7 +6,7 @@ function Search-MsecAzureResourceGraph {
     .DESCRIPTION
         The query is loaded by convention from:
 
-            Msec/Kql/Graph/<ResourceType>/<Name>.kql
+            msec/kql/Graph/<ResourceType>/<Name>.kql
 
         For example, Search-MsecAzureResourceGraph -ResourceType VM loads Kql/Graph/VM/All.kql. Each
         resource-type folder has at least an All.kql; named variants (e.g. "Running.kql")
@@ -108,7 +108,7 @@ function Search-MsecAzureResourceGraph {
             param($commandName, $parameterName, $wordToComplete, $commandAst, $fakeBoundParameters)
             $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
-            $graphFolder = Join-Path $base 'Kql/Graph'
+            $graphFolder = Join-Path $base 'kql/Graph'
             if (-not (Test-Path -LiteralPath $graphFolder)) { return }
             Get-ChildItem -LiteralPath $graphFolder -Filter *.kql -File -Recurse |
                 ForEach-Object { Split-Path $_.Directory.FullName -Leaf } |
@@ -129,7 +129,7 @@ function Search-MsecAzureResourceGraph {
             if (-not $rt) { return }
             $base = (Get-Module Msec).ModuleBase
             if (-not $base) { return }
-            $folder = Join-Path $base "Kql/Graph/$rt"
+            $folder = Join-Path $base "kql/Graph/$rt"
             if (-not (Test-Path -LiteralPath $folder)) { return }
             Get-ChildItem -LiteralPath $folder -Filter *.kql -File |
                 Where-Object { $_.BaseName -like "$wordToComplete*" } |
@@ -170,7 +170,7 @@ function Search-MsecAzureResourceGraph {
         throw 'No Azure context. Run Connect-AzAccount before Search-MsecAzureResourceGraph.'
     }
 
-    $path = Join-Path $script:MsecModuleRoot "Kql/Graph/$ResourceType/$Name.kql"
+    $path = Join-Path $script:MsecModuleRoot "kql/Graph/$ResourceType/$Name.kql"
     if (-not (Test-Path -LiteralPath $path)) {
         throw "KQL query file not found: $path"
     }

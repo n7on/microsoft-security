@@ -33,7 +33,7 @@ function Invoke-MsecAzureVMScript {
         an Os property and the value is taken per-row.
 
     .PARAMETER ScriptName
-        Base name (no extension) of the script under Msec/Scripts/<Os>/. Must exist for
+        Base name (no extension) of the script under msec/scripts/<Os>/. Must exist for
         every OS that comes down the pipeline - missing scripts produce a clear
         "<Os> script not found" error at first encounter.
 
@@ -96,7 +96,7 @@ function Invoke-MsecAzureVMScript {
             $os = $fakeBoundParameters['Os']
             if ($os) {
                 # -Os is on the command line - filter to that OS's folder.
-                $folder = Join-Path $base "Scripts/VM/$os"
+                $folder = Join-Path $base "scripts/VM/$os"
                 if (-not (Test-Path -LiteralPath $folder)) { return }
                 $filter = if ($os -eq 'Linux') { '*.sh' } else { '*.ps1' }
                 $names  = Get-ChildItem -LiteralPath $folder -Filter $filter -File |
@@ -105,9 +105,9 @@ function Invoke-MsecAzureVMScript {
                 # No -Os yet - the user is likely binding it from the pipeline. Suggest
                 # only scripts that exist in BOTH OS folders so the same -ScriptName is
                 # safe to use across a mixed Linux/Windows pipeline.
-                $linux = @(Get-ChildItem (Join-Path $base 'Scripts/VM/Linux')   -Filter '*.sh'  -File -EA SilentlyContinue |
+                $linux = @(Get-ChildItem (Join-Path $base 'scripts/VM/Linux')   -Filter '*.sh'  -File -EA SilentlyContinue |
                     ForEach-Object BaseName)
-                $win   = @(Get-ChildItem (Join-Path $base 'Scripts/VM/Windows') -Filter '*.ps1' -File -EA SilentlyContinue |
+                $win   = @(Get-ChildItem (Join-Path $base 'scripts/VM/Windows') -Filter '*.ps1' -File -EA SilentlyContinue |
                     ForEach-Object BaseName)
                 $names = $linux | Where-Object { $_ -in $win }
             }

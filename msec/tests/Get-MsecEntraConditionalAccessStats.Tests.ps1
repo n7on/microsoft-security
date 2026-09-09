@@ -13,7 +13,7 @@
 #   - Empty result returns zero counts and 0.0 percentages (no divide-by-zero)
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

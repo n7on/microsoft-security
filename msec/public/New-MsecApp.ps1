@@ -37,7 +37,15 @@ function New-MsecApp {
                              PrivilegedEligibilitySchedule.Read.AzureADGroup
           - Office 365 Exchange Online: Exchange.ManageAsApp - only with -Workload Exchange,
             and NOT sufficient on its own; see the directory role note below.
+          - Skype and Teams Tenant Admin API: application_access - only with -Workload Teams.
+            A separate audience from Graph: Connect-MicrosoftTeams needs a token for each, and
+            Graph permissions buy nothing against it.
           - Office 365 SharePoint Online: Sites.Read.All - only with -Workload SharePoint.
+          - Microsoft Graph: SharePointTenantSettings.Read.All - also added by -Workload
+            SharePoint. Reads /admin/sharepoint/settings: the tenant-wide sharing capability,
+            domain allow/block-list and restriction mode. Sites.Read.All does NOT cover these -
+            they are tenant settings, not site properties - and without it the call returns a
+            403 naming no permission.
           - Microsoft Graph: Sites.Read.All - also added by -Workload SharePoint, and NOT the
             same permission as the line above despite the name. Graph's enumerates sites;
             SharePoint's reads what is inside one. Enumerating through PnP instead would need
@@ -56,28 +64,32 @@ function New-MsecApp {
             permissions (Global Administrator, Privileged Role Administrator, or Application
             Administrator + Cloud Application Administrator).
 
+        EXCHANGE AND TEAMS ALSO NEED A DIRECTORY ROLE, and this is the step that is easy to
+        miss. The app role is necessary but not sufficient: the app's service principal must
+        also hold a directory role. Without one, Connect-MsecExchangeOnline and Connect-MsecTeams
+        both SUCCEED and then every Get-EXO* / Get-Cs* call fails with a plain authorisation
+        error naming no permission - from the service's point of view the app authenticated and
+        has no rights.
+
+        -Workload Exchange or -Workload Teams assigns it. That is a real tenant-wide
+        privilege grant rather than an API permission, which is why the workloads are
+        opt-in and why creating the assignment needs Privileged Role Administrator - a
+        higher bar than the rest of this command. If the caller lacks it, everything else
+        is still configured and a warning says exactly what to assign by hand.
+
     .PARAMETER DisplayName
         Display name for the new app registration. Default: 'msec'.
 
-        EXCHANGE ALSO NEEDS A DIRECTORY ROLE, and this is the step that is easy to miss.
-        Exchange.ManageAsApp is necessary but not sufficient: the app's service principal must
-        also hold a directory role. Without one, Connect-MsecExchangeOnline succeeds and then
-        every Get-EXO* call fails with a plain authorisation error naming no permission,
-        because from Exchange's point of view the app authenticated and has no rights.
-
-        -Workload Exchange assigns it. That is a real tenant-wide privilege grant rather than
-        an API permission, which is why the workloads are opt-in and why creating the
-        assignment needs Privileged Role Administrator - a higher bar than the rest of this
-        command. If the caller lacks it, everything else is still configured and a warning says
-        exactly what to assign by hand.
-
     .PARAMETER Workload
-        Extra workloads to configure: Exchange, SharePoint, or both. Omitted by default -
-        each needs fresh admin consent, and Exchange needs a directory role.
+        Extra workloads to configure: any of Exchange, SharePoint and Teams. Omitted by
+        default - each needs fresh admin consent, and Exchange and Teams each need a
+        directory role on top of their app role.
 
-    .PARAMETER ExchangeDirectoryRole
-        Which directory role to give the app for Exchange. Default 'Global Reader', the
-        least-privilege option that can read mailbox permissions.
+    .PARAMETER DirectoryRole
+        Which directory role to give the app. Assigned when -Workload includes Exchange or
+        Teams; neither works without one. Default 'Global Reader' - the least-privilege option
+        that satisfies both. Aliased to -ExchangeDirectoryRole, the name this had in 0.2.0.
+
     .PARAMETER KeyVaultName
         Name of an existing Azure Key Vault that will store the certificate.
 
@@ -92,6 +104,22 @@ function New-MsecApp {
         $app = New-MsecApp -KeyVaultName 'kv-mysec'
         # Hand $app.TenantId / $app.ClientId / $app.KeyVaultName / $app.CertificateName to anyone
         # who should run reports; they Connect-Msec with those values.
+
+    .NOTES
+        AZURE DEVOPS IS NOT CONFIGURED HERE, AND CANNOT BE. There is no -Workload for it and
+        nothing useful to grant. The Azure DevOps resource exposes exactly two application app
+        roles - vso.loadtest and vso.loadtest_write, both load testing - and neither touches the
+        identity graph, organization settings or service endpoints that msec reads. Those are
+        not exposed as application permissions at all: authorisation for them happens inside
+        Azure DevOps rather than in Entra, so the token this app can already mint for Azure
+        DevOps is not the missing piece.
+
+        What IS needed is a manual step, once per organization: add the app's service principal
+        under Organization Settings > Users, with at least Basic access and Reader on the
+        project collection. Until that is done Get-MsecAzureDevOpsUser, Get-MsecAzureDevOpsOrganizationPolicy
+        and Get-MsecAzureDevOpsServiceConnection all fail with a 401 that reads like a missing API
+        permission and is not one - so running New-MsecApp again will never fix it. Those
+        commands say as much in their own errors.
     #>
     [CmdletBinding()]
     param(
@@ -109,19 +137,27 @@ function New-MsecApp {
         #              the rest of this command.
         #   SharePoint needs Sites.Read.All on the SHAREPOINT service principal, which is a
         #              different permission from the identically-named one on Microsoft Graph.
+        #   Teams      needs application_access on the Skype and Teams Tenant Admin API - a
+        #              separate audience from Graph, so Graph permissions buy nothing there -
+        #              AND a directory role, for the same reason Exchange does.
         #
-        # Both need fresh admin consent. Ask for them only when the Exchange or SharePoint
-        # commands are actually going to be used.
+        # All three need fresh admin consent. Ask for them only when those commands are
+        # actually going to be used.
         [Parameter()]
-        [ValidateSet('Exchange', 'SharePoint')]
+        [ValidateSet('Exchange', 'SharePoint', 'Teams')]
         [string[]] $Workload,
 
-        # The directory role to give the app for Exchange. Global Reader is the least-privilege
-        # option that works for reading mailbox permissions; Exchange Administrator is the
-        # alternative and grants far more than this module needs.
+        # The directory role to give the app. BOTH Exchange and Teams require one on top of
+        # their app roles - an app role alone leaves the app authenticated with no rights, and
+        # neither service says so. Global Reader is the least-privilege option that satisfies
+        # both; the service-specific alternatives grant far more than this module needs.
+        #
+        # Aliased to the old name: -ExchangeDirectoryRole shipped in 0.2.0 and still works.
         [Parameter()]
-        [ValidateSet('Global Reader', 'Exchange Administrator', 'Exchange Recipient Administrator')]
-        [string] $ExchangeDirectoryRole = 'Global Reader'
+        [Alias('ExchangeDirectoryRole')]
+        [ValidateSet('Global Reader', 'Exchange Administrator', 'Exchange Recipient Administrator',
+                     'Teams Administrator', 'Teams Communications Administrator')]
+        [string] $DirectoryRole = 'Global Reader'
     )
 
     $ctx = Get-AzContext -ErrorAction SilentlyContinue
@@ -238,6 +274,17 @@ function New-MsecApp {
             RoleValues = @('Exchange.ManageAsApp')   # necessary, and NOT sufficient - see the role assignment below
         }
     }
+    if ($Workload -contains 'Teams') {
+        # 'Skype and Teams Tenant Admin API'. It exposes exactly two application roles;
+        # application_access is the general one, the other is for Survivable Branch Appliances.
+        # This is a SEPARATE audience from Graph - Connect-MicrosoftTeams needs a token for
+        # each, and Graph permissions buy nothing here.
+        $resources += @{
+            Name       = 'Skype and Teams Tenant Admin API'
+            AppId      = '48ac35b8-9aa8-4d74-927d-1f4a14a0b239'
+            RoleValues = @('application_access')
+        }
+    }
     if ($Workload -contains 'SharePoint') {
         $resources += @{
             Name       = 'Office 365 SharePoint Online'
@@ -255,9 +302,20 @@ function New-MsecApp {
         #                 Sites.FullControl.All - full write and delete over every site in the
         #                 tenant, for a list of site names. Not a trade worth making for a
         #                 read-only module.
+        # ...and SharePointTenantSettings.Read.All, which is what /admin/sharepoint/settings
+        # needs - the TENANT-wide sharing posture: SharingCapability, the domain
+        # allow/block-list and the restriction mode. None of that is a site property, so
+        # Sites.Read.All does not cover it, and the call returns a bare 403 'Caller does not
+        # have required permissions for this API' that names nothing.
+        #
+        # It is the only way msec can read those settings. The PnP route
+        # (Get-PnPTenant) needs a token whose audience is the ADMIN HOST, and
+        # Get-AzAccessToken cannot mint one - see Connect-MsecSharePointOnline's notes.
         $graphResource = $resources | Where-Object Name -eq 'Microsoft Graph' | Select-Object -First 1
-        if ($graphResource -and $graphResource.RoleValues -notcontains 'Sites.Read.All') {
-            $graphResource.RoleValues += 'Sites.Read.All'
+        if ($graphResource) {
+            foreach ($role in 'Sites.Read.All', 'SharePointTenantSettings.Read.All') {
+                if ($graphResource.RoleValues -notcontains $role) { $graphResource.RoleValues += $role }
+            }
         }
     }
 
@@ -496,18 +554,20 @@ function New-MsecApp {
     # A directory role is a REAL privilege grant on the tenant, which is why the whole thing is
     # behind -Workload rather than being done by default, and why it is confirmed separately
     # below. Global Reader is the least-privilege option that can read mailbox permissions.
-    $directoryRole = $null
+    # NOT $directoryRole: PowerShell is case-insensitive, so that IS the -DirectoryRole
+    # parameter, and assigning $null to it trips its ValidateSet before anything runs.
+    $assignedRole = $null
 
-    if ($Workload -contains 'Exchange') {
+    if (($Workload -contains 'Exchange') -or ($Workload -contains 'Teams')) {
         $roleAssigned = $false
         try {
             # Role DEFINITIONS are per tenant but their templateIds are well known. Resolved by
             # displayName so this does not carry a table of GUIDs that drift.
-            $filter = [uri]::EscapeDataString("displayName eq '$ExchangeDirectoryRole'")
+            $filter = [uri]::EscapeDataString("displayName eq '$DirectoryRole'")
             $definition = @((& $graph GET "/v1.0/roleManagement/directory/roleDefinitions?`$filter=$filter").value)[0]
 
             if (-not $definition) {
-                Write-Warning "The directory role '$ExchangeDirectoryRole' does not exist in this tenant, so it was NOT assigned. Exchange commands will fail until the app holds a directory role."
+                Write-Warning "The directory role '$DirectoryRole' does not exist in this tenant, so it was NOT assigned. Exchange and Teams commands will fail until the app holds a directory role."
             }
             else {
                 # Already assigned? Re-running must be a no-op, like the rest of this command.
@@ -516,13 +576,14 @@ function New-MsecApp {
 
                 if ($existing.Count) {
                     $roleAssigned = $true
-                    $directoryRole = "$ExchangeDirectoryRole (already assigned)"
-                    Write-Host "  Directory role '$ExchangeDirectoryRole' already assigned." -ForegroundColor DarkGray
+                    $assignedRole = "$DirectoryRole (already assigned)"
+                    Write-Host "  Directory role '$DirectoryRole' already assigned." -ForegroundColor DarkGray
                 }
                 else {
                     Write-Host ''
-                    Write-Host "About to assign the DIRECTORY ROLE '$ExchangeDirectoryRole' to this app." -ForegroundColor Yellow
-                    Write-Host '  This is a tenant-wide privilege grant, not an API permission. Exchange will not' -ForegroundColor Yellow
+                    Write-Host "About to assign the DIRECTORY ROLE '$DirectoryRole' to this app." -ForegroundColor Yellow
+                    Write-Host '  This is a tenant-wide privilege grant, not an API permission. Exchange and' -ForegroundColor Yellow
+                    Write-Host '  Teams will not' -ForegroundColor Yellow
                     Write-Host '  work without it, but it is worth knowing you are making it.' -ForegroundColor Yellow
 
                     & $graph POST '/v1.0/roleManagement/directory/roleAssignments' @{
@@ -533,8 +594,8 @@ function New-MsecApp {
                     } | Out-Null
 
                     $roleAssigned = $true
-                    $directoryRole = $ExchangeDirectoryRole
-                    Write-Host "  Assigned directory role '$ExchangeDirectoryRole'." -ForegroundColor Green
+                    $assignedRole = $DirectoryRole
+                    Write-Host "  Assigned directory role '$DirectoryRole'." -ForegroundColor Green
                 }
             }
         }
@@ -542,11 +603,11 @@ function New-MsecApp {
             # Creating a role assignment needs Privileged Role Administrator - a higher bar than
             # the rest of this command, so the caller may legitimately not have it. Said clearly
             # rather than failing the whole bootstrap, since everything else did work.
-            Write-Warning "Could not assign the directory role '$ExchangeDirectoryRole' to the app. Exchange commands will fail until someone with Privileged Role Administrator assigns it - in the portal: Entra ID > Roles and administrators > $ExchangeDirectoryRole > Add assignment > pick the '$($app.displayName)' application. Original error: $($_.Exception.Message)"
+            Write-Warning "Could not assign the directory role '$DirectoryRole' to the app. Exchange and Teams commands will fail until someone with Privileged Role Administrator assigns it - in the portal: Entra ID > Roles and administrators > $DirectoryRole > Add assignment > pick the '$($app.displayName)' application. Original error: $($_.Exception.Message)"
         }
 
         if (-not $roleAssigned) {
-            Write-Warning "Exchange.ManageAsApp on its own is NOT enough. Until the app holds a directory role, Connect-MsecExchangeOnline will connect and every Get-EXO* call will then fail with an authorisation error that names nothing."
+            Write-Warning "An app role on its own is NOT enough for Exchange or Teams. Until the app holds a directory role, Connect-MsecExchangeOnline and Connect-MsecTeams will both connect and every Get-EXO* / Get-Cs* call will then fail with an authorisation error that names nothing."
         }
     }
 
@@ -563,8 +624,8 @@ function New-MsecApp {
         GrantedNow      = $grantedNow.ToArray()
         AlreadyGranted  = $alreadyGranted.ToArray()
         UnavailableRoles = @($missingRoles)
-        # Null unless -Workload included Exchange. Worth asserting on: it is the difference
-        # between an Exchange connection that works and one that authenticates and then fails.
-        DirectoryRole   = $directoryRole
+        # Null unless -Workload included Exchange or Teams. Worth asserting on: it is the
+        # difference between a connection that works and one that authenticates and then fails.
+        DirectoryRole   = $assignedRole
     }
 }

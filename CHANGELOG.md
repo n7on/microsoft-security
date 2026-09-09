@@ -4,7 +4,74 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
+### Changed
+- **Fixed on Linux:** the module folder and its manifest are lowercase - `msec/msec.psd1`,
+  `msec.psm1`, `msec.format.ps1xml` - matching the PowerShell Gallery id.
+
+  The id was set by the first publish and a Gallery id keeps the casing it was first published
+  with, so `Install-Module` created `.../Modules/msec/<version>/Msec.psd1`: a lowercase directory
+  holding a capitalised manifest. PowerShell resolves a module as
+  `<directory>/<version>/<directory>.psd1`, and on Linux that lookup is CASE-SENSITIVE - so
+  `Import-Module Msec` failed there with "no valid module file was found in any module
+  directory", which reads as a module that was never installed. macOS and Windows never showed
+  it. Every Linux consumer was affected, not only CI.
+
+  The internal folders are lowercase too (`public/`, `private/`, `tests/`, `kql/`, `scripts/`).
+  Folders whose names are user-facing parameter values are NOT: `kql/Graph/VM/` still backs
+  `-ResourceType VM`, and `scripts/VM/Windows/` still backs `-Os Windows`. Lowercasing those
+  would have changed what callers type, and broken them on Linux only.
+
+  Command names, the `-Msec` noun prefix and the `Msec*` type names are unchanged.
+
+- **Breaking:** the Azure DevOps commands are named `*AzureDevOps*` rather than `*Ado*`.
+  `Get-MsecAdoServiceConnection`, which shipped in 0.2.0, is now
+  `Get-MsecAzureDevOpsServiceConnection`. No alias is kept: an abbreviation that appears in one
+  command family and nowhere else in the module is worse than a one-line fix at the call site.
+
 ### Added
+- `Connect-MsecTeams` / `Get-MsecTeamsPolicy` - the Teams settings that decide who can reach
+  your people: external access and federation, guest access, meeting lobby and anonymous join,
+  recording, which apps users may install, and file sharing in chats with external users.
+
+  Teams admin policy is NOT in Graph, so this goes through the MicrosoftTeams module - the
+  third workload msec reaches that way, after Exchange and SharePoint. It has a wrinkle the
+  others do not: `Connect-MicrosoftTeams -AccessTokens` takes an ARRAY of TWO tokens, for
+  Microsoft Graph and for the 'Skype and Teams Tenant Admin API'. Separate audiences, separate
+  app roles, and passing only the Graph one fails in a way that reads as a permission problem.
+  Teams also needs a DIRECTORY ROLE on top of app permissions, exactly as Exchange does.
+
+  `Get-MsecTeamsPolicy` signs in to Teams itself, so it is one call after `Connect-Msec` like
+  everything else here.
+
+  `Connect-MsecTeams -AsCurrentUser` connects as the signed-in Azure user instead of the app,
+  reusing the tokens from `Connect-AzAccount`. This exists because the Teams module cannot sign
+  in interactively off Windows at all - its browser flow calls into `kernel32.dll` and dies with
+  a dlopen error - and device code flow, the documented workaround, is refused by any
+  Conditional Access policy requiring a compliant device. Borrowing the Az session avoids both,
+  since that session already cleared CA. It is also the one place msec hands over an identity
+  that can WRITE: msec has no `Set-*` commands, but the connection it leaves behind carries your
+  rights, so `Set-Cs*` works afterwards. `Get-MsecTeamsPolicy` will not silently replace such a
+  session with the app's.
+
+  There is deliberately NO SharePoint equivalent. Teams accepts a token whose audience is the
+  service; SharePoint validates the audience against the HOST, and `Get-AzAccessToken` normalises
+  every sharepoint.com URL to the service GUID. The token is issued and then refused by every
+  site with a bare 401. Verified on a live tenant against both the root and the admin host, and
+  written up in `Connect-MsecSharePointOnline`'s notes so nobody adds the switch back.
+
+  ONE ROW PER SETTING, NOT PER POLICY. A meeting policy object carries roughly eighty
+  properties, most about layout and captions; returning whole objects makes the handful that
+  matter impossible to see and impossible to diff between two policies or two tenants. Only the
+  security-relevant settings are projected - which ones is a judgement the command makes, so it
+  is written out in the source and `-All` returns everything for checking it.
+
+  `IsGlobal` marks the tenant-wide policy, because that is what a user gets unless assigned
+  another: a permissive Global is a tenant-wide finding where a permissive custom policy may
+  apply to nobody. A policy area that cannot be read emits an `Unreadable` row rather than
+  being skipped - a missing federation configuration would otherwise read as a tenant with no
+  external access, the opposite of the truth.
 - `Get-MsecAzureRoleAssignment` + `Kql/Graph/Authorization/RoleAssignments.kql` - Azure RBAC
   assignments across every subscription, with role and principal names resolved.
 
@@ -28,6 +95,67 @@ All notable changes to this project will be documented in this file.
   One Resource Graph query covers the estate: 2415 assignments against the 400
   `Get-AzRoleAssignment` returns for the current subscription, and without mutating the
   caller's Az context.
+
+### Changed
+- `Get-MsecAzureDevOpsUser` - every user in an Azure DevOps organization and the groups they belong to,
+  one row per membership. Replaces the hand-rolled PAT-authenticated helpers in the Reporting
+  repo, and fixes three things they got wrong.
+
+  IT PAGES. The ADO graph APIs return one page and put the cursor in the X-MS-ContinuationToken
+  RESPONSE HEADER, not in the body. Reading `$response.value` gives page one with no error and
+  no sign more existed - and in an access review the users that go missing look exactly like
+  users who do not exist.
+
+  Group names are resolved from ONE fetch rather than a call per membership: the direct
+  translation is thousands of round trips on a few hundred users for a few dozen distinct
+  groups. A user in no group still gets a row (`(none)`), because emitting nothing drops the
+  account from the review; a user whose memberships could not be read gets `(unreadable)`, which
+  is a different claim. `Origin` separates Entra-backed accounts from `vsts` accounts that exist
+  only inside Azure DevOps, with no Conditional Access and no leaver process behind them.
+
+- `Get-MsecAzureDevOpsOrganizationPolicy` - the organization-wide Azure DevOps security policies: Entra
+  guest access, third-party OAuth apps, SSH keys, alternate credentials, public projects, who
+  may invite users, audit logging and the pipeline job-token scopes.
+
+  The same ceiling the SharePoint tenant settings and the Teams Global policy describe. Every
+  policy the API returns is a security control, so unlike the Teams command there is no
+  projection to argue with - all of them come back, grouped by Category, and one this module has
+  never heard of still appears under `Other` rather than being dropped.
+
+  `IsExplicit` CARRIES AS MUCH AS THE VALUE. A policy nobody ever set reports a default; a
+  default that happens to be safe today is not a decision anyone made. It is `$null`, not
+  `$true`, when the API does not say - "we do not know whether this was deliberate" is a
+  different claim from "it was". An empty response warns and returns nothing, because an account
+  that authenticates but cannot see organization settings would otherwise look like a clean org.
+
+- `Get-MsecSharePointTenantSetting` - the tenant-wide SharePoint and OneDrive settings, one row
+  per setting grouped into a Category, the same shape as `Get-MsecTeamsPolicy`.
+
+  THESE ARE THE CEILING EVERY SITE SITS UNDER. A site can be locked down and still live in a
+  tenant where anyone-links are on; reviewing sites one at a time never surfaces that. Covers
+  the sharing capability and domain lists, external resharing, legacy auth protocols (which
+  bypass Conditional Access entirely), unmanaged-device sync, and site/Loop creation.
+
+  AN EMPTY LIST READS AS `(none)` AND A MISSING VALUE AS `(not set)`, never blank. With
+  `SharingDomainRestrictionMode` set to `allowList`, an EMPTY `SharingAllowedDomainList` means
+  nobody outside can be invited at all - the opposite of what a blank cell suggests.
+
+- `New-MsecApp -Workload SharePoint` also grants `SharePointTenantSettings.Read.All` on Graph,
+  which is what `/admin/sharepoint/settings` needs - the tenant-wide sharing posture:
+  `SharingCapability`, the domain allow/block-list and the restriction mode. `Sites.Read.All`
+  does not cover it, those being site properties rather than tenant settings, and the call
+  returns a bare 403 naming no permission. It is also the only route msec has to those
+  settings: the PnP equivalent needs an admin-host token that `Get-AzAccessToken` cannot mint.
+
+- `New-MsecApp -Workload Teams` grants `application_access` on the Skype and Teams Tenant
+  Admin API and assigns the directory role. Without this `Connect-MsecTeams` could not get a
+  token for that audience at all, so the Teams commands shipped unusable until the app was
+  configured by hand.
+
+- `-ExchangeDirectoryRole` is now `-DirectoryRole`, because Teams needs the same role for the
+  same reason and the old name said otherwise. The old name still works as an alias, so
+  nothing that passed it in 0.2.0 breaks.
+
 ## [0.2.0] - 2026-09-07
 
 ### Added
@@ -255,7 +383,7 @@ All notable changes to this project will be documented in this file.
   non-zero exit as "issue found, run the remediation", so a machine that could not be read would
   otherwise have its administrators edited on the strength of a failed check.
 
-  `Msec/Tests/IntuneRemediationScripts.Tests.ps1` guards what is testable off-Windows: both
+  `msec/tests/IntuneRemediationScripts.Tests.ps1` guards what is testable off-Windows: both
   halves present and parsing, the group resolved by SID, the safety rails still there, and -
   the hazard the scripts warn about - `$TargetAccount` identical across the pair, since they are
   separate uploads and nothing in Intune enforces that they agree.
@@ -834,7 +962,7 @@ First release.
   `Get-MsecIntuneDevice`, `Get-MsecIntuneScriptResult`.
 - **Azure** - `Search-MsecAzureResourceGraph`, `Search-MsecLogAnalytics`,
   `Invoke-MsecAzureVMScript`, `Select-MsecAzureContext`.
-- **Azure DevOps** - `Get-MsecAdoServiceConnection`.
+- **Azure DevOps** - `Get-MsecAzureDevOpsServiceConnection`.
 - **Session** - `New-MsecApp`, `Connect-Msec`, `Disconnect-Msec`. The private key stays
   in Azure Key Vault; tokens are JWT client assertions signed there.
 - **Reporting** - `Export-MsecWordReport`.
@@ -855,7 +983,7 @@ help under `.NOTES`:
   each other. PIM-eligible assignments are included.
 - **Intune assignment targets are typed columns, not a summary string.** `AssignmentType`,
   `AssignmentGroup` and `AssignmentExcludedGroup` are arrays, so `-contains` is exact;
-  `Msec.format.ps1xml` flattens them for display only. An assignment count cannot tell
+  `msec.format.ps1xml` flattens them for display only. An assignment count cannot tell
   *All Users plus an exclusion group* from *two unrelated groups*.
 - **Unmeasured is `$null`, measured-and-zero is `0`.** A failed read never reports the same
   value as a successful one that found nothing; where a command can say why, it does.

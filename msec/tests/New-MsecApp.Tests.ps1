@@ -11,7 +11,7 @@
 # exactly that.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Passed as TEXT and rebuilt inside InModuleScope - a scriptblock stays bound to the
@@ -69,6 +69,10 @@ Mock Invoke-RestMethod -MockWith {
         if ($script:ExchangeSpMissing) { throw 'Request_ResourceNotFound' }
         return [pscustomobject]@{ id = 'sp-exo'; appRoles = @(
             [pscustomobject]@{ value = 'Exchange.ManageAsApp'; id = 'role-exo'; allowedMemberTypes = @('Application') }) }
+    }
+    if ($u -match "servicePrincipals\(appId='48ac35b8-9aa8-4d74-927d-1f4a14a0b239") {
+        return [pscustomobject]@{ id = 'sp-teams'; appRoles = @(
+            [pscustomobject]@{ value = 'application_access'; id = 'role-teams'; allowedMemberTypes = @('Application') }) }
     }
     if ($u -match "servicePrincipals\(appId='00000003-0000-0ff1-ce00-") {
         return [pscustomobject]@{ id = 'sp-spo'; appRoles = @(
@@ -291,7 +295,8 @@ Describe 'New-MsecApp' {
 
         BeforeEach {
             InModuleScope Msec {
-                $script:GraphRoleValues = @('SecurityEvents.Read.All', 'Policy.Read.All')
+                $script:GraphRoleValues = @('SecurityEvents.Read.All', 'Policy.Read.All',
+                                            'Sites.Read.All', 'SharePointTenantSettings.Read.All')
                 $script:ExistingRRA = @()
                 $script:ExistingGrants = @()
                 $script:ExistingRoleAssignments = @()
@@ -337,6 +342,18 @@ Describe 'New-MsecApp' {
             $grant[0].Body.resourceId | Should -Be 'sp-spo'
 
             $out.Result.GrantedNow | Should -Contain 'Office 365 SharePoint Online: Sites.Read.All'
+
+            # The tenant-wide sharing posture - SharingCapability, the domain allow-list, the
+            # restriction mode - lives at /admin/sharepoint/settings and needs a permission of
+            # its own. Sites.Read.All reads SITES, not tenant settings, and the call 403s with
+            # 'Caller does not have required permissions for this API', naming nothing.
+            $tenantGrant = @($out.Calls | Where-Object {
+                $_.Method -eq 'POST' -and $_.Uri -match '/appRoleAssignments' -and
+                $_.Body.appRoleId -eq 'role-SharePointTenantSettings.Read.All'
+            })
+            @($tenantGrant).Count | Should -Be 1
+            $tenantGrant[0].Body.resourceId | Should -Be 'sp-graph'
+
             # SharePoint needs no directory role - that is Exchange's problem alone.
             $out.Result.DirectoryRole | Should -BeNullOrEmpty
         }
@@ -361,6 +378,42 @@ Describe 'New-MsecApp' {
             $assign[0].Body.directoryScopeId | Should -Be '/'
 
             $out.Result.DirectoryRole | Should -Be 'Global Reader'
+        }
+
+        It 'grants Teams on the Teams admin API and assigns the directory role' {
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                $result = New-MsecApp -KeyVaultName 'kv-test' -Workload Teams -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Result = $result; Calls = @($script:Calls) }
+            }
+
+            # Teams is a SEPARATE audience from Graph. Connect-MicrosoftTeams presents a token
+            # for the Skype and Teams Tenant Admin API, which carries only the roles granted on
+            # THAT resource - so Graph permissions, however broad, buy nothing here.
+            $grant = @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/appRoleAssignments' -and $_.Body.appRoleId -eq 'role-teams' })
+            @($grant).Count | Should -Be 1
+            $grant[0].Body.resourceId | Should -Be 'sp-teams'
+
+            # And the directory role, for the same reason Exchange needs one: without it
+            # Connect-MicrosoftTeams succeeds and every Get-Cs* call then fails.
+            $assign = @($out.Calls | Where-Object { $_.Method -eq 'POST' -and $_.Uri -match '/roleManagement/directory/roleAssignments' })
+            @($assign).Count | Should -Be 1
+            $out.Result.DirectoryRole | Should -Be 'Global Reader'
+        }
+
+        It 'takes the directory role under its old Exchange-specific name' {
+            # -ExchangeDirectoryRole shipped in 0.2.0. Renaming it outright would break every
+            # caller that already passes it, and silently: a bootstrap script would fail at the
+            # parameter binder rather than at anything to do with permissions.
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+                New-MsecApp -KeyVaultName 'kv-test' -Workload Exchange `
+                    -ExchangeDirectoryRole 'Exchange Administrator' -WarningAction SilentlyContinue 6>$null
+            }
+
+            $out.DirectoryRole | Should -Be 'Exchange Administrator'
         }
 
         It 'does not re-assign a directory role the app already holds' {

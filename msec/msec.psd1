@@ -1,12 +1,12 @@
 @{
-    RootModule        = 'Msec.psm1'
-    ModuleVersion     = '0.2.0'
+    RootModule        = 'msec.psm1'
+    ModuleVersion     = '0.3.0'
     GUID              = '5a8c1f2b-9d4e-4b7c-8a3f-1e6d2b9c4a7f'
     Author            = 'Anton Lindstrom'
     Copyright         = '(c) 2026 Anton Lindström. Licensed under the MIT License.'
     # Shown at the top of the Gallery listing, so it names every area the module covers.
     # Kept in step with the first paragraph of README.md.
-    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Exchange Online, SharePoint Online, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by design: every Get-Msec* command reads, and the only command that writes is New-MsecApp, which creates its own app registration and grants it read permissions - and, when asked with -Workload Exchange, assigns it a directory role, which Exchange requires and which is a tenant-wide privilege grant rather than an API permission. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there, so no key material reaches the machine running the module.'
+    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Exchange Online, SharePoint Online, Microsoft Teams, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by design: every Get-Msec* command reads, and the only command that writes is New-MsecApp, which creates its own app registration and grants it read permissions - and, when asked with -Workload Exchange or Teams, assigns it a directory role, which those services require and which is a tenant-wide privilege grant rather than an API permission. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there, so no key material reaches the machine running the module.'
     PowerShellVersion = '7.0'
 
     # Az.Accounts: the user logs into Azure (their own identity) to reach Key Vault and is used for
@@ -33,7 +33,7 @@
     # here as well is what a consumer who does `Import-Module Msec` by name gets, and the
     # double load is harmless - the second registration replaces the first for the same
     # type names.
-    FormatsToProcess  = 'Msec.format.ps1xml'
+    FormatsToProcess  = 'msec.format.ps1xml'
 
     FunctionsToExport = @(
         'New-MsecApp',
@@ -42,6 +42,7 @@
         'Connect-MsecGraphSdk',
         'Connect-MsecExchangeOnline',
         'Connect-MsecSharePointOnline',
+        'Connect-MsecTeams',
         'Get-MsecSecureScore',
         'Get-MsecAzureCost',
         'Get-MsecAzureRoleAssignment',
@@ -62,7 +63,9 @@
         'Get-MsecEntraTenantSecuritySetting',
         'Get-MsecExchangeMailboxPermission',
         'Get-MsecSharePointSite',
+        'Get-MsecTeamsPolicy',
         'Get-MsecSharePointSiteUser',
+        'Get-MsecSharePointTenantSetting',
         'Get-MsecEntraGroupMember',
         'Get-MsecEntraLicense',
         'Get-MsecEntraRoleHolder',
@@ -76,7 +79,9 @@
         'Search-MsecLogAnalytics',
         'Invoke-MsecAzureVMScript',
         'Select-MsecAzureContext',
-        'Get-MsecAdoServiceConnection',
+        'Get-MsecAzureDevOpsServiceConnection',
+        'Get-MsecAzureDevOpsOrganizationPolicy',
+        'Get-MsecAzureDevOpsUser',
         'Export-MsecPostureReport',
         'Export-MsecVMUpdateReport',
         'Export-MsecVMNtpReport',
@@ -96,7 +101,7 @@
                 'MicrosoftSecurity', 'Security', 'SecureScore', 'Defender', 'DefenderXDR',
                 'ExposureManagement', 'Entra', 'EntraID', 'AzureAD', 'ConditionalAccess',
                 'MFA', 'PIM', 'PrivilegedAccess', 'Intune', 'MDM', 'Compliance', 'Azure',
-                'ExchangeOnline', 'SharePointOnline', 'Microsoft365',
+                'ExchangeOnline', 'SharePointOnline', 'MicrosoftTeams', 'Teams', 'Microsoft365',
                 'KeyVault', 'Graph', 'Audit', 'Posture', 'CrossPlatform', 'Windows',
                 'Linux', 'macOS'
             )
@@ -105,6 +110,21 @@
             ProjectUri = 'https://github.com/n7on/microsoft-security'
 
             ReleaseNotes = @'
+v0.3.0
+- Microsoft Teams: Connect-MsecTeams and Get-MsecTeamsPolicy - external access and federation,
+  guest access, meeting lobby and anonymous join, recording, app installation, and file sharing
+  in chats with external users. One row per SETTING, so policies diff between tenants.
+- SharePoint: Get-MsecSharePointTenantSetting reads the tenant-wide sharing posture that no
+  per-site review can show - sharing capability, domain allow/block lists, legacy auth.
+- Azure DevOps: Get-MsecAzureDevOpsUser (users and their group memberships, paginated) and
+  Get-MsecAzureDevOpsOrganizationPolicy (guest access, third-party OAuth, SSH, public projects).
+- Connect-MsecTeams -AsCurrentUser borrows the Azure session, because the Teams module cannot
+  sign in interactively off Windows and Conditional Access refuses device code flow.
+- New-MsecApp: -Workload Teams, and -ExchangeDirectoryRole is now -DirectoryRole (the old name
+  still works). -Workload SharePoint also grants SharePointTenantSettings.Read.All.
+- Azure RBAC: Get-MsecAzureRoleAssignment across every subscription, with role and principal
+  names resolved and deleted principals kept rather than dropped.
+
 v0.2.0
 - Exchange Online and SharePoint Online: mailbox permissions, site inventory, and site
   owners/members with security groups expanded to the people inside them.

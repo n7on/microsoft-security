@@ -4,7 +4,7 @@
 # Resource Graph and its two failure modes, and the invariants the bundled Law queries rely on.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Redirect the completion cache for the whole file. Every test here resolves a workspace,
@@ -167,7 +167,7 @@ Describe '-WorkspaceName completion' {
 
 Describe 'Kql/Law bundled queries' {
     BeforeAll {
-        $script:LawRoot = Join-Path (Get-Module Msec).ModuleBase 'Kql/Law'
+        $script:LawRoot = Join-Path (Get-Module Msec).ModuleBase 'kql/Law'
     }
 
     It 'carries no time filter - the window belongs to -Days' {

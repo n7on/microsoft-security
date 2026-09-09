@@ -1,6 +1,6 @@
 # Dot-source private helpers first, then public functions; export only public.
-$private = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Private') -Filter '*.ps1' -ErrorAction SilentlyContinue)
-$public  = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'Public')  -Filter '*.ps1' -ErrorAction SilentlyContinue)
+$private = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'private') -Filter '*.ps1' -ErrorAction SilentlyContinue)
+$public  = @(Get-ChildItem -Path (Join-Path $PSScriptRoot 'public')  -Filter '*.ps1' -ErrorAction SilentlyContinue)
 
 foreach ($function in @($private + $public)) {
     try {
@@ -42,14 +42,14 @@ $script:MsecGlobalAdministratorTemplateId = '62e90394-69f5-4237-9190-012177145e1
 
 # Table views for the types with COLLECTION columns, which a DefaultDisplayPropertySet
 # cannot render properly - it chooses the columns but not their formatting, so a string[]
-# comes out as '{a, b}'. See the header of Msec.format.ps1xml for why the data stays an
+# comes out as '{a, b}'. See the header of msec.format.ps1xml for why the data stays an
 # array and only the display is flattened.
 #
 # Loaded here rather than declared as FormatsToProcess in Msec.psd1 because the test suite
 # imports Msec.psm1 DIRECTLY - a manifest key would be skipped on that path, and the views
 # would silently not apply in exactly the place they are verified. One mechanism, one code
 # path, works for both import styles.
-$msecFormatFile = Join-Path $PSScriptRoot 'Msec.format.ps1xml'
+$msecFormatFile = Join-Path $PSScriptRoot 'msec.format.ps1xml'
 if (Test-Path -LiteralPath $msecFormatFile) {
     # -PrependPath so these win over anything already registered for the same type names,
     # which matters on a re-import during development.
@@ -112,7 +112,7 @@ Update-TypeData -TypeName 'MsecEntraSidResolved' `
     -DefaultDisplayPropertySet 'Sid', 'ObjectId', 'DisplayName', 'ObjectType' `
     -Force
 
-# NB: Msec.format.ps1xml defines the TABLE view for this type, and wins for Format-Table.
+# NB: msec.format.ps1xml defines the TABLE view for this type, and wins for Format-Table.
 # This set still governs Format-List and Select-Object, keeping Raw and AssignmentDetail
 # out of a list view - so both are needed, and both list the same columns on purpose.
 #
@@ -131,7 +131,7 @@ Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
     -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentType', 'AssignmentGroup', 'Status' `
     -Force
 
-Update-TypeData -TypeName 'MsecAdoServiceConnection' `
+Update-TypeData -TypeName 'MsecAzureDevOpsServiceConnection' `
     -DefaultDisplayPropertySet 'Name', 'Type', 'AuthScheme', 'IsShared' `
     -Force
 

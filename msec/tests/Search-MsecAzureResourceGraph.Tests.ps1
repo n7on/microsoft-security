@@ -6,7 +6,7 @@
 # would miss because it inherits the module's $script: state).
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Redirect the completion cache for the whole file. An unscoped Search-MsecAzureResourceGraph
@@ -734,7 +734,7 @@ Describe 'Bundled KQL files' {
     # name a lookup subquery) fails server-side with ParserFailure, which you only find out
     # by running it against a real tenant. Inline such lookups into join()/union() instead.
     It 'uses no tabular let statements, which Resource Graph cannot parse' {
-        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'Kql'
+        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql'
         $offenders = Get-ChildItem -LiteralPath $kqlRoot -Filter *.kql -File -Recurse |
             Where-Object {
                 # let <name> = <TableOrExpr> ... | ...  (pipe on the same or a later line)
@@ -753,7 +753,7 @@ Describe 'Bundled KQL files' {
         #
         # Scoped to these two folders deliberately: the older queries predate this rule and
         # tightening them is a separate change with its own risk.
-        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'Kql/Graph'
+        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql/Graph'
         $offenders = 'AppGateway', 'Waf' | ForEach-Object {
             Get-ChildItem -LiteralPath (Join-Path $kqlRoot $_) -Filter *.kql -File
         } | ForEach-Object {
@@ -775,7 +775,7 @@ Describe 'Bundled KQL files' {
         # Resource Graph rejects a group-less extract_all pattern at PARSE time with
         # Functions_ArgumentRegexMatchingGroupCountInvalid, so a pattern used only to count
         # matches fails the entire query rather than returning an empty array.
-        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'Kql'
+        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql'
         $offenders = Get-ChildItem -LiteralPath $kqlRoot -Filter *.kql -File -Recurse |
             ForEach-Object {
                 $file = $_
@@ -829,7 +829,7 @@ Describe 'Kql/Graph/Resource NetworkExposure' {
 
     BeforeAll {
         $script:NetworkExposureQuery = Get-Content -Raw `
-            (Join-Path $PSScriptRoot '..' 'Kql' 'Graph' 'Resource' 'NetworkExposure.kql')
+            (Join-Path $PSScriptRoot '..' 'kql' 'Graph' 'Resource' 'NetworkExposure.kql')
     }
 
     It 'reads the nested publicNetworkAccess path before the top-level one' {

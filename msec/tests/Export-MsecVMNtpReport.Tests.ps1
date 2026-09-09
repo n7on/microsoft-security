@@ -14,7 +14,7 @@
 $script:HasExcel = $null -ne (Get-Module -ListAvailable ImportExcel)
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

@@ -16,7 +16,7 @@ $script:HasExo = $null -ne (Get-Module -ListAvailable ExchangeOnlineManagement)
 $script:HasPnp = $null -ne (Get-Module -ListAvailable PnP.PowerShell)
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 }
 

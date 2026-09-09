@@ -9,7 +9,7 @@
 #   4. The signature bytes returned by KV land verbatim in the JWT.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # A stable fake SHA-1 thumbprint for x5t header tests.

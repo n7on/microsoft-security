@@ -7,7 +7,7 @@
 # for the ARM calls themselves.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Get-MsecAzureSecureScore enumerates subscriptions through Get-MsecSubscriptionList, which

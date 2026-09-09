@@ -17,7 +17,7 @@
 # missing remediate.ps1 is a legitimate shape rather than a half-finished one.
 
 BeforeAll {
-    $script:IntuneRoot = Join-Path $PSScriptRoot '..' 'Scripts' 'Intune'
+    $script:IntuneRoot = Join-Path $PSScriptRoot '..' 'scripts' 'Intune'
     $script:WindowsRoot = Join-Path $script:IntuneRoot 'Windows'
 
     $script:Pairs = @(Get-ChildItem -Path $script:WindowsRoot -Directory -ErrorAction SilentlyContinue)

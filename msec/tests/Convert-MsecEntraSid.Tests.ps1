@@ -7,7 +7,7 @@
 # a plausible-looking but meaningless GUID.
 
 BeforeAll {
-    $modulePath = Join-Path $PSScriptRoot '..' 'Msec.psm1'
+    $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
     Import-Module $modulePath -Force -ErrorAction Stop
 
     # Verified pair: little-endian uint32 packing of the objectId's 16 bytes.
@@ -257,7 +257,7 @@ Describe 'Convert-MsecEntraSid' {
         }
 
         It 'is listed in FunctionsToExport' {
-            $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..' 'Msec.psd1')
+            $manifest = Import-PowerShellDataFile (Join-Path $PSScriptRoot '..' 'msec.psd1')
             $manifest.FunctionsToExport | Should -Contain 'Convert-MsecEntraSid'
         }
     }

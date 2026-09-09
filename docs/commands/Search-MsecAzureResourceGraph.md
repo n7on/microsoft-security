@@ -1,6 +1,6 @@
 ---
-external help file: Msec-help.xml
-Module Name: Msec
+external help file: msec-help.xml
+Module Name: msec
 online version:
 schema: 2.0.0
 ---
@@ -21,7 +21,7 @@ Search-MsecAzureResourceGraph [-ResourceType] <String> [[-Name] <String>] [[-Sub
 ## DESCRIPTION
 The query is loaded by convention from:
 
-    Msec/Kql/Graph/\<ResourceType\>/\<Name\>.kql
+    msec/kql/Graph/\<ResourceType\>/\<Name\>.kql
 
 For example, Search-MsecAzureResourceGraph -ResourceType VM loads Kql/Graph/VM/All.kql.
 Each

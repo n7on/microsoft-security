@@ -1,6 +1,6 @@
 ---
-external help file: Msec-help.xml
-Module Name: Msec
+external help file: msec-help.xml
+Module Name: msec
 online version:
 schema: 2.0.0
 ---

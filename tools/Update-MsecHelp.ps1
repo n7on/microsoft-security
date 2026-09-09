@@ -57,7 +57,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$manifest = Join-Path $repoRoot 'Msec' 'Msec.psd1'
+$manifest = Join-Path $repoRoot 'msec' 'msec.psd1'
 if (-not $OutputFolder) { $OutputFolder = Join-Path $repoRoot 'docs' 'commands' }
 
 if (-not (Get-Module -ListAvailable PlatyPS)) {
@@ -82,8 +82,8 @@ $validKeywords = @(
 if (-not $SkipHelpAudit) {
     $problems = [System.Collections.Generic.List[string]]::new()
 
-    foreach ($file in Get-ChildItem (Join-Path $repoRoot 'Msec') -Recurse -Filter *.ps1 |
-                        Where-Object { $_.FullName -notmatch [regex]::Escape([IO.Path]::DirectorySeparatorChar + 'Tests' + [IO.Path]::DirectorySeparatorChar) }) {
+    foreach ($file in Get-ChildItem (Join-Path $repoRoot 'msec') -Recurse -Filter *.ps1 |
+                        Where-Object { $_.FullName -notmatch [regex]::Escape([IO.Path]::DirectorySeparatorChar + 'tests' + [IO.Path]::DirectorySeparatorChar) }) {
         $lines  = Get-Content -LiteralPath $file.FullName
         $inHelp = $false
         for ($i = 0; $i -lt $lines.Count; $i++) {

@@ -124,6 +124,12 @@ v0.3.0
   still works). -Workload SharePoint also grants SharePointTenantSettings.Read.All.
 - Azure RBAC: Get-MsecAzureRoleAssignment across every subscription, with role and principal
   names resolved and deleted principals kept rather than dropped.
+- FIXED ON LINUX: the module folder and manifest are lowercase, matching the Gallery id. Before
+  this, Install-Module created msec/<version>/Msec.psd1 and Import-Module failed on Linux with
+  "no valid module file was found in any module directory" - a module that installed fine and
+  could not be loaded. macOS and Windows were unaffected.
+- The Azure DevOps commands are now named Get-MsecAzureDevOps* rather than Get-MsecAdo*.
+  Get-MsecAdoServiceConnection from 0.2.0 is renamed; there is no alias.
 
 v0.2.0
 - Exchange Online and SharePoint Online: mailbox permissions, site inventory, and site

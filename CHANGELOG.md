@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-09-08
+## [0.3.0] - 2026-09-09
 
 ### Changed
 - **Fixed on Linux:** the module folder and its manifest are lowercase - `msec/msec.psd1`,

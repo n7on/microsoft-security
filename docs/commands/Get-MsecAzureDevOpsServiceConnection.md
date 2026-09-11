@@ -15,7 +15,7 @@ object preserved in Raw.
 ## SYNTAX
 
 ```
-Get-MsecAzureDevOpsServiceConnection [-Organization] <String> [[-Project] <String>] [<CommonParameters>]
+Get-MsecAzureDevOpsServiceConnection [-Organization] <String> [[-Project] <String>] [-IncludeSecurity] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -98,6 +98,26 @@ Aliases:
 Required: False
 Position: 2
 Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -IncludeSecurity
+Who can use or administer each connection, and which pipelines may reference it.
+OPT-IN because it costs two extra calls per connection - 243 connections on the
+organization this was built against, so nearly 500 round trips.
+
+Without it the security columns are $null, which reads as "not collected" rather than
+"nobody has access" - the same distinction this command draws everywhere else.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

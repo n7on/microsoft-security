@@ -250,8 +250,8 @@ DevOps is not the missing piece.
 What IS needed is a manual step, once per organization: add the app's service principal
 under Organization Settings \> Users, with at least Basic access and Reader on the
 project collection.
-Until that is done Get-MsecAzureDevOpsUser, Get-MsecAzureDevOpsOrganizationPolicy
-and Get-MsecAzureDevOpsServiceConnection all fail with a 401 that reads like a missing API
+Until that is done Get-MsecAzureDevOpsUser and Get-MsecAzureDevOpsOrganizationPolicy
+both fail with a 401 that reads like a missing API
 permission and is not one - so running New-MsecApp again will never fix it.
 Those
 commands say as much in their own errors.

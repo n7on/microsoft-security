@@ -3,13 +3,18 @@
 # Tests for Get-MsecAzureDevOpsOrganizationPolicy.
 #
 # These policies are the ORGANIZATION's ceiling - the same role the SharePoint tenant settings
-# and the Teams Global policy play. A well-run project inside an org that allows third-party
-# OAuth apps is still exposed, and reviewing projects one at a time never shows it.
+# and the Teams Global policy play.
 #
-# Three things worth pinning. The API has shipped more than one response shape, and guessing
-# wrong produces empty rows that read as "no policies set". A policy nobody ever configured
-# reports a DEFAULT, which is not a decision anyone made. And an empty response means the
-# account cannot see organization settings, which must not read as a clean org.
+# THERE IS NO REST API. _apis/organizationpolicy/policies 404s on every api-version and on both
+# hosts; the only source is the data provider behind the portal's own settings page. The shape
+# below was captured from a live organization, not invented, because the first version of this
+# command was written against a documented-looking endpoint that does not exist and passed its
+# mocked tests regardless.
+#
+# Two things worth pinning hardest. isValueUndefined is OMITTED for a policy someone set and
+# present-and-true for one on its default, so absence means "explicitly configured" - reading a
+# missing property as unknown reported every configured policy as blank. And an empty provider
+# must warn rather than return nothing, because this route is internal and can change shape.
 
 BeforeAll {
     $modulePath = Join-Path $PSScriptRoot '..' 'msec.psm1'
@@ -17,119 +22,164 @@ BeforeAll {
 }
 
 AfterAll {
-    Remove-Module Msec -Force -ErrorAction SilentlyContinue
+    Remove-Module msec -Force -ErrorAction SilentlyContinue
 }
 
 Describe 'Get-MsecAzureDevOpsOrganizationPolicy' {
 
     BeforeEach {
-        InModuleScope Msec {
+        InModuleScope msec {
             $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
             Mock Get-MsecAccessToken -MockWith { 'ADO.TOKEN' }
+
+            # The provider payload, shaped as a live organization returns it.
+            function script:New-PolicyResponse {
+                param($Policies, $Inverted = @(), [switch] $Empty)
+                $data = if ($Empty) {
+                    @{ 'ms.vss-admin-web.organization-policies-data-provider' = $null }
+                }
+                else {
+                    @{ 'ms.vss-admin-web.organization-policies-data-provider' = @{
+                        policies         = $Policies
+                        invertedPolicies = @($Inverted)
+                    } }
+                }
+                [pscustomobject]@{
+                    Content = (@{ fps = @{ dataProviders = @{ data = $data } } } | ConvertTo-Json -Depth 12)
+                }
+            }
         }
     }
 
-    It 'asks Azure DevOps for a token, not Graph, and presents it as a bearer' {
-        InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @(
-                [pscustomobject]@{ policy = [pscustomobject]@{ name = 'Policy.DisallowOAuthAuthentication'; effectiveValue = $false; isValueUndefined = $false } }) } }
+    It 'reads the portal data provider, not the REST route that does not exist' {
+        InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith {
+                New-PolicyResponse -Policies @{ security = @(
+                    @{ description = 'Log audit events'; policy = @{ name = 'Policy.LogAuditEvents'; effectiveValue = $true } }) }
+            }
 
             Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' | Out-Null
 
-            # ADO is its own Entra resource; a Graph token is rejected outright.
-            Should -Invoke Get-MsecAccessToken -Times 1 -Exactly -ParameterFilter {
-                $Resource -eq '499b84ac-1321-427f-aa17-267ca6975798'
-            }
-            Should -Invoke Invoke-RestMethod -Times 1 -Exactly -ParameterFilter {
-                $Uri -match 'dev\.azure\.com/contoso/_apis/organizationpolicy/policies' -and
+            # _apis/organizationpolicy/policies 404s. An api-version on this route 404s too.
+            Should -Invoke Invoke-WebRequest -Times 1 -Exactly -ParameterFilter {
+                $Uri -match '_settings/organizationPolicy\?__rt=fps&__ver=2' -and
+                $Uri -notmatch 'api-version' -and
                 $Headers.Authorization -eq 'Bearer ADO.TOKEN'
             }
         }
     }
 
-    It 'reads the nested policy shape, and trims the prefix every name carries' {
-        $rows = InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @(
-                [pscustomobject]@{ policy = [pscustomobject]@{ name = 'Policy.DisallowAadGuestUserAccess'; effectiveValue = $true; isValueUndefined = $false } }) } }
-            Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
+    It 'asks Azure DevOps for a token, not Graph' {
+        InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith { New-PolicyResponse -Policies @{ security = @() } }
+            Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' | Out-Null
+            Should -Invoke Get-MsecAccessToken -Times 1 -Exactly -ParameterFilter {
+                $Resource -eq '499b84ac-1321-427f-aa17-267ca6975798'
+            }
         }
-
-        $rows.Setting    | Should -Be 'DisallowAadGuestUserAccess'
-        $rows.Value      | Should -Be 'True'
-        $rows.Category   | Should -Be 'Access'
-        $rows.IsExplicit | Should -BeTrue
     }
 
-    It 'reads the flat shape too, because the API has shipped both' {
-        $rows = InModuleScope Msec {
-            # Guessing one shape and getting the other yields rows of nulls, which read as an
-            # organization with nothing configured.
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @(
-                [pscustomobject]@{ name = 'Policy.LogAuditEvents'; effectiveValue = $true; isValueUndefined = $false }) } }
+    It 'groups by the provider own categories and uses the portal label' {
+        $rows = InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith {
+                New-PolicyResponse -Policies @{
+                    applicationConnection = @(
+                        @{ description = 'Third-party application access via OAuth'
+                           policy = @{ name = 'Policy.DisallowOAuthAuthentication'; effectiveValue = $true; isValueUndefined = $true } })
+                    privacy = @(
+                        @{ description = 'Allow Microsoft to collect feedback from users'
+                           policy = @{ name = 'Policy.AllowFeedbackCollection'; effectiveValue = $true; isValueUndefined = $true } })
+                } -Inverted @('Policy.DisallowOAuthAuthentication')
+            }
             Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
         }
 
-        $rows.Setting  | Should -Be 'LogAuditEvents'
-        $rows.Category | Should -Be 'Auditing'
+        # The category comes from the payload, so there is no table here to drift out of date.
+        ($rows | Where-Object Policy -eq 'DisallowOAuthAuthentication').Category | Should -Be 'Application connection'
+        ($rows | Where-Object Policy -eq 'AllowFeedbackCollection').Category     | Should -Be 'Privacy'
+        # 'DisallowOAuthAuthentication' means nothing to a reviewer; the portal's label does.
+        ($rows | Where-Object Policy -eq 'DisallowOAuthAuthentication').Setting  | Should -Be 'Third-party application access via OAuth'
     }
 
-    It 'marks a policy nobody ever set, because a safe default is not a decision' {
-        $rows = InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @(
-                [pscustomobject]@{ policy = [pscustomobject]@{ name = 'Policy.AllowAnonymousAccess'; effectiveValue = $false; isValueUndefined = $true } }) } }
+    It 'flags the policies the settings page renders inverted' {
+        $rows = InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith {
+                New-PolicyResponse -Policies @{ applicationConnection = @(
+                    @{ description = 'SSH authentication'; policy = @{ name = 'Policy.DisallowSecureShell'; effectiveValue = $true } }
+                    @{ description = 'Validate SSH key expiration'; policy = @{ name = 'Policy.ValidateSshKeyExpiration'; effectiveValue = $true } })
+                } -Inverted @('Policy.DisallowSecureShell')
+            }
             Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
         }
 
-        # The value is safe today and nobody chose it, so nothing stops it changing.
-        $rows.IsExplicit | Should -BeFalse
-        $rows.Value      | Should -Be 'False'
+        # Value is raw. Read with the policy NAME it is unambiguous; read against the page's
+        # label it is backwards, and IsInverted is what says which.
+        ($rows | Where-Object Policy -eq 'DisallowSecureShell').IsInverted      | Should -BeTrue
+        ($rows | Where-Object Policy -eq 'ValidateSshKeyExpiration').IsInverted | Should -BeFalse
     }
 
-    It 'keeps a policy this table has never heard of' {
-        $rows = InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @(
-                [pscustomobject]@{ policy = [pscustomobject]@{ name = 'Policy.SomethingMicrosoftAddedLastWeek'; effectiveValue = $true; isValueUndefined = $false } }) } }
+    It 'treats a MISSING isValueUndefined as explicitly configured' {
+        $rows = InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith {
+                New-PolicyResponse -Policies @{ security = @(
+                    # Someone set this one: the provider omits isValueUndefined entirely.
+                    @{ description = 'Log audit events'; policy = @{ name = 'Policy.LogAuditEvents'; effectiveValue = $true } }
+                    # Still on its default: present, and true.
+                    @{ description = 'Restrict PAT creation'; policy = @{ name = 'Policy.DisablePATCreation'; effectiveValue = $false; isValueUndefined = $true } })
+                }
+            }
             Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
         }
 
-        # Dropping it would hide exactly the new setting nobody has reviewed yet.
+        # Reading the absent property as "unknown" reported every configured policy as blank -
+        # which is the opposite of what it means.
+        ($rows | Where-Object Policy -eq 'LogAuditEvents').IsExplicit    | Should -BeTrue
+        ($rows | Where-Object Policy -eq 'DisablePATCreation').IsExplicit | Should -BeFalse
+    }
+
+    It 'keeps a category this module has never heard of' {
+        $rows = InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith {
+                New-PolicyResponse -Policies @{ somethingNew = @(
+                    @{ description = 'A setting added last week'; policy = @{ name = 'Policy.Whatever'; effectiveValue = $true } }) }
+            }
+            Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
+        }
+
+        # Dropping it would hide exactly the new policy nobody has reviewed yet.
         @($rows).Count | Should -Be 1
-        $rows.Category | Should -Be 'Other'
+        $rows.Category | Should -Be 'somethingNew'
     }
 
-    It 'warns rather than returning nothing when the response is empty' {
+    It 'warns rather than returning nothing when the provider is absent' {
         $warnings = @()
-        $rows = InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { [pscustomobject]@{ value = @() } }
+        $rows = InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith { New-PolicyResponse -Empty }
             Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso'
         } -WarningVariable warnings -WarningAction SilentlyContinue
 
-        # An account that authenticates but cannot see organization settings gets an empty list,
-        # which would otherwise read as an organization with no policies to worry about.
+        # This route is internal to the portal. If it changes shape, an empty list would read as
+        # an organization with no policies set.
         @($rows).Count | Should -Be 0
-        ($warnings -join ' ') | Should -Match 'unread'
+        ($warnings -join ' ') | Should -Match 'UNREAD|internal'
     }
 
     It 'explains a 401 as ADO membership, not as an Entra permission' {
-        InModuleScope Msec {
-            Mock Invoke-RestMethod -MockWith { throw 'Response status code does not indicate success: 401 (Unauthorized).' }
-
-            # New-MsecApp cannot fix this one - the access is granted inside Azure DevOps - so
-            # an error pointing at Entra permissions sends the reader somewhere useless.
-            { Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' } |
-                Should -Throw '*Organization Settings*'
+        InModuleScope msec {
+            Mock Invoke-WebRequest -MockWith { throw 'Response status code does not indicate success: 401 (Unauthorized).' }
+            { Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' } | Should -Throw '*Organization Settings*'
         }
     }
 
     It 'distinguishes a token failure from a membership failure' {
-        InModuleScope Msec {
+        InModuleScope msec {
             Mock Get-MsecAccessToken -MockWith { throw 'certificate expired' }
             { Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' } | Should -Throw '*Entra-side*'
         }
     }
 
     It 'throws a clear error when not connected' {
-        InModuleScope Msec {
+        InModuleScope msec {
             $script:MsecSession = $null
             { Get-MsecAzureDevOpsOrganizationPolicy -Organization 'contoso' } | Should -Throw '*Connect-Msec*'
         }

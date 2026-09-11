@@ -23,6 +23,134 @@ Connect-Msec -KeyVaultName kv-msec -TenantId <guid> -ClientId <guid>
 Every `Get-Msec*` command reads. Nothing in this module writes to a tenant except
 `New-MsecApp`, which exists to create its own app registration.
 
+## Setup by workload
+
+`New-MsecApp` grants everything that Entra controls - API permissions, admin consent, and the
+directory role Exchange and Teams need. Some products keep their own permission system on top of
+that, and an app with perfect Entra permissions still reads nothing there until it is granted
+access **inside the product**. Those steps are listed per workload below; nothing else needs
+doing.
+
+| Workload | `New-MsecApp` grants | You must also do |
+|---|---|---|
+| Secure Score, Defender, Entra, Intune, Azure | everything | nothing |
+| Exchange Online | `Exchange.ManageAsApp` + directory role | nothing |
+| SharePoint Online | `Sites.Read.All` on Graph **and** on SharePoint | nothing |
+| Microsoft Teams | `application_access` + directory role | nothing |
+| Azure DevOps | nothing - Entra has no say here | organization membership, and permissions per namespace |
+
+### Exchange Online, SharePoint Online, Teams
+
+```powershell
+New-MsecApp -KeyVaultName kv-msec -Workload Exchange, SharePoint, Teams
+```
+
+Exchange and Teams need a **directory role** as well as an app role. An app role alone leaves the
+app authenticated with no rights, and neither service says so - `Connect-MsecExchangeOnline` and
+`Connect-MsecTeams` both succeed, then every call fails with an authorisation error that names
+nothing. `-Workload` assigns Global Reader, the least-privilege option that satisfies both.
+Assigning it needs Privileged Role Administrator; without that the rest is still configured and a
+warning says exactly what to assign by hand.
+
+### Azure DevOps
+
+Azure DevOps has its own permission system. Entra API permissions buy nothing here - the Azure
+DevOps resource exposes only two application roles, both for load testing - so `New-MsecApp` has
+no `-Workload` for it and never will.
+
+**1. Add the app to the organization.** Organization Settings > Users > Add, with **Basic** access
+(Stakeholder cannot read the identity graph). This alone is enough for:
+
+- `Get-MsecAzureDevOpsUser`
+- `Get-MsecAzureDevOpsOrganizationPolicy`
+
+**2. Grant permissions for anything further.** Create an organization-level group, put the app in
+it, and grant the group what it needs. A group rather than the app directly: the permission is
+then granted once and membership becomes the control.
+
+```powershell
+$pat = Read-Host -AsSecureString 'PAT'   # Security (manage) scope, short-lived
+
+# What can be granted?
+./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso -Pat $pat -ListPermissions
+
+# Advanced Security alerts, once, for the whole organization
+./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso `
+    -Identity 'Security Reporting Readers' -Permission ViewAdvSecAlerts `
+    -Scope Organization -Pat $pat -Apply
+```
+
+Drop `-Apply` for a dry run; it reads the current ACL and reports what it would change.
+
+A PAT is needed because the delegated Azure token cannot read or write ACLs - Azure DevOps
+answers 403. The permission bit and namespace id are resolved by NAME at run time, so a
+renumbered bit fails loudly rather than granting something else.
+
+Which permission each command needs:
+
+| Command | Permission | Why |
+|---|---|---|
+| `Get-MsecAzureDevOpsUser`, `Get-MsecAzureDevOpsOrganizationPolicy` | organization membership | organization-scoped data |
+| `Get-MsecAzureDevOpsAlert` | `ViewAdvSecAlerts` | alerts are per repository and 403 without it |
+| `Get-MsecAzureDevOpsRepository` | `GenericRead` | Azure DevOps returns only the repositories the caller can read, with a 200 |
+| `Get-MsecAzureDevOpsAgentPool` | organization membership | pools, agents and `-IncludeExposure` need nothing extra; `-IncludeSecurity` needs a write-capable permission and is best left alone |
+| `Get-MsecAzureDevOpsOrganization` | none beyond the session | a tenant-level query - it lists organizations the app is not a member of |
+| `Get-MsecAzureDevOpsExtension` | organization membership | the extension management API is readable by any member |
+| `Get-MsecAzureDevOpsSecureFile` | organization membership | the library list and its pipeline permissions are readable by any member; the contents are never fetched |
+| `Get-MsecAzureDevOpsServiceConnection` | `Use` on `ServiceEndpoints` | surfaces as the inherited `User` role, which is what the list API checks - `ViewEndpoint` gives only `Reader` and returns nothing |
+
+`GenericRead` is "Read" on Git Repositories, and it is a real step up - it also permits reading
+source. It is required because repository enumeration truncates SILENTLY: measured on a live
+organization, an app without it saw 95 repositories where a person saw 220, with nothing in the
+response to say so.
+
+**Azure DevOps has two permission systems and they are not interchangeable.** Repositories and
+Advanced Security use the classic security namespaces (`-Permission`, ACL bits). Pipeline
+resources - service connections, agent pools, variable groups - use role assignments
+(`-RoleName`, Reader/User/Administrator) and have no organization root, so those are granted per
+project. Choosing the wrong one fails silently: an allow on the `ServiceEndpoints` namespace is
+accepted, stored, reported back, and confers nothing.
+
+The two systems are connected, which is what makes an organization-wide grant possible: an allow
+at a namespace ROOT token surfaces as an inherited ROLE on every project and resource beneath it.
+
+```powershell
+# Service connections, once for the whole organization
+./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso `
+    -Identity 'Security Reporting Readers' -Namespace ServiceEndpoints `
+    -Permission Use -Scope Organization -Pat $pat -Apply
+```
+
+`Use` surfaces as the `User` role, which is what the endpoints list API checks. `ViewEndpoint`
+surfaces as `Reader` and returns an empty list - an identity can hold Reader on every connection
+in a project, inherited and effective, and still see none of them.
+
+`Use` means "may authenticate through this connection", which reads alarming for a read-only
+module. In practice exploiting it would also require authoring and running a pipeline, which
+needs repository Contribute and build permissions msec does not have. Grant it knowingly, or
+leave it and accept that the inventory reports what it could not see.
+
+**Never grant `DismissAdvSecAlerts`, `ManageAdvSecScanning`, `GenericContribute`, or the
+`Administrator` role.** Those write, and msec never calls anything that needs them.
+
+**Why not just add the app to `Project Collection Service Accounts`?** It works in one click and
+it is the wrong trade: that group carries service-account rights across the whole collection. A
+tool whose purpose is finding over-privileged identities should not become one.
+
+### Checking it worked
+
+Every command that depends on product-side permissions says so when it cannot read. They report
+what was refused rather than returning an empty result, because an inventory that silently omits
+most of the estate is worse than none:
+
+```powershell
+Get-MsecAzureDevOpsAlert -Organization contoso
+# WARNING: 39 of 87 enabled repository(ies) refused their alerts: ...
+#          Those findings are NOT in this output.
+```
+
+That warning going quiet is the confirmation. Treat an empty result with no warning as the
+answer, and an empty result with one as unread.
 ## Commands
 
 ### Session
@@ -30,6 +158,10 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Connect-Msec](./docs/commands/Connect-Msec.md) - Open a session bound to a certificate in Azure Key Vault
 - [Disconnect-Msec](./docs/commands/Disconnect-Msec.md) - Clear the session and its cached tokens
 - [Select-MsecAzureContext](./docs/commands/Select-MsecAzureContext.md) - Switch Azure context by subscription name, warning if it leaves the msec session on another tenant
+- [Connect-MsecGraphSdk](./docs/commands/Connect-MsecGraphSdk.md) - Hand the msec session's token to the Microsoft.Graph SDK, so Get-Mg* runs as the msec app
+- [Connect-MsecExchangeOnline](./docs/commands/Connect-MsecExchangeOnline.md) - Same for ExchangeOnlineManagement
+- [Connect-MsecSharePointOnline](./docs/commands/Connect-MsecSharePointOnline.md) - Same for PnP.PowerShell, with the token audience derived from the site host
+- [Connect-MsecTeams](./docs/commands/Connect-MsecTeams.md) - Same for MicrosoftTeams, which needs two tokens for two audiences
 
 ### Secure Score
 - [Get-MsecSecureScore](./docs/commands/Get-MsecSecureScore.md) - Microsoft Secure Score over time, overall and per category
@@ -40,6 +172,7 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 ### Defender XDR
 - [Get-MsecDefenderIncidentStats](./docs/commands/Get-MsecDefenderIncidentStats.md) - Incident severity, classification and status breakdown, plus current backlog
 - [Get-MsecDefenderEmailStats](./docs/commands/Get-MsecDefenderEmailStats.md) - Inbound email volume and threat breakdown
+- [Get-MsecDefenderDevice](./docs/commands/Get-MsecDefenderDevice.md) - Device inventory with per-device vulnerability counts
 
 ### Entra ID
 - [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
@@ -53,6 +186,8 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Get-MsecEntraMfaEvidence](./docs/commands/Get-MsecEntraMfaEvidence.md) - Per-user evidence that MFA was demanded and met at sign-in, for an access review
 - [Get-MsecEntraDisabledUser](./docs/commands/Get-MsecEntraDisabledUser.md) - Disabled ("archived") accounts, how long each has been off, and what licences they still hold
 - [Convert-MsecEntraSid](./docs/commands/Convert-MsecEntraSid.md) - Convert an Entra SID (`S-1-12-1-...`) to its objectId and back
+- [Get-MsecEntraGroupMember](./docs/commands/Get-MsecEntraGroupMember.md) - Members of named groups, with nested groups expanded to the people inside them
+- [Get-MsecEntraAppCredential](./docs/commands/Get-MsecEntraAppCredential.md) - App registration and service principal secrets and certificates, and when they expire
 
 ### Intune
 - [Get-MsecIntuneConfigurationProfile](./docs/commands/Get-MsecIntuneConfigurationProfile.md) - Settings Catalog and classic configuration profiles merged, with assignment targets resolved
@@ -64,15 +199,44 @@ Every `Get-Msec*` command reads. Nothing in this module writes to a tenant excep
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph
 - [Search-MsecLogAnalytics](./docs/commands/Search-MsecLogAnalytics.md) - Run a bundled KQL query against a Log Analytics workspace
 - [Invoke-MsecAzureVMScript](./docs/commands/Invoke-MsecAzureVMScript.md) - Run a bundled script on one or more Azure VMs
+- [Get-MsecAzureRoleAssignment](./docs/commands/Get-MsecAzureRoleAssignment.md) - Azure RBAC across every subscription, with role and principal names resolved and deleted principals kept
+- [Get-MsecAzureCost](./docs/commands/Get-MsecAzureCost.md) - Cost per subscription or resource group, with the billing currency
+- [Get-MsecKeyVaultCertificate](./docs/commands/Get-MsecKeyVaultCertificate.md) - Certificates in every accessible Key Vault and when they expire
 
 ### Reporting
 - [Export-MsecPostureReport](./docs/commands/Export-MsecPostureReport.md) - Append this run's posture measurements to an Excel workbook, building a charted time series
 - [Export-MsecVMUpdateReport](./docs/commands/Export-MsecVMUpdateReport.md) - Evidence of when every VM in the current subscription was last patched, one worksheet per subscription
 - [Export-MsecVMNtpReport](./docs/commands/Export-MsecVMNtpReport.md) - Evidence that every VM in the current subscription has its clock synchronised against a real time source
 - [Export-MsecEntraDisabledUserReport](./docs/commands/Export-MsecEntraDisabledUserReport.md) - Evidence of every disabled account, how long it has been disabled, and what it still costs in licences
+- [Export-MsecDefenderDeviceReport](./docs/commands/Export-MsecDefenderDeviceReport.md) - Evidence of every Defender-onboarded device and its vulnerability exposure
+- [Export-MsecEntraGroupMemberReport](./docs/commands/Export-MsecEntraGroupMemberReport.md) - Evidence of who is in which group, one worksheet per group
+- [Export-MsecAzureDevOpsReport](./docs/commands/Export-MsecAzureDevOpsReport.md) - A whole Azure DevOps organization's security posture in one workbook: a sheet per area and a chart per area
+
+### Exchange Online
+- [Get-MsecExchangeMailboxPermission](./docs/commands/Get-MsecExchangeMailboxPermission.md) - Who can open, send as, or send on behalf of each mailbox
+
+### SharePoint Online
+- [Get-MsecSharePointSite](./docs/commands/Get-MsecSharePointSite.md) - Every site in the tenant, classified, with Loop and Designer containers separated out
+- [Get-MsecSharePointSiteUser](./docs/commands/Get-MsecSharePointSiteUser.md) - A site's owners and members, with security groups expanded to the people inside them
+- [Get-MsecSharePointTenantSetting](./docs/commands/Get-MsecSharePointTenantSetting.md) - Tenant-wide sharing posture: sharing capability, domain lists, legacy auth
+
+### Microsoft Teams
+- [Get-MsecTeamsPolicy](./docs/commands/Get-MsecTeamsPolicy.md) - External access, guest access, meeting lobby, recording, app installation and file sharing, one row per setting
 
 ### Azure DevOps
-- [Get-MsecAzureDevOpsServiceConnection](./docs/commands/Get-MsecAzureDevOpsServiceConnection.md) - Every service connection in an organization, with its auth scheme
+- [Get-MsecAzureDevOpsOrganization](./docs/commands/Get-MsecAzureDevOpsOrganization.md) - Every organization in the tenant and who owns it - the list every other command needs
+- [Get-MsecAzureDevOpsUser](./docs/commands/Get-MsecAzureDevOpsUser.md) - Users and the groups they belong to, for an access review
+- [Get-MsecAzureDevOpsVariableGroup](./docs/commands/Get-MsecAzureDevOpsVariableGroup.md) - Variable groups, what secrets they hold, and whether any pipeline may use them
+- [Get-MsecAzureDevOpsOrganizationPolicy](./docs/commands/Get-MsecAzureDevOpsOrganizationPolicy.md) - Organization policies: guest access, OAuth, SSH, PAT creation, public projects
+- [Get-MsecAzureDevOpsAlert](./docs/commands/Get-MsecAzureDevOpsAlert.md) - Advanced Security alerts: secrets, dependencies and code scanning findings
+- [Get-MsecAzureDevOpsAgentPool](./docs/commands/Get-MsecAzureDevOpsAgentPool.md) - Agent pools, whether they run on your own machines, and what versions and operating systems those agents are on
+- [Get-MsecAzureDevOpsEnvironment](./docs/commands/Get-MsecAzureDevOpsEnvironment.md) - Deployment environments, the checks guarding them, and who approves
+- [Get-MsecAzureDevOpsExtension](./docs/commands/Get-MsecAzureDevOpsExtension.md) - Marketplace extensions and the access each one holds over code, builds and service connections
+- [Get-MsecAzureDevOpsPipelineSetting](./docs/commands/Get-MsecAzureDevOpsPipelineSetting.md) - Project pipeline security: fork builds and fork secrets, job authorization scope, settable variables, shell argument sanitising
+- [Get-MsecAzureDevOpsSecureFile](./docs/commands/Get-MsecAzureDevOpsSecureFile.md) - Certificates and keys stored in the pipeline library, how old they are, and which pipelines may use them
+- [Export-MsecAzureDevOpsReport](./docs/commands/Export-MsecAzureDevOpsReport.md) - Every area above in one snapshot workbook, with a chart apiece
+- [Get-MsecAzureDevOpsRepository](./docs/commands/Get-MsecAzureDevOpsRepository.md) - Every repository with the protections on its default branch: reviewers, build validation, secret push protection
+- [Get-MsecAzureDevOpsServiceConnection](./docs/commands/Get-MsecAzureDevOpsServiceConnection.md) - Every service connection in an organization, with its auth scheme and the projects it is shared to
 
 Every command has full help, including the reasoning behind its output shape:
 

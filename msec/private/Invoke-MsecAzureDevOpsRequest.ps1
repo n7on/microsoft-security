@@ -68,7 +68,14 @@ function Invoke-MsecAzureDevOpsRequest {
         catch {
             $detail = $_.Exception.Message
             if ($detail -match '401|403|Unauthorized|Forbidden') {
-                throw "Unauthorized calling '$Path' in organization '$Organization'. The msec app's service principal needs to be a member of the ADO organization (Organization Settings > Users > Add) with at least Reader. That is granted inside Azure DevOps, NOT through Entra API permissions, so New-MsecApp cannot do it. Original error: $detail"
+                # DELIBERATELY DOES NOT NAME A CAUSE. Two different things produce a 403 here -
+                # the app not being an organization member at all, and the app being a member
+                # without the permission this particular resource needs - and the response does
+                # not distinguish them. Asserting the first sent readers to check a membership
+                # that was already in place while the real gap was a namespace permission.
+                #
+                # Callers that know which permission their resource needs say so themselves.
+                throw "Forbidden calling '$Path' in organization '$Organization'. Either the msec app is not a member of the organization (Organization Settings > Users > Add, Basic access), or it is a member without the permission this resource requires - Azure DevOps returns the same 403 for both, and neither is granted through Entra, so New-MsecApp cannot do it. Original error: $detail"
             }
             throw "Azure DevOps request failed for '$Path' in '$Organization': $detail"
         }

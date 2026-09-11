@@ -135,6 +135,43 @@ Update-TypeData -TypeName 'MsecAzureDevOpsServiceConnection' `
     -DefaultDisplayPropertySet 'Name', 'Type', 'AuthScheme', 'IsShared' `
     -Force
 
+# The Azure DevOps rows carry every control their API exposes; these tables show the ones a
+# reviewer scans for first. Select-Object * or Export-Csv still gets all of them.
+
+Update-TypeData -TypeName 'MsecAzureDevOpsRepository' `
+    -DefaultDisplayPropertySet 'Project', 'Repository', 'DefaultBranch', 'MinimumReviewers', 'SelfApprovalAllowed', 'RequireBuildValidation', 'BlockSecretPush', 'AdvancedSecurity' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsEnvironment' `
+    -DefaultDisplayPropertySet 'Project', 'Environment', 'CheckCount', 'HasApproval', 'Approvers', 'OpenToAllPipelines' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsVariableGroup' `
+    -DefaultDisplayPropertySet 'Project', 'Name', 'Type', 'SecretCount', 'OpenToAllPipelines', 'OpenedBy' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsSecureFile' `
+    -DefaultDisplayPropertySet 'Project', 'Name', 'Kind', 'AgeDays', 'OpenToAllPipelines', 'AuthorizedPipelineCount' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsPipelineSetting' `
+    -DefaultDisplayPropertySet 'Project', 'BuildsEnabledForForks', 'SecretsWithheldFromForks', 'JobAuthScopeLimited', 'SettableVarsRestricted', 'ShellArgsSanitised' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsExtension' `
+    -DefaultDisplayPropertySet 'Publisher', 'ExtensionName', 'Access', 'IsMicrosoftPublisher', 'Version' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsOrganization' `
+    -DefaultDisplayPropertySet 'Organization', 'Owner', 'Url' `
+    -Force
+
+# Not a posture row: one per AREA of Export-MsecAzureDevOpsReport, saying what was collected
+# and where it was written. Row holds the rows themselves and is left off the table.
+Update-TypeData -TypeName 'MsecAzureDevOpsReportArea' `
+    -DefaultDisplayPropertySet 'Area', 'Sheet', 'Status', 'RowCount', 'Detail' `
+    -Force
+
 # How long a cached Resource Graph result is reused before Search-MsecAzureResourceGraph goes
 # back to Azure. Deliberately short. Resource inventory changes on the timescale of deployments,
 # so a few minutes buys most of the benefit across a working session - while an hour is long

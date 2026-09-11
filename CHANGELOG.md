@@ -4,9 +4,261 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `Export-MsecAzureDevOpsReport` - a whole Azure DevOps organization's security posture in one
+  workbook. A sheet per area (repositories, alerts, service connections, variable groups, secure
+  files, environments, agent pools, extensions, pipeline settings, organization policies, users),
+  a Summary counting each area by category, and a Dashboard of fourteen charts laid out one per
+  printed page.
+
+  A SNAPSHOT, NOT A TREND: every sheet is replaced on each run. That is the opposite of
+  `Export-MsecPostureReport`, which appends a row per run to build a time series.
+
+  A FAILED AREA GETS NO CHART. A chart of zeros and no chart at all say different things -
+  "measured, found none" against "could not measure" - and Azure DevOps permissions are granted
+  per area, so a 403 on one area is the normal case rather than the exceptional one. Failures
+  land on a RunLog sheet with the message that caused them, and every other area still writes.
+
+  Two of the charts are deliberately NOT partitions: on pipeline settings and organization
+  policies each bar is an independent measurement, so a project appears under every risk it
+  carries and the bars must not be summed. They are drawn as horizontal bars so they read
+  differently from the eleven that do partition.
+
+  Categories are fixed and always present at zero, so two runs' charts line up; a value no
+  category was written for is added as its own bar rather than folded into 'Other'.
+
+  Alerts are charted by TYPE as well as severity. Azure DevOps rates every secret alert
+  critical, so an organization running secret scanning alone fills the critical bar and leaves
+  the other four severities empty - which reads as "no medium or low findings" when it means
+  "no scanner that emits them is switched on". Measured live: 300 alerts, all of them secrets.
+
+  Measured live on a 36-project organization: 215 repositories, 82 with no reviewer requirement
+  and 49 without secret push protection; 243 service connections, of which 153 authenticate with
+  a service principal secret against 61 federated, and 43 are open to every pipeline in their
+  project; 77 variable groups holding secrets; 50 environments with no checks; 36 projects
+  without shell argument sanitising; and 169 of 292 members who are local Azure DevOps accounts
+  rather than Entra identities. Public projects are allowed at organization level.
+
+- `Get-MsecAzureDevOpsSecureFile` - the certificates, keystores and private keys stored in a
+  project's pipeline library, with their age and which pipelines may use them. Secure files are
+  where signing material ends up when it cannot be put in a variable group, and nothing in Azure
+  DevOps expires or reviews them.
+
+  THE CONTENTS ARE NEVER FETCHED. There is a download endpoint and this command does not call
+  it - an inventory of private keys that reads the private keys to produce itself would be worse
+  than no inventory at all. Everything reported comes from the file's metadata and its pipeline
+  permissions.
+
+  `Kind` is a guess from the file extension and is documented as one, so `Name` is always
+  reported alongside it - a `.key` can be anything, and on a live organization most of them were
+  empty migration markers rather than key material.
+
+  Measured live: 9 secure files across an organization, none open to all pipelines. Eight were
+  `.key` migration markers uploaded between 875 and 1479 days ago and never removed; the ninth
+  was a `fullchain.pfx` certificate.
 ## [0.3.0] - 2026-09-09
 
+### Added
+- `Get-MsecAzureDevOpsEnvironment` - deployment environments, the checks guarding them, who
+  approves, and whether any pipeline may deploy to them. An environment is what a pipeline
+  deploys TO, and its checks are the last thing between a run and production.
+
+  NO CHECKS IS THE FINDING, and it looks like nothing. An environment with none configured
+  reports `CheckCount` 0; one whose checks could NOT be read reports `$null`, and `-Unchecked`
+  excludes the second - otherwise a list of unguarded targets fills up with ones that may be
+  perfectly protected.
+
+  An approval check with no approver named on it is reported as having an approval and an
+  `ApproverCount` of 0, because it is not the protection the check count implies. Approvers
+  configured as a group are reported as the group; who is in it is `Get-MsecAzureDevOpsUser`.
+
+  Measured live: 71 environments, 50 with no checks at all, 21 with an approval, one approval
+  with nobody on it, and three unchecked environments open to every pipeline in their project -
+  one of them named CN-PROD.
+
+- `Get-MsecAzureDevOpsOrganization` - every Azure DevOps organization connected to the Entra
+  tenant, with its owner. Anyone in a tenant can create one and nothing announces it, so the
+  result is organizations nobody reviews: created for a trial, owned by one person, holding
+  repositories and service connections no governance process knows about. Measured on a live
+  tenant: 28 organizations, most named after individuals, several owned by people with two each.
+
+  THIS IS THE COMMAND THAT TELLS YOU WHAT TO POINT THE OTHERS AT. Every other
+  `Get-MsecAzureDevOps*` command takes `-Organization`, and its answer is only as complete as the
+  list of organizations somebody thought to check.
+
+  THE ENDPOINT IS INTERNAL and returns CSV rather than JSON - it is the route behind the Azure
+  DevOps organization list in the Entra admin portal, and there is no documented equivalent. An
+  empty result warns rather than reporting a tenant with no organizations, because a changed
+  route is far likelier than an empty tenant and would otherwise end an investigation that should
+  have started.
+
+- `Get-MsecAzureDevOpsPipelineSetting` - the project-level switches that decide what a pipeline
+  may do: fork builds and whether secrets reach them, job authorization scope, referenced-repo
+  scoped tokens, settable variables at queue time, and shell argument sanitising. They are set
+  once per project and not visible from a pipeline definition, so a well-governed repository can
+  sit in a project that lets a fork's build read its secrets.
+
+  THE FORK SETTINGS ARE REPORTED SEPARATELY rather than as one verdict, because which half is
+  wrong decides what to fix. `SecretsWithheldFromForks` is named for the SAFE state; the
+  underlying field, `enforceNoAccessToSecretsFromForks`, is a double negative that reads
+  backwards easily, and a test pins the mapping.
+
+  `OtherSettings` names any setting without a column, with its value. On the first run against a
+  live organization it surfaced `enforceReferencedRepoScopedToken`, which varied between projects
+  and has since been promoted to a column of its own - the catch-all working as intended.
+
+  Measured live across 36 projects: 11 allow fork builds and all 11 withhold secrets from them;
+  13 do not limit job authorization scope; 12 allow settable variables at queue time; and none
+  have shell argument sanitising enabled.
+
+- `Get-MsecAzureDevOpsVariableGroup` - variable groups across an organization: how many variables
+  and how many of those are secret, whether the group is backed by a Key Vault, how many projects
+  it is shared with, and whether ANY pipeline in the project may reference it.
+
+  THE COMBINATION IS THE FINDING, not the presence of secrets. Secrets in a group, open to every
+  pipeline, in a project whose repositories require no reviewer, means anyone who can push can
+  author a pipeline that reads them. Measured against a live organization: 114 groups, 77 holding
+  secrets, 13 open to all pipelines, and 11 that are both - several with 18 to 21 secrets each.
+
+  VALUES ARE NEVER EMITTED. Secret values are not returned by the API at all; NON-secret values
+  are, and are dropped deliberately - this output goes into mailboxes and spreadsheets, and
+  pipeline variables carry connection strings often enough that copying them into a report is a
+  poor default. Variable and secret NAMES are kept, because knowing a group holds
+  `AZURE_CLIENT_SECRET` is the point.
+
+  A Key Vault-backed group counts as holding secrets under `-WithSecrets` even though it declares
+  none of its own: everything it exposes is one, fetched from the vault at run time.
+
+- `Get-MsecAzureDevOpsAgentPool` - agent pools, whether they are Microsoft-hosted or run on your
+  own machines, whether every new project gets them automatically, and what the agents in them
+  are. A self-hosted agent executes pipeline code on a machine you own and keeps its disk between
+  jobs, so anyone who can queue against the pool can run code there and leave things behind.
+
+  AGENT VERSIONS AND OPERATING SYSTEMS ARE DISTINCT LISTS, not summarised. A live pool held
+  agent versions 2.213.2, 3.244.1 and 4.264.2 at once, on Windows builds 14393, 19044 and 19045 -
+  an average or a maximum would have hidden the agent two majors behind, which is the one worth
+  finding.
+
+  AN OFFLINE AGENT THAT IS STILL ENABLED IS COUNTED SEPARATELY from a disabled one: it will
+  rejoin and start taking jobs when it comes back, which is not the same as decommissioned.
+
+  `LongestOfflineDays` says how long the most absent ENABLED agent has been gone. Measured live:
+  731 days in one pool and 2261 - over six years - in another, both still enabled. A count of
+  offline agents does not convey that; the age does. Disabled agents are excluded, because they
+  will not come back.
+
+  `-IncludeExposure` maps which projects can queue work on each pool today, and which of them let
+  ANY pipeline do so without approval - the same "grant access to all pipelines" trap service
+  connections have. `AutoProvision` answers the question for FUTURE projects; this answers it for
+  the ones that already have it. Measured live: three self-hosted pools reachable from all 36
+  projects, one of them open to every pipeline in a project.
+
+  A hosted pool reports 0 agents without being asked - it has none to enumerate - while a pool
+  whose agents could not be read reports `$null`. `-IncludeSecurity` adds the pool role counts
+  and needs `View` on the `DistributedTask` namespace; without it those columns are `$null`.
+  Both switches are opt-in because each costs calls: exposure is one per project plus one per
+  queue.
+
+- `Get-MsecAzureDevOpsExtension` - marketplace extensions installed in an organization and the
+  access each one holds. An extension is third-party code running inside the organization with
+  delegated access to it; the scopes granted at install are permanent until someone uninstalls
+  it, apply organization-wide, and nothing prompts a review afterwards.
+
+  `Access` groups the scopes - Manage (`*_manage`), Write (`*_write`, `*_execute`), Read, None -
+  and that grouping is the command's JUDGEMENT, not something the API states, so the raw `Scopes`
+  are always returned beside it. A scope this module has never seen still appears there.
+
+  A disabled extension is kept: disabling does not revoke its scopes, and re-enabling asks nobody
+  to consent again. `IsMicrosoftPublisher` is a column rather than a filter - Microsoft-published
+  is not the same as safe, and judging the publisher is the reader's job.
+
+  Verified against a live organization: 50 extensions, 7 third-party, and two holding manage
+  scopes - `vso.code_manage` and `vso.serviceendpoint_manage`.
+
+- `Get-MsecAzureDevOpsRepository` - every Git repository with the protections on its default
+  branch: minimum reviewers, whether the author's own vote counts, build validation, merge
+  strategy, secret push protection, and Advanced Security state. Verified against a live
+  organization: 215 repositories across 31 projects, 116 of them requiring no reviewer at all.
+
+  A POLICY ONLY COUNTS IF IT IS ENABLED AND BLOCKING. Azure DevOps allows enabled-but-advisory
+  policies that appear in a pull request and stop nothing; counting those as protection would
+  overstate the posture.
+
+  `-Unprotected` means NO REVIEWER REQUIREMENT, not "no blocking policy". On a real organization
+  every repository had at least one blocking policy, because a single project-wide
+  secrets-scanning rule applied to all of them - by that measure nothing was ever unprotected,
+  which is true and useless. The reviewer requirement is what decides whether a human sees the
+  change.
+
+  EVERY CONTROL THE POLICY API EXPOSES IS REPORTED, not only the ones a given tenant happens to
+  use. Alongside the minimum reviewer count: named required reviewers, whether the last pusher
+  may approve, whether votes and rejections survive a push, whether approval must be on the final
+  iteration, downvotes, comment resolution, work item linking, merge strategy, file size limit,
+  and the Advanced Security features. A tenant where a control is uniformly set is not a reason
+  to drop the column - the module is not written for one tenant.
+
+  `OtherPolicies` NAMES ANY BLOCKING POLICY TYPE WITHOUT A COLUMN. Azure DevOps adds policy types
+  and organizations write custom ones, so a report with a column per known type silently drops
+  the rest. This surfaced `Reserved names restriction` and `Path Length restriction` on the first
+  run against a live organization - neither had appeared in a twelve-project sample.
+
+  Policies are read once per PROJECT rather than once per repository, and a project whose
+  policies cannot be read reports `$null` rather than 0 - a 403 must not make its repositories
+  look unprotected.
+
+- `Get-MsecAzureDevOpsAlert` - Advanced Security alerts across an organization: secret,
+  dependency and code scanning findings, one row per alert with severity, state, confidence,
+  file path and how long it has been sitting there. Verified against a live organization: 172
+  active critical secret alerts across 45 repositories, the oldest 41 days old.
+
+  THERE IS NO ORGANIZATION-WIDE ALERTS ENDPOINT - established by enumerating the Advanced
+  Security service's own routes. Every alerts route is project- and repository-scoped, and the
+  portal's org view aggregates client-side, so this makes one call per enabled repository.
+
+  THE WORK LIST COMES FROM `_apis/management/enablement`, NOT from the git repository list.
+  `_apis/git/repositories` returns only what the caller can see, with a 200 - measured live, the
+  app saw 95 repositories where a person with a PAT saw 220 - so driving off it would skip
+  repositories silently. Enablement is organization-scoped and authoritative about what has
+  scanning switched on; the git list is used only to put names to ids.
+
+  A REPOSITORY THAT REFUSES ITS ALERTS IS COUNTED AND NAMED. Alerts return 403, never an empty
+  list, so unreadable repositories cannot pass as clean - 42 of 87 did refuse, because the app
+  holds organization membership but not Advanced Security alert read.
+
+  `truncatedSecret` IS NEVER EMITTED. The API returns a fragment of the credential it found, and
+  this output ends up in mailboxes and spreadsheets. `Title` carries the secret TYPE, which is
+  what triage needs.
+
 ### Changed
+- `Get-MsecAzureDevOpsServiceConnection -IncludeSecurity` reports who can administer or use each
+  connection, and which pipelines may reference it: `Administrators`, `AdministratorCount`,
+  `UserCount`, `ReaderCount`, `OpenInProjects`, `AuthorizedPipelineCount`.
+
+  OPT-IN, because it costs two extra calls per connection - 243 connections on the organization
+  it was built against. Without the switch those columns are `$null`, which reads as "not
+  collected" rather than "nobody has access".
+
+  `OpenInProjects` is the setting worth finding: any pipeline in the project may
+  authenticate through the connection without a further approval. The API OMITS the field when
+  the setting is off, so absence is reported as false - but a failed call stays `$null`, which is
+  a different claim.
+
+- `Get-MsecAzureDevOpsServiceConnection` now reports what it could not see. Service connections
+  are permissioned per connection, and the endpoints API answers 200 with an empty list for
+  connections the caller cannot read - never a 403 - so an inventory can miss whole projects
+  while looking complete. Measured on a live organization: an app in `[Project]\Readers` on 36
+  projects saw 70 connections in 1 project where a person saw 155 across 14.
+
+  Every project that returns nothing is now counted and named, and the warning says plainly that
+  this is not proof they have none. What governs the visibility is NOT established: it is not the
+  endpoint Reader role - an endpoint carrying `[Project]\Readers -> Reader` by inheritance was
+  hidden from that app while one with no Readers entry was visible - and not the endpoint type.
+  The shortfall is reported rather than explained, and no remedy is asserted that has not been
+  demonstrated.
+
+  Project names are URL-encoded now: 17 of 36 contained spaces, so `-Project 'Viedoc eTMF'` had
+  been building a malformed URL.
+
 - **Fixed on Linux:** the module folder and its manifest are lowercase - `msec/msec.psd1`,
   `msec.psm1`, `msec.format.ps1xml` - matching the PowerShell Gallery id.
 
@@ -113,20 +365,22 @@ All notable changes to this project will be documented in this file.
   is a different claim. `Origin` separates Entra-backed accounts from `vsts` accounts that exist
   only inside Azure DevOps, with no Conditional Access and no leaver process behind them.
 
-- `Get-MsecAzureDevOpsOrganizationPolicy` - the organization-wide Azure DevOps security policies: Entra
-  guest access, third-party OAuth apps, SSH keys, alternate credentials, public projects, who
-  may invite users, audit logging and the pipeline job-token scopes.
+- `Get-MsecAzureDevOpsOrganizationPolicy` - the policies from Organization Settings > Policies:
+  third-party OAuth access, SSH, PAT creation restrictions, guest access, public projects, audit
+  logging, IP Conditional Access validation. Verified against a live organization: 13 policies in
+  4 groups.
 
-  The same ceiling the SharePoint tenant settings and the Teams Global policy describe. Every
-  policy the API returns is a security control, so unlike the Teams command there is no
-  projection to argue with - all of them come back, grouped by Category, and one this module has
-  never heard of still appears under `Other` rather than being dropped.
+  THERE IS NO REST API FOR THESE. `_apis/organizationpolicy/policies` 404s on every api-version
+  and on both hosts; the only source is the data provider behind the portal's own settings page
+  (`_settings/organizationPolicy?__rt=fps&__ver=2`). That route is INTERNAL and can change
+  without notice, so an empty response warns rather than reporting an organization with no
+  policies. Categories and labels come from the payload itself, so there is no table here to
+  drift out of date.
 
-  `IsExplicit` CARRIES AS MUCH AS THE VALUE. A policy nobody ever set reports a default; a
-  default that happens to be safe today is not a decision anyone made. It is `$null`, not
-  `$true`, when the API does not say - "we do not know whether this was deliberate" is a
-  different claim from "it was". An empty response warns and returns nothing, because an account
-  that authenticates but cannot see organization settings would otherwise look like a clean org.
+  `Value` is the raw stored value. Four policies are named for what they FORBID
+  (`DisallowOAuthAuthentication` and friends), so the settings page renders them inverted -
+  `IsInverted` says which. `IsExplicit` separates a policy someone configured from one still on
+  its default; the provider signals that by OMITTING `isValueUndefined`, so absence means set.
 
 - `Get-MsecSharePointTenantSetting` - the tenant-wide SharePoint and OneDrive settings, one row
   per setting grouped into a Category, the same shape as `Get-MsecTeamsPolicy`.

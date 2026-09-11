@@ -203,3 +203,79 @@ Describe 'Get-MsecAzureDevOpsServiceConnection' {
         }
     }
 }
+
+Describe 'Get-MsecAzureDevOpsServiceConnection -IncludeSecurity' {
+
+    BeforeEach {
+        InModuleScope msec {
+            $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
+            Mock Get-MsecAccessToken -MockWith { 'ADO.TOKEN' }
+        }
+    }
+
+    It 'leaves the security columns $null when not asked for' {
+        $rows = InModuleScope msec {
+            Mock Invoke-RestMethod -MockWith {
+                if ($Uri -match '/_apis/projects') { return [pscustomobject]@{ count = 1; value = @([pscustomobject]@{ name = 'Platform' }) } }
+                return [pscustomobject]@{ value = @([pscustomobject]@{
+                    id = 'e1'; name = 'sc-one'; type = 'azurerm'
+                    serviceEndpointProjectReferences = @([pscustomobject]@{ projectReference = [pscustomobject]@{ id = 'p1'; name = 'Platform' } }) }) }
+            }
+            Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' -WarningAction SilentlyContinue
+        }
+
+        # $null is "not collected". Reporting 0 administrators for a connection nobody looked at
+        # would be a claim about its security.
+        $rows.AdministratorCount     | Should -BeNullOrEmpty
+        $rows.OpenToAllPipelines | Should -BeNullOrEmpty
+    }
+
+    It 'reports roles and pipeline authorization when asked' {
+        $rows = InModuleScope msec {
+            Mock Invoke-RestMethod -MockWith {
+                if ($Uri -match '/_apis/projects') { return [pscustomobject]@{ count = 1; value = @([pscustomobject]@{ name = 'Platform' }) } }
+                if ($Uri -match '/roleassignments/resources/') {
+                    return [pscustomobject]@{ value = @(
+                        [pscustomobject]@{ identity = [pscustomobject]@{ displayName = 'Ada' };  role = [pscustomobject]@{ name = 'Administrator' } }
+                        [pscustomobject]@{ identity = [pscustomobject]@{ displayName = 'Grp' };  role = [pscustomobject]@{ name = 'Administrator' } }
+                        [pscustomobject]@{ identity = [pscustomobject]@{ displayName = 'Bob' };  role = [pscustomobject]@{ name = 'User' } }) }
+                }
+                if ($Uri -match '/pipelinePermissions/endpoint/') {
+                    return [pscustomobject]@{ allPipelines = [pscustomobject]@{ authorized = $true }; pipelines = @(1, 2, 3) }
+                }
+                return [pscustomobject]@{ value = @([pscustomobject]@{
+                    id = 'e1'; name = 'sc-one'; type = 'azurerm'
+                    serviceEndpointProjectReferences = @([pscustomobject]@{ projectReference = [pscustomobject]@{ id = 'p1'; name = 'Platform' } }) }) }
+            }
+            Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' -IncludeSecurity -WarningAction SilentlyContinue
+        }
+
+        $rows.AdministratorCount | Should -Be 2
+        $rows.Administrators     | Should -Be 'Ada; Grp'
+        $rows.UserCount          | Should -Be 1
+        # Any pipeline in the project may authenticate through this connection without further
+        # approval - the setting worth finding.
+        $rows.OpenToAllPipelines  | Should -BeTrue
+        $rows.AuthorizedPipelineCount | Should -Be 3
+    }
+
+    It 'treats an absent allPipelines as not authorized, but a failed call as unknown' {
+        $rows = InModuleScope msec {
+            Mock Invoke-RestMethod -MockWith {
+                if ($Uri -match '/_apis/projects') { return [pscustomobject]@{ count = 1; value = @([pscustomobject]@{ name = 'Platform' }) } }
+                if ($Uri -match '/roleassignments/resources/') { throw 'Response status code does not indicate success: 403 (Forbidden).' }
+                # The API omits allPipelines entirely when the setting is off.
+                if ($Uri -match '/pipelinePermissions/endpoint/') { return [pscustomobject]@{ pipelines = @(1) } }
+                return [pscustomobject]@{ value = @([pscustomobject]@{
+                    id = 'e1'; name = 'sc-one'; type = 'azurerm'
+                    serviceEndpointProjectReferences = @([pscustomobject]@{ projectReference = [pscustomobject]@{ id = 'p1'; name = 'Platform' } }) }) }
+            }
+            Get-MsecAzureDevOpsServiceConnection -Organization 'contoso' -IncludeSecurity -WarningAction SilentlyContinue
+        }
+
+        # Absent field: genuinely not authorized for all pipelines.
+        $rows.OpenToAllPipelines | Should -BeFalse
+        # Failed role call: unknown, not "no administrators".
+        $rows.AdministratorCount     | Should -BeNullOrEmpty
+    }
+}

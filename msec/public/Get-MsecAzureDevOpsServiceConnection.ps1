@@ -68,7 +68,16 @@ function Get-MsecAzureDevOpsServiceConnection {
         [string] $Organization,
 
         [Parameter()]
-        [string] $Project
+        [string] $Project,
+
+        # Who can use or administer each connection, and which pipelines may reference it.
+        # OPT-IN because it costs two extra calls per connection - 243 connections on the
+        # organization this was built against, so nearly 500 round trips.
+        #
+        # Without it the security columns are $null, which reads as "not collected" rather than
+        # "nobody has access" - the same distinction this command draws everywhere else.
+        [Parameter()]
+        [switch] $IncludeSecurity
     )
 
     Assert-MsecSession
@@ -110,8 +119,16 @@ function Get-MsecAzureDevOpsServiceConnection {
     # serviceEndpointProjectReferences array.
     $seen = @{}
     $totalEndpointsSeen = 0
+    # Projects that answered 200 with nothing in them. Tracked because that answer is
+    # ambiguous - see the warning at the end.
+    $emptyProjects = [System.Collections.Generic.List[string]]::new()
+    # Counted so -IncludeSecurity cannot look like a no-op when the reads are refused.
+    $securityFailures = 0
+    $securityTried    = 0
     foreach ($p in $projects) {
-        $epUri = "https://dev.azure.com/$Organization/$p/_apis/serviceendpoint/endpoints?api-version=7.1-preview.4"
+        # Encoded: project names routinely contain spaces - 17 of 36 did on the organization
+        # this was built against - and passing one raw to -Project built a malformed URL.
+        $epUri = "https://dev.azure.com/$Organization/$([uri]::EscapeDataString($p))/_apis/serviceendpoint/endpoints?api-version=7.1-preview.4"
         try {
             $resp = Invoke-RestMethod -Method GET -Uri $epUri -Headers $headers -ErrorAction Stop
         }
@@ -122,6 +139,7 @@ function Get-MsecAzureDevOpsServiceConnection {
         }
         $endpointCount = @($resp.value).Count
         $totalEndpointsSeen += $endpointCount
+        if ($endpointCount -eq 0) { $emptyProjects.Add($p) }
         Write-Verbose "Project '$p': $endpointCount service endpoint(s) visible"
 
         foreach ($e in $resp.value) {
@@ -131,6 +149,52 @@ function Get-MsecAzureDevOpsServiceConnection {
             # Project names where this endpoint is exposed - useful to spot
             # widely-shared connections (broad blast radius).
             $projectNames = @($e.serviceEndpointProjectReferences.projectReference.name)
+
+            $security = [pscustomobject]@{
+                Administrators = $null; AdministratorCount = $null; UserCount = $null
+                ReaderCount = $null; OpenToAllPipelines = $null; AuthorizedPipelineCount = $null
+                OpenedBy = $null; OpenedOn = $null
+            }
+            if ($IncludeSecurity) {
+                $securityTried++
+                # The endpoint's own project, which is where both of these are addressed from.
+                $ownerProjectId = @($e.serviceEndpointProjectReferences.projectReference.id)[0]
+
+                try {
+                    $roles = @((Invoke-RestMethod -Method GET -Headers $headers -Uri (
+                        "https://dev.azure.com/$Organization/_apis/securityroles/scopes/distributedtask.serviceendpointrole" +
+                        "/roleassignments/resources/$($ownerProjectId)_$($e.id)?api-version=7.1-preview.1")).value)
+
+                    $byRole = { param($n) @($roles | Where-Object { $_.role.name -eq $n }) }
+                    $admins = & $byRole 'Administrator'
+                    $security.Administrators     = ($admins | ForEach-Object { $_.identity.displayName } | Sort-Object -Unique) -join '; '
+                    $security.AdministratorCount = $admins.Count
+                    $security.UserCount          = @(& $byRole 'User').Count
+                    $security.ReaderCount        = @(& $byRole 'Reader').Count
+                }
+                catch {
+                    # Left $null. A connection whose roles could not be read must not report as
+                    # having no administrators. Counted, and reported once at the end - a silent
+                    # $null makes the switch look like it does nothing.
+                    $securityFailures++
+                    Write-Verbose "Could not read roles for '$($e.name)': $($_.Exception.Message)"
+                }
+
+                try {
+                    $perms = (Invoke-RestMethod -Method GET -Headers $headers -Uri (
+                        "https://dev.azure.com/$Organization/$ownerProjectId/_apis/pipelines/pipelinePermissions/endpoint/$($e.id)?api-version=7.1-preview.1"))
+                    # The field is absent unless the setting is on, so absence is false - but a
+                    # failed CALL stays $null above, which is a different thing.
+                    $security.OpenToAllPipelines  = [bool] $perms.allPipelines.authorized
+                    $security.AuthorizedPipelineCount = @($perms.pipelines).Count
+                    # Who opened it, and when - the decision is usually old.
+                    $security.OpenedBy = $perms.allPipelines.authorizedBy.displayName
+                    $security.OpenedOn = $perms.allPipelines.authorizedOn
+                }
+                catch {
+                    Write-Verbose "Could not read pipeline permissions for '$($e.name)': $($_.Exception.Message)"
+                }
+            }
 
             [PSCustomObject]@{
                 PSTypeName    = 'MsecAzureDevOpsServiceConnection'
@@ -144,13 +208,72 @@ function Get-MsecAzureDevOpsServiceConnection {
                 AuthScheme    = $e.authorization.scheme
                 CreatedByName = $e.createdBy.displayName
                 Projects      = $projectNames
+
+                # $null unless -IncludeSecurity: not collected, not "none".
+                Administrators          = $security.Administrators
+                AdministratorCount      = $security.AdministratorCount
+                UserCount               = $security.UserCount
+                ReaderCount             = $security.ReaderCount
+                # TRUE IS THE PERMISSIVE STATE: "Grant access permission to all pipelines" is on,
+                # so any pipeline in the project may authenticate through this connection with no
+                # further approval. FALSE means pipelines are authorised individually, and those
+                # appear in AuthorizedPipelineCount. The API omits the field entirely when the
+                # setting is off, so absence is reported as false - but a failed CALL stays $null.
+                OpenToAllPipelines  = $security.OpenToAllPipelines
+                AuthorizedPipelineCount = $security.AuthorizedPipelineCount
+                OpenedBy                = $security.OpenedBy
+                OpenedOn                = $security.OpenedOn
+
                 Raw           = $e
             }
         }
     }
 
     Write-Verbose "Walked $($projects.Count) project(s); $totalEndpointsSeen total endpoint reference(s) (incl. duplicates from shared connections); $($seen.Count) unique service connection(s) returned"
-    if ($projects.Count -gt 0 -and $seen.Count -eq 0) {
-        Write-Warning "Walked $($projects.Count) project(s) but found zero service connections. This almost always means the msec SP has 'Project Reader' access (so it can SEE projects) but doesn't have read access to service connections themselves - they have their own permission gate. Either add the SP to each project's 'Endpoint Administrators' group, or grant Reader role at Project Settings > Pipelines > Service connections > Security."
+    # WHAT THIS NEEDS IS THE 'User' ROLE, established against a live organization after four
+    # wrong answers. Service connections use ROLE ASSIGNMENTS
+    # (distributedtask.serviceendpointrole), not the ServiceEndpoints security namespace - an
+    # allow on that namespace is accepted, stored, reported back, and confers nothing. And
+    # within the role model, 'Reader' is not enough: an identity holding Reader on every
+    # connection in a project, inherited and effective, still gets an empty list. 'User' is what
+    # this API checks.
+    #
+    # GRANT IT ONCE FOR THE ORGANIZATION, on the namespace side. The two permission systems are
+    # connected: an allow at the ServiceEndpoints root token 'endpoints' surfaces as an inherited
+    # ROLE on every project and connection.
+    #
+    #   ViewEndpoint (bit 16) -> inherited Reader -> still an empty list
+    #   Use          (bit 1)  -> inherited User   -> what this API checks
+    #
+    #   ./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization <org> -Identity <group> `
+    #       -Namespace ServiceEndpoints -Permission Use -Scope Organization -Pat $pat -Apply
+    #
+    # Verified: one write took an organization from 70 connections in 1 project to 243 across 14.
+    # Per-project role assignments (-RoleName User -Scope Project) do the same thing one project
+    # at a time and are not needed.
+    #
+    # 'User' means "may authenticate through this connection", which reads alarming for a
+    # read-only module. In practice the app would also need to author and run a pipeline to
+    # exploit it, which needs Contribute on a repository and build permissions it does not have.
+    # Worth knowing rather than waving away.
+    #
+    # A PROJECT WITH NO VISIBLE ENDPOINTS RETURNS 200 AND AN EMPTY LIST - the same answer as a
+    # project that genuinely has none. Service connections are permissioned per connection, so an
+    # identity can see some and not others within one project, and the response never says what
+    # it withheld. Measured on a live organization: an app in [Project]\Readers on 36 projects
+    # saw 70 connections in 1 project where a person saw 155 across 14.
+    #
+    # The shortfall is still reported rather than assumed away, because a project can withhold
+    # connections for reasons this command cannot see - but the usual cause is the missing
+    # 'User' role above.
+    if ($IncludeSecurity -and $securityFailures) {
+        $which = if ($securityFailures -eq $securityTried) { 'every connection' } else { "$securityFailures of $securityTried connection(s)" }
+        Write-Warning "-IncludeSecurity could not read role assignments for $which, so Administrators, AdministratorCount, UserCount and ReaderCount are `$null rather than counts. Reading a connection's roles needs more than listing it - grant the group 'Administer' is NOT required, but the reader must be able to see the role assignments on the endpoint scope."
+    }
+
+    if ($emptyProjects.Count) {
+        $shown = ($emptyProjects | Select-Object -First 5) -join ', '
+        $more  = if ($emptyProjects.Count -gt 5) { " and $($emptyProjects.Count - 5) more" } else { '' }
+        Write-Warning "$($emptyProjects.Count) of $($projects.Count) project(s) returned no service connections: $shown$more. That is NOT proof they have none - this API answers 200 with an empty list for connections the caller cannot see. Compare against what a person sees in the portal before treating this as the full picture."
     }
 }

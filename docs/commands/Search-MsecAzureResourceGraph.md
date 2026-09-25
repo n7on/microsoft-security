@@ -14,8 +14,7 @@ Runs a bundled KQL query against Azure Resource Graph and returns the rows.
 
 ```
 Search-MsecAzureResourceGraph [-ResourceType] <String> [[-Name] <String>] [[-Subscription] <String[]>]
- [-CurrentSubscription] [[-First] <Int32>] [[-MaxRows] <Int32>] [-NoCache]
- [<CommonParameters>]
+ [-CurrentSubscription] [[-First] <Int32>] [[-MaxRows] <Int32>] [-NoCache] [-CachedOnly] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -212,6 +211,27 @@ never cached.
 
 Use -NoCache when you have just changed something and are checking whether the change
 took: that is the one case where minutes-old data actively misleads.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -CachedOnly
+Return what is already cached and never query Azure - an empty result on a miss rather
+than a fetch.
+For callers that must not block or fail: tab completers above all, which
+fire on every keypress.
+Ignores the cache age window, because with no refetch available
+a stale answer beats no answer.
+Cannot be combined with -NoCache.
 
 ```yaml
 Type: SwitchParameter

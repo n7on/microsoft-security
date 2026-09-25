@@ -1,0 +1,62 @@
+// One row per Azure SQL logical server across every accessible subscription, projected to the
+// settings that decide who can reach it and who can authenticate.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType SqlServer.
+// Its companion, -Name Databases, lists the databases on each server.
+// No filtering is applied here - filter in PowerShell, e.g.
+//   Search-MsecAzureResourceGraph -ResourceType SqlServer | Where-Object PublicNetworkAccess -eq 'Enabled'
+//
+// THE SQL ADMIN LOGIN IS NOT AN ENTRA IDENTITY. AdminLogin is the SQL authentication account
+// created when the server was provisioned - it lives in the server's own master database, is
+// authenticated by password, and Entra has never heard of it. It bypasses Conditional Access
+// and MFA, never appears in Entra sign-in logs, is shared rather than per-person, and cannot
+// be deleted. EntraOnlyAuth is what disables it; measured on a live tenant, three servers had
+// it unset, so the shared login was live on all three.
+//
+// A SINGLE ENTRA ADMIN SLOT, and EntraAdmin is whatever principal is in it. It can be a user
+// or a group, and setting it REPLACES whoever held it - so a server whose admin is a named
+// person loses all Entra-authenticated administration the day that person leaves. Measured
+// live: one server's admin was a user whose account had been disabled two months earlier,
+// which left nobody able to create database users at all, because only an Entra-authenticated
+// connection may create Entra principals.
+//
+// EntraAdminType tells a user from a group without a directory lookup, which is the column to
+// filter on when auditing that pattern.
+//
+// RESOURCE GRAPH LAGS ARM, AND THE ADMIN SLOT IS WHERE YOU WILL NOTICE. Measured live:
+// minutes after the Entra admin on a server was changed to a group, this query - with
+// -NoCache, so not msec's own cache - still returned the previous holder. ARM had the new
+// value and connections already behaved accordingly. If you have just changed an
+// administrator and want to confirm it, read the resource directly rather than through here.
+//
+// AUDITING IS NOT HERE. auditingSettings is a child resource Resource Graph does not project,
+// like MySQL's firewall rules - it needs a per-server ARM call. That matters because auditing
+// is off by default, and a server with a shared SQL login and no audit trail records nothing
+// about who used it.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.sql/servers'
+| extend Administrators = properties.administrators
+| project Name                = name,
+          Fqdn                = tostring(properties.fullyQualifiedDomainName),
+          // 'Enabled' means reachable on the public FQDN, gated only by firewall rules.
+          PublicNetworkAccess = tostring(properties.publicNetworkAccess),
+          // The SQL authentication admin - see the note above. Present even when nobody uses it.
+          AdminLogin          = tostring(properties.administratorLogin),
+          EntraAdmin          = tostring(Administrators.login),
+          EntraAdminType      = tostring(Administrators.principalType),
+          EntraAdminObjectId  = tostring(Administrators.sid),
+          // Empty rather than false when never configured: absent is not the same as "off and
+          // someone decided that", and only one of the two is a choice anybody made.
+          EntraOnlyAuth       = tostring(Administrators.azureADOnlyAuthentication),
+          MinimalTlsVersion   = tostring(properties.minimalTlsVersion),
+          Version             = tostring(properties.version),
+          State               = tostring(properties.state),
+          Location            = location,
+          ResourceGroup       = resourceGroup,
+          SubscriptionId      = subscriptionId,
+          Id                  = id
+| order by Name asc

@@ -87,7 +87,7 @@ Sheets, each data sheet written as an Excel table:
   AzureSecureScore       one column per Azure subscription
   PolicyCompliance       one column per Azure Policy initiative
   PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
-  MfaCoverage            MFA capability overall and for admins
+  MfaCoverage            MFA capability for members and for admins, plus SSPR
   DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
   DevicePlatform         one column per OS family (Windows, macOS, iOS, Android, ...)
   DeviceOsVersion        one column per OS release (Windows 11, iOS 17, ...)

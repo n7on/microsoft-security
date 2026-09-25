@@ -59,7 +59,7 @@ function Export-MsecPostureReport {
           AzureSecureScore       one column per Azure subscription
           PolicyCompliance       one column per Azure Policy initiative
           PrivilegedAccess       standing vs PIM-eligible admins, and who else holds a role
-          MfaCoverage            MFA capability overall and for admins
+          MfaCoverage            MFA capability for members and for admins, plus SSPR
           DeviceCompliance       Intune compliance mix, aggregated from Get-MsecIntuneDevice
           DevicePlatform         one column per OS family (Windows, macOS, iOS, Android, ...)
           DeviceOsVersion        one column per OS release (Windows 11, iOS 17, ...)
@@ -516,6 +516,17 @@ function Export-MsecPostureReport {
                 PasswordlessCapablePercent = $mfa.PasswordlessCapablePercent
                 PhoneOnlyMfaCapablePercent = $mfa.PhoneOnlyMfaCapablePercent
                 SsprCapablePercent         = $mfa.SsprCapablePercent
+                # Member-scoped, because the three percentages above divide by every user and
+                # guests dilute them - severely in a guest-heavy tenant. The all-user columns
+                # are kept so a workbook's existing history stays comparable; these are the
+                # ones to read. See Get-MsecEntraMfaRegistrationStats for the measurements.
+                MembersMfaCapablePercent          = $mfa.MembersMfaCapablePercent
+                MembersPasswordlessCapablePercent = $mfa.MembersPasswordlessCapablePercent
+                MembersSsprCapablePercent         = $mfa.MembersSsprCapablePercent
+                MembersMfaCapable                 = $mfa.MembersMfaCapable
+                MembersNotMfaCapable              = $mfa.MembersNotMfaCapable
+                MembersSsprCapable                = $mfa.MembersSsprCapable
+                GuestsSsprCapable                 = $mfa.GuestsSsprCapable
             }
         })
     }
@@ -937,7 +948,7 @@ function Export-MsecPostureReport {
         [pscustomobject]@{ Sheet = 'AzureSecureScore';      Table = 'tblAzureSecureScore';      XColumn = 'RunUtc'; Title = 'Azure Secure Score by subscription (%)';                Series = @($azureSubscriptionColumn) }
         [pscustomobject]@{ Sheet = 'PolicyCompliance';       Table = 'tblPolicyCompliance';       XColumn = 'RunUtc'; Title = 'Azure Policy compliance by initiative (%)';               Series = @($policyInitiativeColumn) }
         [pscustomobject]@{ Sheet = 'PrivilegedAccess';       Table = 'tblPrivilegedAccess';       XColumn = 'RunUtc'; Title = 'Privileged access over time';                            Series = @('StandingPrivileged', 'EligiblePrivileged', 'PrivilegedServicePrincipals', 'PrivilegedGuests', 'PrivilegedDisabled') }
-        [pscustomobject]@{ Sheet = 'MfaCoverage';           Table = 'tblMfaCoverage';           XColumn = 'RunUtc'; Title = 'MFA capability over time (%)';                          Series = @('MfaCapablePercent', 'AdminMfaCapablePercent', 'PasswordlessCapablePercent', 'PhoneOnlyMfaCapablePercent', 'SsprCapablePercent') }
+        [pscustomobject]@{ Sheet = 'MfaCoverage';           Table = 'tblMfaCoverage';           XColumn = 'RunUtc'; Title = 'MFA capability over time (%)';                          Series = @('MembersMfaCapablePercent', 'AdminMfaCapablePercent', 'MembersPasswordlessCapablePercent', 'PhoneOnlyMfaCapablePercent', 'MembersSsprCapablePercent') }
         [pscustomobject]@{ Sheet = 'DeviceCompliance';      Table = 'tblDeviceCompliance';      XColumn = 'RunUtc'; Title = 'Intune device compliance over time';                    Series = @('Compliant', 'Noncompliant', 'InGracePeriod') }
         [pscustomobject]@{ Sheet = 'DevicePlatform';        Table = 'tblDevicePlatform';        XColumn = 'RunUtc'; Title = 'Managed devices by platform';                              Series = @($devicePlatformColumn) }
         [pscustomobject]@{ Sheet = 'DeviceOsVersion';       Table = 'tblDeviceOsVersion';       XColumn = 'RunUtc'; Title = 'Managed devices by OS release';                            Series = @($deviceOsVersionColumn) }

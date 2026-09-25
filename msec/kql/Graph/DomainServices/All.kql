@@ -1,0 +1,123 @@
+// One row per Microsoft Entra Domain Services managed domain across every accessible
+// subscription - the settings that decide what its authentication is allowed to look like.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType DomainServices. Read through
+// Get-MsecAzureDomainService, which adds where the security audit logs go - a diagnostic setting
+// is a child resource and Resource Graph does not project it.
+//
+// THE PAIR. This is the CONFIGURATION. Kql/Law/DomainServices/* reads what was actually used:
+//   $domain = Get-MsecAzureDomainService                     # NtlmV1 Enabled?
+//   $used   = Search-MsecLogAnalytics -Subject DomainServices -WorkspaceName <ws> -Days 30
+//   $used | Where-Object Method -eq 'NTLM'              # who breaks if it is turned off
+//
+// A MANAGED DOMAIN SHIPS WITH ITS WEAK SETTINGS ON. NTLM v1, RC4 Kerberos encryption and
+// unsigned LDAP are enabled by default on a new managed domain, and NTLM password hashes are
+// synchronised into it by default too. None of that is a misconfiguration anybody made - which
+// is exactly why it survives: there is no change to find in a change log, and the portal shows
+// nine separate toggles across two blades. WeakSettings below names the ones currently in the
+// weak state, so a reviewer does not have to remember which direction is safe for each.
+//
+// THE CERTIFICATE EXPIRY IS A TRAP. certificateNotAfter is '0001-01-01' when no LDAPS
+// certificate has ever been uploaded, which is not an expiry date - it is the absence of one.
+// Reported as empty rather than as a date in the year 1, because sorting by expiry would
+// otherwise put every domain WITHOUT LDAPS at the top of a list of expiring certificates.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.aad/domainservices'
+| extend Security = properties.domainSecuritySettings,
+         Ldaps    = properties.ldapsSettings,
+         Replicas = properties.replicaSets
+| extend NtlmV1                 = tostring(Security.ntlmV1),
+         SyncNtlmPasswords      = tostring(Security.syncNtlmPasswords),
+         KerberosRc4Encryption  = tostring(Security.kerberosRc4Encryption),
+         KerberosArmoring       = tostring(Security.kerberosArmoring),
+         SyncKerberosPasswords  = tostring(Security.syncKerberosPasswords),
+         SyncOnPremPasswords    = tostring(Security.syncOnPremPasswords),
+         ChannelBinding         = tostring(Security.channelBinding),
+         LdapSigning            = tostring(Security.ldapSigning),
+         TlsV1                  = tostring(Security.tlsV1)
+| extend Ldaps_Enabled          = tostring(Ldaps.ldaps),
+         LdapsExternalAccess    = tostring(Ldaps.externalAccess),
+         LdapsCertNotAfterRaw   = tostring(Ldaps.certificateNotAfter)
+// See the note above: year 1 means "no certificate", not "expired".
+| extend LdapsCertNotAfter = iff(LdapsCertNotAfterRaw startswith '0001-01-01', '', LdapsCertNotAfterRaw)
+// Every setting currently in its weak state, named. Empty means none of the nine are.
+| extend WeakSettings = strcat_array(array_concat(
+        iff(NtlmV1 =~ 'Enabled',                dynamic(['NTLM v1 accepted']), dynamic([])),
+        iff(SyncNtlmPasswords =~ 'Enabled',     dynamic(['NTLM password hashes synchronised']), dynamic([])),
+        iff(KerberosRc4Encryption =~ 'Enabled', dynamic(['Kerberos RC4 encryption accepted']), dynamic([])),
+        iff(TlsV1 =~ 'Enabled',                 dynamic(['TLS 1.0 accepted']), dynamic([])),
+        iff(LdapSigning =~ 'Disabled',          dynamic(['LDAP signing not required']), dynamic([])),
+        iff(ChannelBinding =~ 'Disabled',       dynamic(['LDAP channel binding not required']), dynamic([])),
+        iff(KerberosArmoring =~ 'Disabled',     dynamic(['Kerberos armoring (FAST) off']), dynamic([])),
+        // Only weak when LDAPS is actually on - an internet-reachable LDAPS endpoint is a very
+        // different thing from LDAPS being switched off altogether.
+        iff(Ldaps_Enabled =~ 'Enabled' and LdapsExternalAccess =~ 'Enabled',
+                                                dynamic(['LDAPS reachable from the internet']), dynamic([]))
+    ), '; ')
+| extend ReplicaSetCount = coalesce(array_length(Replicas), 0),
+         IdLower         = tolower(id)
+// The replica sets are the only nested array here and they have to be flattened in a joined
+// leg: Resource Graph supports mv-expand but NOT mv-apply, so there is no way to collapse an
+// array back to one row inside the main query. Same shape as Graph/NSG/All.kql.
+//
+// leftouter, NOT inner: a managed domain with no replica set at all still returns its row,
+// with the replica columns empty. An inner join would make such a domain disappear from the
+// inventory entirely, which is the one outcome worth ruling out.
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.aad/domainservices'
+    | extend IdLower = tolower(id)
+    | mv-expand Replica = properties.replicaSets limit 100
+    | summarize Locations = strcat_array(make_set(tostring(Replica.location)), ', '),
+                // Each replica set carries its OWN array of controller addresses, so those are
+                // joined per replica first and the per-replica strings collected after.
+                DomainControllerIps = strcat_array(make_set_if(strcat_array(Replica.domainControllerIpAddress, ', '),
+                                                               array_length(Replica.domainControllerIpAddress) > 0), ', '),
+                // The public IP Azure puts in front of the managed domain. Present whether or
+                // not LDAPS external access is on - it is not by itself an exposure, and is
+                // reported so a reviewer can tell which address the firewall rules are about.
+                ExternalAccessIps = strcat_array(make_set_if(tostring(Replica.externalAccessIpAddress),
+                                                             isnotempty(Replica.externalAccessIpAddress)), ', '),
+                ServiceStatus = strcat_array(make_set_if(tostring(Replica.serviceStatus),
+                                                         isnotempty(Replica.serviceStatus)), ', ')
+        by IdLower
+) on IdLower
+| project Domain               = tostring(properties.domainName),
+          Sku                  = tostring(properties.sku),
+          WeakSettings,
+          NtlmV1,
+          SyncNtlmPasswords,
+          KerberosRc4Encryption,
+          KerberosArmoring,
+          TlsV1,
+          LdapSigning,
+          ChannelBinding,
+          LdapsEnabled         = Ldaps_Enabled,
+          LdapsExternalAccess,
+          LdapsCertNotAfter,
+          SyncKerberosPasswords,
+          SyncOnPremPasswords,
+          // 'All' means every user in the tenant is synchronised into the managed domain.
+          // 'CloudOnly' or a filtered sync narrows it.
+          SyncScope            = tostring(properties.syncScope),
+          FilteredSync         = tostring(properties.filteredSync),
+          DomainConfigurationType = tostring(properties.domainConfigurationType),
+          Locations,
+          ReplicaSetCount,
+          DomainControllerIps,
+          ExternalAccessIps,
+          ServiceStatus,
+          ProvisioningState    = tostring(properties.provisioningState),
+          NotifyGlobalAdmins   = tostring(properties.notificationSettings.notifyGlobalAdmins),
+          NotifyDcAdmins       = tostring(properties.notificationSettings.notifyDcAdmins),
+          AdditionalRecipients = strcat_array(properties.notificationSettings.additionalRecipients, ', '),
+          Name                 = name,
+          ResourceGroup        = resourceGroup,
+          Location             = location,
+          SubscriptionId       = subscriptionId,
+          Id                   = id
+| order by Domain asc

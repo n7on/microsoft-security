@@ -11,16 +11,19 @@ msec/scripts/
 │   │   └── *.sh      ← bash scripts (CommandId: RunShellScript)
 │   └── Windows/
 │       └── *.ps1     ← PowerShell scripts (CommandId: RunPowerShellScript)
-└── Intune/            ← uploaded to Intune, not run by any msec function
+├── Intune/            ← uploaded to Intune, not run by any msec function
     ├── Windows/
     │   └── <name>/
     │       ├── detect.ps1     ← exit 0 clean, exit 1 run the remediation
     │       ├── remediate.ps1  ← the fix. OPTIONAL - see below
     │       └── README.md
     └── macOS/
-        └── <name>/
-            ├── custom-attribute.sh  ← Custom attributes for macOS, not a Remediation
-            └── README.md
+│       └── <name>/
+│           ├── custom-attribute.sh  ← Custom attributes for macOS, not a Remediation
+│           └── README.md
+└── LiveResponse/      ← uploaded to the Defender XDR live response library
+    └── Windows/
+        └── *.ps1     ← run against ONE device by an analyst: run <file> -parameters "..."
 ```
 
 **The remediation half is optional.** Intune allows a remediation with a detection
@@ -32,9 +35,13 @@ into a fleet-wide inventory report. `entra-local-admins` is that shape;
 macOS* — one script, returns one string, no detect/remediate split. Same folder
 convention so the two platforms sit together.
 
-## Intune/ is the exception to read-only
+## Intune/ and LiveResponse/ are the exceptions to read-only
 
 Every script under `VM/` is read-only and safe to run blindly across a fleet.
+Scripts under `LiveResponse/` also write, but against ONE device an analyst chose during an
+investigation rather than a whole assignment - see `LiveResponse/README.md`. Keeping the two
+channels apart is what stops a live response script being uploaded as a remediation, where
+the same file would run everywhere.
 **Scripts under `Intune/` WRITE.** They are Intune Remediations: a detection half
 that reports, and a remediation half that changes the machine on every device the
 assignment covers.

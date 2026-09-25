@@ -5,6 +5,358 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Connect-MsecAdmin` - a delegated, interactive sign-in for the commands that will write.
+  Reads stay on the app certificate; writes run as a named person.
+
+  THE APP CANNOT WRITE, BY DESIGN. Every Graph permission `New-MsecApp` consents is
+  `*.Read.All`, so the certificate in Key Vault cannot change anything - the module's promise
+  is enforced by the token rather than by naming. Writing as a person instead makes each
+  change attributable, subject to Conditional Access and MFA, bounded by that person's own
+  RBAC, and impossible from an unattended pipeline by accident.
+
+  IT IS NOT THE `-AsCurrentUser` PATTERN, AND COULD NOT BE. `Connect-MsecTeams` borrows the Az
+  context's token, which works because Azure PowerShell's first-party app holds the scopes
+  those commands need. Measured on a live tenant, its Graph token carries
+  `Application.ReadWrite.All`, `Group.ReadWrite.All`, `Directory.AccessAsUser.All` and
+  `User.Read.All` - and nothing for security. Borrowing it cannot resolve an alert, so this
+  requests consent properly.
+
+  CONSENT REQUESTED IS NOT CONSENT GRANTED. `Connect-MgGraph` succeeds when a tenant declines
+  a scope - the context simply returns without it, and the first write then 403s naming
+  nothing. Granted scopes are checked against requested ones at connect time and a missing one
+  is reported by name.
+
+  It also REFUSES a tenant different from the one `Connect-Msec` is reading, and closes the
+  half-open Graph session on the way out. Reading one tenant and writing to another is
+  invisible at the time and obvious afterwards.
+
+  Needs `Microsoft.Graph.Authentication`, which is not a dependency of msec - only the write
+  commands require it.
+
+- `Set-MsecDefenderAlert` - resolve, classify and assign Defender XDR alerts. The first command
+  that changes anything outside the module's own app registration, and it runs as you: it
+  requires the `Connect-MsecAdmin` session and refuses the app one by name, because every
+  permission `New-MsecApp` consents is `*.Read.All` and a write on that session can only 403.
+
+  IT COUNTS BEFORE IT ACTS. Piped ids are buffered and the breadth check runs against the whole
+  set, then writes. A guard that checks per item has already changed 25 alerts by the time it
+  refuses the 26th - which is the exact failure it exists to prevent. `-MaxCount` defaults to 25;
+  measured live, `Get-MsecDefenderAlert -Status new` on this tenant returns 201 rows, so
+  `Get-… | Set-…` is one pipe away from a mass update.
+
+  IT REPORTS WHAT A RE-READ RETURNED, NOT WHAT IT ASKED FOR. The PATCH response is the service
+  echoing the request; a separate GET is the service being asked what the alert now is. Defender
+  can accept a PATCH and not hold part of it - a determination that conflicts with the
+  classification is the usual way - so every requested field is compared after the write and
+  `Changed` is false when any of them did not stick. When the re-read itself fails, the `*After`
+  columns are `$null` rather than the requested values: an unverified write must never render as
+  a confirmed one.
+
+  THE ENUM VALUES ARE NOT THE GUESSABLE ONES. Taken from Graph's own `$metadata`, determinations
+  are `notMalicious` and `notEnoughDataToValidate`, not `clean` and `insufficientData`. And note
+  the status vocabulary: the CSDL names the first member `newAlert` while the wire value is
+  `new` - the wire value is what this takes and what `Get-MsecDefenderAlert` returns.
+
+  `SupportsShouldProcess` with `ConfirmImpact = 'High'`, so a bare call prompts and `-WhatIf`
+  lists the ids that would change without touching any of them.
+
+- `Set-MsecDefenderIncident` - resolve, classify, re-grade, tag and COMMENT on Defender XDR
+  incidents, with the same guards as `Set-MsecDefenderAlert`.
+
+  THE RESOLUTION COMMENT LIVES ON THE INCIDENT, BECAUSE GRAPH HAS NO WRITABLE COMMENT ON AN
+  ALERT. Checked against both `$metadata` documents and both Update alert pages: `comments` on
+  `alerts_v2` is a read-only structural property, there is no comments navigation property and
+  no action to add one, and neither v1.0 nor beta lists it as updatable. Incidents have
+  `resolvingComment`, which Microsoft describes as explaining the resolution and the
+  classification choice - so `-ResolvingComment` is the supported way to record why something
+  was closed, and alerts roll up into incidents anyway.
+
+  `-CustomTags` REPLACES the tag array rather than appending - that is Graph's behaviour for a
+  collection property, not a choice made here. The command reads the incident first and warns,
+  naming the tags about to be dropped, before the write rather than after.
+
+  `redirected` is deliberately absent from `-Status`: Defender assigns it when it merges an
+  incident into another, and offering it would imply this command can merge incidents. On the
+  other side, `inProgress` and `awaitingAction` ARE offered - they are in `$metadata` even
+  though the Update incident doc lists only active, resolved and redirected.
+
+  `displayName`, `summary` and `description` are updatable through Graph but are not exposed:
+  they are the incident's narrative rather than a triage decision, and rewriting them from a
+  pipeline is a good way to lose Defender's own text.
+
+### Fixed
+- `Set-MsecDefenderAlert` now reports comment refusals ONCE per run instead of once per alert,
+  and hands over the command that does work. Every non-endpoint alert fails the same rule, so a
+  near-identical warning per row buried the ones that were actually specific to an alert. The
+  summary names the count and the serviceSource, then gives the exact follow-up with the
+  incident ids collected from the alerts themselves:
+
+      WARNING: 3 alert(s) did not take a comment: serviceSource unknownFutureValue, and the
+      Defender for Endpoint API only knows endpoint alerts. ... Put the note on their
+      incident(s) instead: Set-MsecDefenderIncident -Id 5846,5901 -ResolvingComment '...'
+
+  `CommentAdded` is still `$false` on each row, so nothing is dropped quietly - the per-row fact
+  is in the object, and the warning stream carries the instruction rather than the repetition.
+- The post-write verification in `Set-MsecDefenderAlert` and `Set-MsecDefenderIncident` now waits
+  for Defender XDR to settle instead of reading once, immediately.
+
+  IT WAS REPORTING FAILURES THAT HAD NOT HAPPENED. Observed live: an alert PATCHed successfully
+  at 16:37:00 - status, classification and assignedTo all applied - read back as unchanged when
+  the verification GET fired right behind the PATCH, producing "did not keep: status,
+  classification, assignedTo" for a write that had entirely worked. XDR is eventually consistent;
+  the re-read was simply too early. This is the same class of bug the re-read exists to catch,
+  running backwards, and it is arguably worse: a check that cries wolf teaches people to ignore
+  it, which costs more than never having checked.
+
+  The read-back now polls on a bounded budget (immediate, then 2s, 3s, 5s) and stops the moment
+  every requested field matches, so the normal case costs nothing. A warning is raised only when
+  a value is still wrong after the last attempt, and its wording changed from "did not keep" to
+  "still does not show ... after N reads" to say what was actually observed. Extracted to
+  `Get-MsecAdminWriteResult` so both commands verify identically; collection properties such as
+  `customTags` compare as joined strings, which removed the incident command's bespoke branch.
+
+- `Id` is back in the default columns for alert change rows. It was dropped when `ServiceSource`
+  and `CommentAdded` were added, which made a row impossible to match to the warnings printed
+  beside it - the failure that surfaced the bug above. `ServiceSource` moved out of the default
+  table to make room; `Select-Object *` still has it.
+- `Set-MsecDefenderAlert` gains `-Comment`, correcting an earlier claim in this changelog that a
+  comment could not be written to an alert at all. That was wrong: it is not a MICROSOFT GRAPH
+  operation, but the Defender for Endpoint API has one, and its docs state a comment may be
+  submitted with or without updating any other property. This is the field the portal's "Classify
+  alert" box writes.
+
+  The comment goes to `PATCH /api/alerts/{providerAlertId}` on the Defender host while status and
+  classification continue to go to Graph. Splitting them keeps the two vocabularies apart - the
+  Defender API spells determinations `InsufficientData` and `CompromisedUser` and statuses
+  `Resolved`, against Graph's `notEnoughDataToValidate`, `compromisedAccount` and `resolved` - so
+  nothing has to translate between them.
+
+  IT ONLY COVERS ENDPOINT ALERTS. Measured live, that API returns 29 of 569 alerts over ninety
+  days; the rest are Defender for Office 365, DLP and serviceSource `unknownFutureValue`.
+  `-Comment` on one of those is refused by name, naming the serviceSource and pointing at
+  `Set-MsecDefenderIncident -ResolvingComment`, rather than being silently dropped. The portal
+  works on all of them because it uses an unpublished internal API.
+
+  Authentication differs too: the Defender host will not take a Graph token, so the comment is
+  written with an Az-context token carrying `user_impersonation` - bounded by the caller's own
+  'Alerts investigation' role. The app registration still cannot write; it holds only
+  `Score.Read.All`, `Machine.Read.All` and `Vulnerability.Read.All` on Defender.
+
+  `CommentAdded` reports whether the comment was found in the thread on re-read - `$null` when
+  not requested or not verifiable, `$false` when refused or absent, never `$true` merely because
+  a PATCH returned 200.
+
+- `Get-MsecDefenderAlert` now returns `ProviderAlertId`, the alert's id in the product that
+  raised it. It is the key the Defender API needs, and was previously read from Graph but dropped.
+
+- A failed Graph PATCH in `Set-MsecDefenderAlert` now emits a row with `Changed = $null` instead
+  of emitting nothing. With a comment in play a write is no longer all-or-nothing - the comment
+  can land while the Graph fields do not - and a row plus a warning beats silence a pipeline
+  swallows. `$null` rather than `$false`: the change was never verified, not observed to fail.
+- Documented, in `Set-MsecDefenderAlert`'s help, that Microsoft's Update alert page still lists
+  the retired determinations `clean` and `insufficientData` for the enum shared with incidents.
+  `$metadata` and the Update incident page both give `notMalicious` and
+  `notEnoughDataToValidate`, which is what both commands accept - the note exists so nobody
+  "corrects" the ValidateSet from the stale page.
+
+### Changed
+- `-MaxCount` is REMOVED from `Set-MsecDefenderAlert` and `Set-MsecDefenderIncident`. It capped a
+  run at 25 objects and refused the whole pipeline above that, which got in the way of the
+  bulk triage these commands exist for. There is now no cap: the pipeline writes everything the
+  filter selected.
+
+  What still stands between a broad filter and a mass update is `ConfirmImpact = 'High'`, which
+  prompts per object on a bare call, and `-WhatIf`, which lists every id it would touch and
+  changes nothing. `-Confirm:$false` turns off the prompt, so `-WhatIf` is worth running first on
+  any pipeline you have not run before.
+
+  Ids are still collected before the first write rather than acted on as they arrive - that was
+  also what made the cap possible, but it independently ensures a duplicated id is written once.
+- The module description and README no longer say "read-only by design" without qualification.
+  The app registration is still read-only and that is what the promise was always about, but
+  with a write command in the box the accurate statement is that the *certificate* cannot change
+  your tenant, and writes run as a signed-in person.
+
+### Added
+- `Get-MsecDefenderIncident` and `Get-MsecDefenderAlert` - the row-level view of Defender XDR.
+  `Get-MsecDefenderIncidentStats` already answered "how many, how severe, how fast"; these
+  answer "which ones".
+
+  REDIRECTED INCIDENTS ARE THE SAME ATTACK TWICE. Defender merges incidents it decides are one
+  attack, leaving the absorbed one with status 'redirected' and a RedirectedToIncidentId.
+  Measured live: 51 of 474 in ninety days, so a naive count overstates by 12%. They are
+  returned by default with the merge target named, and `-ExcludeRedirected` drops them - an
+  incident that silently vanished from a count would have no explanation.
+
+  SERVICESOURCE IS OFTEN 'unknownFutureValue', WHICH IS GRAPH, NOT THE DATA. It is the enum
+  placeholder for a source this API version has no name for - measured live, 231 of 569 alerts,
+  40%. Passed through verbatim rather than folded into 'other' or guessed at; ProductName and
+  DetectionSource are carried alongside and are usually populated when it is not.
+
+  THE TWO STATUS VOCABULARIES DIFFER. An alert is new/inProgress/resolved; an incident is
+  active/inProgress/resolved/redirected. An alert is never 'active'. Filtering both with one
+  string finds nothing in one of them, silently, so the two ValidateSets differ and a test
+  asserts it.
+
+  ResolveDays is `$null` while an item is open, never 0 - zero reads as "closed instantly",
+  the opposite of a running investigation. Alert evidence is counted rather than flattened:
+  the shape differs per entity type, so the array stays on `Raw.evidence`.
+
+  Measured live on a 90-day window: 474 incidents (128 active), 569 alerts (21 high and still
+  new), and every single incident classified 'unknown' - which measures triage effort rather
+  than the incidents.
+### Added
+- `Search-MsecAzureResourceGraph -ResourceType SqlServer` - Azure SQL logical servers and the
+  settings that decide who can reach them and who can authenticate: public network access, the
+  SQL authentication admin login, the Entra admin and its principal type, Entra-only
+  authentication, and minimum TLS. `-Name Databases` lists the databases on each server with
+  their server's FQDN.
+
+  THE SQL ADMIN LOGIN IS NOT AN ENTRA IDENTITY. It lives in the server's own master database,
+  is authenticated by password, bypasses Conditional Access and MFA, never appears in Entra
+  sign-in logs, is shared rather than per-person, and cannot be deleted - only disabled
+  wholesale by turning on Entra-only authentication. Measured live: three servers, none with
+  Entra-only auth set, so the shared login was live on all three; one of them had no Entra
+  admin configured at all, making SQL authentication the only way in.
+
+  A SERVER HAS A SINGLE ENTRA ADMIN SLOT and setting it REPLACES the previous holder, so a
+  server whose admin is a named person loses all Entra-authenticated administration the day
+  that person leaves - and only an Entra-authenticated connection may create Entra database
+  users. Measured live: one server's admin was a user whose account had been disabled two
+  months earlier, which left nobody able to create a database user at all.
+
+  RESOURCE GRAPH LAGS ARM. Minutes after an Entra admin was changed, this query still returned
+  the previous holder even with `-NoCache`, while ARM and live connections already reflected
+  the change. Noted in the query rather than worked around.
+
+  Auditing settings are deliberately absent: they are a child resource Resource Graph does not
+  project, like MySQL's firewall rules.
+### Added
+- `Get-MsecDefenderDevice -OnboardingStatus` and the same passthrough on
+  `Export-MsecDefenderDeviceReport`, because a Defender inventory is mostly NOT onboarded
+  devices and nothing said so.
+
+  Defender's device DISCOVERY returns things it merely saw on the network - phones, printers,
+  unmanaged laptops - from the same API as real endpoints. Measured on a live tenant:
+
+      total             717
+      Onboarded         217   Defender is protecting these
+      InsufficientInfo  209   discovered
+      CanBeOnboarded    178   discovered
+      Unsupported       113   discovered
+
+  So the evidence report ran three times the size of the protected estate, and 164 of those
+  rows had NO DEVICE NAME AT ALL - every unnamed one discovered rather than onboarded. The
+  command's own synopsis said "every device onboarded to Defender for Endpoint", which was
+  simply untrue; it is corrected.
+
+  NOTHING IS FILTERED BY DEFAULT. An unmanaged laptop on the corporate network is a finding in
+  its own right and CanBeOnboarded is a worklist - they answer a different question from the
+  one an exposure report asks, which is not the same as being noise. Pass
+  `-OnboardingStatus Onboarded` for the protected estate.
+### Fixed
+- `Get-MsecEntraMfaRegistrationStats` and the posture report's `MfaCoverage` sheet divided
+  every coverage percentage by the WHOLE directory, so guests diluted them. On a live tenant
+  of 177 members and 202 guests the report claimed 44.33% SSPR coverage and 61.48% MFA
+  coverage, against true member figures of 94.92% and 95.48% - understating recovery coverage
+  by more than fifty points.
+
+  The two errors differ in kind. A guest CAN be MFA-capable and some are, so the all-user MFA
+  number was blunt. A guest resets their password in their HOME tenant and so can essentially
+  never be SSPR-capable in yours - measured, 0 of 202 - which made every guest dead weight in
+  that denominator.
+
+  `NotMfaCapable` was the worst of them, because it is a COUNT of a problem rather than a
+  percentage: it read 146 where the true member figure is 8. "146 users cannot do MFA" is a
+  sentence somebody repeats in a meeting, and it was wrong by a factor of eighteen.
+
+  Added `MembersMfaCapablePercent`, `MembersSsprCapablePercent`,
+  `MembersPasswordlessCapablePercent`, `MembersMfaCapable`, `MembersNotMfaCapable`,
+  `MembersSsprCapable` and `GuestsSsprCapable`. The last one exists so a reader can SEE that guests contribute nothing
+  to SSPR rather than taking it on trust.
+
+  THE ALL-USER COLUMNS ARE KEPT. The posture report is a time series and removing them would
+  strand the history already in every workbook. The dashboard chart now plots the member-scoped
+  series; existing charts keep their old lines as well, because chart series are added but
+  never removed.
+### Added
+- `Search-MsecAzureResourceGraph -ResourceType ResourceChange` - what changed on Azure resources
+  in the last 14 days, who changed it and through which client. `-Name Properties` expands one
+  row per changed PROPERTY with the previous and new values, which is what answers "who changed
+  this setting, and what was it before".
+
+  FOURTEEN DAYS IS A HARD CEILING and there is no setting to extend it. An empty result for last
+  month is "out of retention", not "nothing changed" - for longer, the Activity Log keeps 90 days.
+
+  IT IS A SNAPSHOT DIFF, NOT AN AUDIT LOG. Two changes between snapshots collapse into one, and a
+  change reverted before the next snapshot leaves no trace. The Activity Log stays authoritative
+  for who called what.
+
+  Attribution is carried through as it comes: `ChangedByType` is 'User', 'Application', 'System'
+  or 'Unspecified' and is NOT normalised, because "Azure did it" and "nobody recorded who did it"
+  are different answers. Measured live: 1,848 Application, 580 System, 490 User, 46 Unspecified
+  over 14 days. Platform churn is left in rather than filtered, since "the platform restarted
+  this" is a real answer - filter on `ChangedByType` to get to changes a person made.
+
+  Patch orchestration is covered: `patchMode` is on the VM resource body, so moving a machine
+  between 'Windows Automatic Updates' and an Azure-orchestrated mode is diffed like any other
+  property, whichever tool did it.
+
+  `mv-expand` in the Properties query sets an explicit `limit 2000`. Resource Graph's default
+  RowLimit is 128 and truncates silently; the largest record measured carried 48 properties, so
+  the limit exists to make truncation impossible rather than merely unlikely. The repo's lint
+  test now covers this folder.
+### Added
+- `Get-MsecAzureDomainService` - every Microsoft Entra Domain Services managed domain, the security
+  settings that decide what its authentication may look like, and where its security audit logs
+  go. A managed domain exists so that things which cannot speak modern protocols - VPN
+  concentrators, RADIUS, file servers - can authenticate people's ordinary Entra accounts over
+  Kerberos, NTLM and LDAP. That is also the whole security question.
+
+  A MANAGED DOMAIN SHIPS WITH ITS WEAK SETTINGS ON: NTLM v1, RC4 Kerberos and unsigned LDAP are
+  enabled by default, and NTLM password hashes are synchronised in by default. None of it is a
+  change anybody made, which is why it survives review - there is nothing in a change log to
+  find, and the portal spreads nine toggles across two blades. `WeakSettings` names the ones
+  currently in the weak state in one string. Measured live: six of them.
+
+  `AuditLogsEnabled` is `$false` when security audit is off - the default, and a finding, since
+  a managed domain keeps no local store to go back to - and `$null` when the diagnostic settings
+  could not be read, which is a permission problem rather than a finding.
+
+  `AuditLogWorkspace` is the workspace NAME, because that is what `Search-MsecLogAnalytics
+  -WorkspaceName` takes and the workspace a managed domain writes to is not guessable.
+
+- `Search-MsecLogAnalytics -Subject DomainServices` - the other half: what the managed domain's
+  authentication actually looked like. `-Name All` gives one row per credential validation
+  (Kerberos 4768/4771, NTLM 4776, failed logons 4625) with the account, client address, outcome
+  and decoded reason; `-Name Accounts` summarises the same rows per account for an access
+  review; `-Name Sessions` summarises the logon-session events server-side.
+
+  SUCCESS AND FAILURE SHARE AN EVENT ID. 4776 is emitted whether the password was right or
+  wrong, and the outcome is a status code inside the message TEXT - not the event id, not a
+  column. Counting 4776 rows counts attempts, not logons. Measured live: 942 of them, of which
+  725 succeeded, 378 were an unknown user name, 19 a wrong password, 7 a locked-out account and
+  2 a disabled one.
+
+  KERBEROS AND NTLM STATUS CODES ARE DIFFERENT CODE SPACES and are decoded separately. 0x18 is
+  a Kerberos pre-authentication failure (wrong password) and is not an NT status code at all;
+  0xC000006A is the NTLM wrong-password status and is not a Kerberos result code. One shared
+  lookup would mislabel every row of whichever protocol it was not written for.
+
+  `-Name All` deliberately does NOT read event 4624. On a managed domain that is the domain
+  controllers' own session churn - 1,088,013 rows in thirty days against 2,673 credential
+  validations - which would bury the answer and blow the API's 500,000-row cap. `-Name Sessions`
+  reads those, summarised server-side.
+
+  Machine accounts are labelled `AccountType` 'Computer' rather than dropped - and labelled
+  rather than flagged with a boolean, because the Log Analytics API is untyped on the wire and
+  every column reaches PowerShell as a string. A boolean column arrives as the string 'false',
+  which is non-empty and therefore TRUE in a condition, so `Where-Object { -not $_.IsMachine }`
+  would return nothing at all, silently. 'User' and 'Computer' compare the way they read.
+
+- `Search-MsecAzureResourceGraph -ResourceType DomainServices` - the managed domain settings on
+  their own, without the audit-log lookup `Get-MsecAzureDomainService` adds.
+### Added
 - `Export-MsecAzureDevOpsReport` - a whole Azure DevOps organization's security posture in one
   workbook. A sheet per area (repositories, alerts, service connections, variable groups, secure
   files, environments, agent pools, extensions, pipeline settings, organization policies, users),

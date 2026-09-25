@@ -33,6 +33,11 @@ $script:MsecModuleRoot = $PSScriptRoot
 #   }
 $script:MsecSession = $null
 
+# Delegated, established by Connect-MsecAdmin, required by every command that writes. Separate
+# from MsecSession on purpose: the app cannot write, so a Set-* must refuse the app session
+# with a message rather than fail later with a 403 that names nothing.
+$script:MsecAdminSession = $null
+
 # Global Administrator's roleTemplateId - the same GUID in every tenant and every
 # cloud. Named here because the role's DISPLAY name is not dependable: Graph returns
 # it as the legacy 'Company Administrator' on many tenants, and a tenant may rename it
@@ -135,6 +140,28 @@ Update-TypeData -TypeName 'MsecAzureDevOpsServiceConnection' `
     -DefaultDisplayPropertySet 'Name', 'Type', 'AuthScheme', 'IsShared' `
     -Force
 
+# WeakSettings first after the domain: it is the reason to run this, and a nine-column table of
+# Enabled/Disabled buries it.
+Update-TypeData -TypeName 'MsecDefenderIncident' `
+    -DefaultDisplayPropertySet 'CreatedUtc', 'Severity', 'Status', 'DisplayName', 'Classification', 'ResolveDays' `
+    -Force
+
+Update-TypeData -TypeName 'MsecDefenderAlert' `
+    -DefaultDisplayPropertySet 'CreatedUtc', 'Severity', 'Status', 'Title', 'ServiceSource', 'IncidentId' `
+    -Force
+
+# StatusBefore sits next to StatusAfter because the pair is the point: the second column is what
+# a re-read returned, not what was requested, and Changed is false when any field did not hold.
+Update-TypeData -TypeName 'MsecDefenderAlertChange' `
+    -DefaultDisplayPropertySet 'Id', 'Severity', 'Title', 'StatusBefore', 'StatusAfter', 'Changed', 'CommentAdded' `
+    -Force
+
+Update-TypeData -TypeName 'MsecDefenderIncidentChange' `
+    -DefaultDisplayPropertySet 'Id', 'Severity', 'DisplayName', 'StatusBefore', 'StatusAfter', 'Changed' `
+    -Force
+Update-TypeData -TypeName 'MsecAzureDomainService' `
+    -DefaultDisplayPropertySet 'Domain', 'WeakSettings', 'AuditLogsEnabled', 'AuditLogWorkspace', 'SyncScope', 'Locations' `
+    -Force
 # The Azure DevOps rows carry every control their API exposes; these tables show the ones a
 # reviewer scans for first. Select-Object * or Export-Csv still gets all of them.
 

@@ -1,0 +1,62 @@
+// One row per changed PROPERTY - the old value, the new value, who changed it and how. The
+// per-property breakdown of Graph/ResourceChange/All.kql.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType ResourceChange -Name Properties.
+//
+// THIS IS THE ONE THAT ANSWERS "WHO CHANGED THIS SETTING". A change record can carry several
+// properties at once; All.kql names them in one column, and this expands them so a single
+// property can be filtered on and its values read:
+//
+//     # patch orchestration moved on any VM in the last 14 days
+//     Search-MsecAzureResourceGraph -ResourceType ResourceChange -Name Properties |
+//         Where-Object PropertyName -like '*patchSettings*' |
+//         Format-Table ChangedUtc, ResourceName, PreviousValue, NewValue, ChangedBy
+//
+//     # anything a person did through the portal
+//     Search-MsecAzureResourceGraph -ResourceType ResourceChange -Name Properties |
+//         Where-Object { $_.ChangedByType -eq 'User' -and $_.Client -eq 'Azure Portal' }
+//
+// A ROW PER PROPERTY MULTIPLIES THE RECORD COUNT. One ARM write that rewrites forty properties
+// becomes forty rows here and one row in All.kql. Use All.kql to ask "what changed", this to ask
+// "what did it change FROM".
+//
+// PreviousValue IS EMPTY ON A CREATE and NewValue is empty on a Delete, because there was
+// nothing there before or nothing left after. That is not a missing value.
+//
+// VALUES ARE FLATTENED TO STRINGS. A property whose value is an object or an array arrives as
+// its JSON, which is ugly but lossless - the alternative was dropping exactly the structured
+// properties most worth seeing, like a network rule set or a set of tags.
+//
+// The fourteen-day ceiling and the snapshot-diff caveats from All.kql apply here unchanged -
+// read them there.
+//
+// NB: no time filter in this file. Filter in PowerShell on ChangedUtc.
+
+resourcechanges
+| extend Attributes = properties.changeAttributes
+| extend ResourceId = tostring(properties.targetResourceId)
+// One row per entry in the changes bag. Each entry is {name: {previousValue, newValue}}, so the
+// key has to be recovered with bag_keys before the value can be reached.
+// limit 2000: Resource Graph's default mv-expand RowLimit is 128 and it truncates SILENTLY.
+// The largest single change record measured on a live tenant carried 48 properties, but one
+// template write that rewrites a large resource could exceed 128, and a silently short answer
+// here looks exactly like a resource that changed less than it did.
+| mv-expand Change = properties.changes limit 2000
+| extend PropertyName = tostring(bag_keys(Change)[0])
+| extend Detail = Change[PropertyName]
+| project ChangedUtc     = todatetime(Attributes.timestamp),
+          ResourceName   = tostring(split(ResourceId, '/')[-1]),
+          PropertyName,
+          PreviousValue  = tostring(Detail.previousValue),
+          NewValue       = tostring(Detail.newValue),
+          ChangeType     = tostring(properties.changeType),
+          ChangedByType  = tostring(Attributes.changedByType),
+          ChangedBy      = tostring(Attributes.changedBy),
+          Client         = tostring(Attributes.clientType),
+          Operation      = tostring(Attributes.operation),
+          ResourceType   = tostring(properties.targetResourceType),
+          CorrelationId  = tostring(Attributes.correlationId),
+          ResourceGroup  = tostring(resourceGroup),
+          SubscriptionId = tostring(subscriptionId),
+          ResourceId
+| order by ChangedUtc desc

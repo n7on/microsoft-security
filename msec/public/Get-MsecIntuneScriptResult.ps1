@@ -318,6 +318,21 @@ function Get-MsecIntuneScriptResult {
                     $work.Add([pscustomobject]@{ Feature = $feature; Script = $s })
                     $matched.Add($key) | Out-Null
                 }
+                # CONFUSABLE PUNCTUATION. A name typed in the Intune portal on a Mac, or pasted
+                # from Word, can carry an en dash, a curly quote or a non-breaking space - and
+                # the hyphen you type is a DIFFERENT CHARACTER that renders identically. Left
+                # alone this is a name that visibly matches the error message's own list and
+                # still fails, which is undebuggable by reading.
+                #
+                # Matched rather than refused, because the alternative is telling someone to
+                # type a character their keyboard does not have. Warned rather than silent,
+                # because the real name is what they need everywhere else.
+                elseif ((ConvertTo-MsecComparableName $key) -eq (ConvertTo-MsecComparableName ([string]$s.displayName))) {
+                    Write-Warning ("'$key' matched '$($s.displayName)' only after normalising look-alike punctuation" +
+                                   " ($(Get-MsecConfusableDifference -Typed $key -Actual ([string]$s.displayName))). The name in Intune is the one to use.")
+                    $work.Add([pscustomobject]@{ Feature = $feature; Script = $s })
+                    $matched.Add($key) | Out-Null
+                }
             }
         }
     }

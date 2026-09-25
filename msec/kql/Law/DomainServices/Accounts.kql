@@ -1,0 +1,144 @@
+// One row per ACCOUNT that tried to authenticate against a Microsoft Entra Domain Services
+// managed domain, with how often it worked and how often it did not.
+//
+// Loaded by Search-MsecLogAnalytics -Subject DomainServices -Name Accounts -WorkspaceName <ws>.
+// The per-event companion is -Name All, and the settings half is Get-MsecAzureDomainService.
+//
+// THIS IS THE ACCESS REVIEW SHAPE: one line per person, rather than one per attempt. It is also
+// the safe one to run over a long window - the summarize happens server-side, so a year of
+// authentication collapses to a few hundred rows instead of pulling every event through the
+// 500,000-row API cap.
+//
+// FAILURES ARE COUNTED SEPARATELY FROM SUCCESSES ON PURPOSE, because the interesting accounts
+// are the ones with both, or with only failures. An account with hundreds of failures and no
+// successes is usually a service configured with a name that no longer exists - measured on a
+// live domain, 378 of 406 failures were 'No such user name' from two accounts. An account with
+// many failures and then a success is the shape worth looking at twice.
+//
+// FailureReasons lists every distinct reason, so a locked-out account does not disappear into a
+// total alongside ordinary typos.
+//
+// NB: the normalization block between the BEGIN/END markers is duplicated verbatim from
+// DomainServices/All.kql. Log Analytics has no way to share a fragment across two .kql files.
+// A test asserts the two blocks are byte-identical, so edit both or the test fails.
+//
+// NO TIME FILTER IN THIS FILE, deliberately - Search-MsecLogAnalytics passes -Days to the API
+// as a server-side timespan.
+// >>> BEGIN DOMAIN SERVICES AUTH NORMALIZATION - keep byte-identical across DomainServices/All.kql and DomainServices/Accounts.kql <<<
+union isfuzzy=true
+    (
+        // NTLM credential validation. A RADIUS/NPS server checking a VPN sign-in lands here
+        // rather than in Kerberos - but see the note above: NOTHING IN THIS LOG SAYS 'VPN', and
+        // an empty Workstation is a proxy for it, not a statement of it.
+        AADDomainServicesAccountLogon
+        | where OperationName endswith '4776'
+        | extend EventId      = '4776',
+                 Method       = 'NTLM',
+                 Account      = extract(@'Logon Account:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 // Often empty - a RADIUS server does not always name the workstation.
+                 Workstation  = extract(@'Source Workstation:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 Code         = tolower(extract(@'Error Code:[ \t]*(0x[0-9A-Fa-f]+)', 1, ResultDescription)),
+                 Domain       = '',
+                 LogonType    = ''
+    ),
+    (
+        // Kerberos TGT requested (4768) and pre-authentication failed (4771). 4771 is the
+        // wrong-password event on the Kerberos side and does not always appear - a domain that
+        // has never emitted one still returns the other leg, which is what isfuzzy buys.
+        AADDomainServicesAccountLogon
+        | where OperationName endswith '4768' or OperationName endswith '4771'
+        | extend EventId      = tostring(split(OperationName, '/')[-1]),
+                 Method       = 'Kerberos',
+                 Account      = extract(@'Account Name:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 Workstation  = '',
+                 Code         = tolower(extract(@'Result Code:[ \t]*(0x[0-9A-Fa-f]+)', 1, ResultDescription)),
+                 Domain       = extract(@'Supplied Realm Name:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 LogonType    = ''
+    ),
+    (
+        // Failed logon. Unlike the two above this one has real columns, so nothing is parsed.
+        // SubStatus is the specific reason; Status is the generic 0xC000006D that every one of
+        // them carries and which says nothing.
+        AADDomainServicesLogonLogoff
+        | where OperationName endswith '4625'
+        | extend EventId      = '4625',
+                 Method       = iff(isempty(column_ifexists('AuthenticationPackageName', '')), 'Unknown', tostring(AuthenticationPackageName)),
+                 Account      = tostring(column_ifexists('TargetUserName', '')),
+                 Workstation  = tostring(column_ifexists('WorkstationName', '')),
+                 Code         = tolower(tostring(column_ifexists('SubStatus', ''))),
+                 Domain       = tostring(column_ifexists('TargetDomainName', '')),
+                 LogonType    = tostring(column_ifexists('LogonType', '')),
+                 IpAddress    = ''
+    )
+// A code of 0x0 is the only success there is; everything else, including an empty code from a
+// message this query could not parse, is NOT reported as a success.
+| extend Outcome = case(Code == '0x0', 'Success',
+                        isempty(Code),  'Unparsed',
+                                        'Failure')
+// Decoded per method - see the note above on the two code spaces.
+| extend Reason = case(
+      Outcome == 'Success', '',
+      Outcome == 'Unparsed', 'Status code not found in the event text',
+      Method == 'Kerberos', case(
+          Code == '0x6',  'Client principal unknown - no such account',
+          Code == '0x7',  'Server principal unknown',
+          Code == '0xc',  'Policy rejected it - logon hours or workstation restriction',
+          Code == '0x12', 'Credentials revoked - account disabled, locked out or expired',
+          Code == '0x17', 'Password expired',
+          Code == '0x18', 'Pre-authentication failed - wrong password',
+          Code == '0x1f', 'Integrity check failed',
+          Code == '0x20', 'Ticket expired',
+          Code == '0x25', 'Clock skew too great',
+          strcat('Kerberos result code ', Code)),
+      // NTLM and 4625 both carry Windows NT status codes.
+      case(
+          Code == '0xc0000064', 'No such user name',
+          Code == '0xc000006a', 'Wrong password',
+          Code == '0xc000006d', 'Logon failure - no more specific reason given',
+          Code == '0xc000006e', 'Account restriction',
+          Code == '0xc000006f', 'Outside permitted logon hours',
+          Code == '0xc0000070', 'Workstation restriction',
+          Code == '0xc0000071', 'Password expired',
+          Code == '0xc0000072', 'Account disabled',
+          Code == '0xc0000133', 'Clock skew between the client and the domain controller',
+          Code == '0xc0000193', 'Account expired',
+          Code == '0xc0000224', 'Must change password at next logon',
+          Code == '0xc0000234', 'Account locked out',
+          strcat('NT status ', Code)))
+// '::ffff:10.16.0.8' is an IPv4 address wearing an IPv6 hat. Trimmed so it groups and sorts
+// with the plain form; '::1' is the domain controller talking to itself and is left as it is.
+| extend ClientIp = replace_string(tostring(column_ifexists('IpAddress', '')), '::ffff:', '')
+// A LABEL AND NOT A BOOLEAN, on purpose. The Log Analytics query API is untyped on the wire and
+// every column arrives in PowerShell as a string, so a boolean column comes back as the STRING
+// 'false' - which is a non-empty string, and therefore TRUE in a PowerShell condition. That
+// makes `Where-Object { -not $_.IsMachineAccount }` return nothing at all, silently, whichever
+// way the underlying value went. 'User' and 'Computer' survive the trip intact and compare the
+// way they read: Where-Object AccountType -eq 'User'.
+| extend AccountType = iff(Account endswith '$', 'Computer', 'User')
+// >>> END DOMAIN SERVICES AUTH NORMALIZATION <<< <<<
+| summarize Successes       = countif(Outcome == 'Success'),
+            Failures        = countif(Outcome == 'Failure'),
+            Unparsed        = countif(Outcome == 'Unparsed'),
+            FailureReasons  = make_set_if(Reason, Outcome == 'Failure', 10),
+            Methods         = make_set(Method, 5),
+            ClientIps       = make_set_if(ClientIp, isnotempty(ClientIp), 20),
+            Workstations    = make_set_if(Workstation, isnotempty(Workstation), 20),
+            FirstSeen       = min(TimeGenerated),
+            LastSeen        = max(TimeGenerated)
+        by Account, AccountType
+| extend Attempts = Successes + Failures + Unparsed
+| project Account,
+          AccountType,
+          Attempts,
+          Successes,
+          Failures,
+          FailureReasons,
+          Methods,
+          ClientIps,
+          Workstations,
+          FirstSeen,
+          LastSeen,
+          // Non-zero here means the message text changed shape and this query is now
+          // under-reporting. Left visible rather than folded into Failures.
+          Unparsed
+| order by Failures desc, Successes desc

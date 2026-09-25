@@ -1,0 +1,180 @@
+// One row per CREDENTIAL VALIDATION against a Microsoft Entra Domain Services managed domain -
+// who authenticated, how, from where, and whether it worked.
+//
+// Loaded by Search-MsecLogAnalytics -Subject DomainServices -WorkspaceName <ws>.
+// Its companions: -Name Accounts summarizes these same rows per account, and -Name Sessions
+// reads the logon-session events this query deliberately leaves out.
+//
+// THE PAIR. Get-MsecAzureDomainService reads the managed domain's SETTINGS - whether NTLM v1 is
+// allowed, whether RC4 is still accepted, whether LDAPS is on. This reads what was actually
+// USED. Together they answer the question neither can alone:
+//   $domain = Get-MsecAzureDomainService                      # NtlmV1 Enabled?
+//   $used   = Search-MsecLogAnalytics -Subject DomainServices -WorkspaceName ws -Days 30
+//   $used | Where-Object Method -eq 'NTLM'               # who would break if it were turned off
+//
+// WHICH EVENTS, AND WHY NOT THE OBVIOUS ONE. This reads the AUTHENTICATION events - Kerberos
+// TGT requests (4768, 4771) and NTLM credential validation (4776) - plus failed logons (4625).
+// It does NOT read 4624 "an account was successfully logged on", which is the event people
+// reach for first. On a managed domain 4624 is the domain controllers' own session churn:
+// measured on a live domain it ran to 1,088,013 rows in thirty days against 2,673 credential
+// validations, virtually all of it machine accounts re-authenticating to the DCs. It would
+// bury the answer and blow the 500,000-row API cap in the process. -Name Sessions reads those,
+// summarized server-side.
+//
+// SUCCESS AND FAILURE SHARE AN EVENT ID. 4776 is emitted whether the password was right or
+// wrong, and so is 4768 - the outcome lives in a status code INSIDE the message text, not in
+// the event id and not in a column. Counting 4776 rows counts authentication ATTEMPTS, not
+// successful logons. Measured on a live domain: 942 x 4776, of which 725 succeeded, 189 were
+// an unknown user name, 19 a bad password, 7 a locked-out account and 2 a disabled one.
+//
+// THE TWO CODE SPACES ARE DIFFERENT AND MUST NOT SHARE A LOOKUP. Kerberos result codes are
+// RFC 4120 (0x18 = pre-authentication failed, i.e. bad password) and NTLM carries Windows NT
+// status codes (0xC000006A = bad password; 0x18 is not a status code at all). One shared
+// decode table would silently mislabel every row of whichever protocol lost the coin toss, so
+// Reason is decoded per method. A code with no mapping is reported as itself rather than as
+// 'Unknown', because the raw code is what a search engine answers.
+//
+// THE ACCOUNT NAME IS NOT A COLUMN on the Kerberos and NTLM events. AADDomainServicesAccountLogon
+// has IpAddress and ServiceName as real columns but no TargetUserName - the account is only in
+// the free-text message, so it is extracted. 4625 is the exception and has proper columns, which
+// is why that leg reads them directly rather than parsing.
+//
+// THIS LOG IS NOT A VPN LOG, and nothing in it names the service an authentication was for. It
+// is the managed domain's whole security log: domain-joined servers, the domain controllers
+// talking to each other, LDAP binds, group changes, account lifecycle. VPN sign-ins are in here
+// because a RADIUS/NPS server validates them against the same controllers, and they are
+// IDENTIFIED BY INFERENCE - a human account, over NTLM, with an empty Source Workstation, since
+// a RADIUS request does not name a workstation. Measured on a live domain that slice was 40
+// human accounts, against named workstations that were domain-joined machines
+// (ted.lahteenmaki@viedoc.com from VIE0073), service accounts (reportadmin from REPORT-01) and
+// Microsoft's own management hosts (dcaasadmin from AM4PEPF*). It is a good proxy and it is not
+// proof: anything else validating a user's credentials over NTLM without naming a workstation
+// lands in the same bucket. Confirming a sign-in really was VPN needs the gateway or NPS log.
+//
+// 'NTLM' HERE DOES NOT MEAN 'NTLM v1'. Method reports the protocol family, because that is all
+// 4776 carries - the event does not record which NTLM version was negotiated, and its
+// PackageName field is 'MICROSOFT_AUTHENTICATION_PACKAGE_V1_0' on v1 and v2 alike, which is the
+// name of the authentication package and not a version number. So this query answers "who
+// authenticates over NTLM at all", which is the right input to the question "can the NtlmV1
+// setting be turned off" only in one direction: an empty NTLM result means nothing breaks, and
+// a non-empty one is a list of accounts to check rather than a list that would break. Turning
+// NtlmV1 off leaves NTLM v2 working.
+//
+// MACHINE ACCOUNTS ARE FLAGGED, NOT DROPPED. An account ending in '$' is a computer, and on a
+// managed domain most Kerberos traffic is machines. They are left in with AccountType set to
+// 'Computer', because "which machines authenticate" is a real question and a query that quietly
+// answered a narrower one than it claimed would be worse than a column to filter on:
+//   ... | Where-Object AccountType -eq 'User'
+//
+// NB: the normalization block between the BEGIN/END markers is duplicated verbatim in
+// DomainServices/Accounts.kql. Log Analytics has no way to share a fragment across two .kql
+// files. A test asserts the two blocks are byte-identical, so edit both or the test fails.
+//
+// NO TIME FILTER IN THIS FILE, deliberately. Search-MsecLogAnalytics passes -Days to the API as
+// a server-side timespan against the TimeGenerated index.
+// >>> BEGIN DOMAIN SERVICES AUTH NORMALIZATION - keep byte-identical across DomainServices/All.kql and DomainServices/Accounts.kql <<<
+union isfuzzy=true
+    (
+        // NTLM credential validation. A RADIUS/NPS server checking a VPN sign-in lands here
+        // rather than in Kerberos - but see the note above: NOTHING IN THIS LOG SAYS 'VPN', and
+        // an empty Workstation is a proxy for it, not a statement of it.
+        AADDomainServicesAccountLogon
+        | where OperationName endswith '4776'
+        | extend EventId      = '4776',
+                 Method       = 'NTLM',
+                 Account      = extract(@'Logon Account:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 // Often empty - a RADIUS server does not always name the workstation.
+                 Workstation  = extract(@'Source Workstation:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 Code         = tolower(extract(@'Error Code:[ \t]*(0x[0-9A-Fa-f]+)', 1, ResultDescription)),
+                 Domain       = '',
+                 LogonType    = ''
+    ),
+    (
+        // Kerberos TGT requested (4768) and pre-authentication failed (4771). 4771 is the
+        // wrong-password event on the Kerberos side and does not always appear - a domain that
+        // has never emitted one still returns the other leg, which is what isfuzzy buys.
+        AADDomainServicesAccountLogon
+        | where OperationName endswith '4768' or OperationName endswith '4771'
+        | extend EventId      = tostring(split(OperationName, '/')[-1]),
+                 Method       = 'Kerberos',
+                 Account      = extract(@'Account Name:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 Workstation  = '',
+                 Code         = tolower(extract(@'Result Code:[ \t]*(0x[0-9A-Fa-f]+)', 1, ResultDescription)),
+                 Domain       = extract(@'Supplied Realm Name:[ \t]*([^\r\n]*)', 1, ResultDescription),
+                 LogonType    = ''
+    ),
+    (
+        // Failed logon. Unlike the two above this one has real columns, so nothing is parsed.
+        // SubStatus is the specific reason; Status is the generic 0xC000006D that every one of
+        // them carries and which says nothing.
+        AADDomainServicesLogonLogoff
+        | where OperationName endswith '4625'
+        | extend EventId      = '4625',
+                 Method       = iff(isempty(column_ifexists('AuthenticationPackageName', '')), 'Unknown', tostring(AuthenticationPackageName)),
+                 Account      = tostring(column_ifexists('TargetUserName', '')),
+                 Workstation  = tostring(column_ifexists('WorkstationName', '')),
+                 Code         = tolower(tostring(column_ifexists('SubStatus', ''))),
+                 Domain       = tostring(column_ifexists('TargetDomainName', '')),
+                 LogonType    = tostring(column_ifexists('LogonType', '')),
+                 IpAddress    = ''
+    )
+// A code of 0x0 is the only success there is; everything else, including an empty code from a
+// message this query could not parse, is NOT reported as a success.
+| extend Outcome = case(Code == '0x0', 'Success',
+                        isempty(Code),  'Unparsed',
+                                        'Failure')
+// Decoded per method - see the note above on the two code spaces.
+| extend Reason = case(
+      Outcome == 'Success', '',
+      Outcome == 'Unparsed', 'Status code not found in the event text',
+      Method == 'Kerberos', case(
+          Code == '0x6',  'Client principal unknown - no such account',
+          Code == '0x7',  'Server principal unknown',
+          Code == '0xc',  'Policy rejected it - logon hours or workstation restriction',
+          Code == '0x12', 'Credentials revoked - account disabled, locked out or expired',
+          Code == '0x17', 'Password expired',
+          Code == '0x18', 'Pre-authentication failed - wrong password',
+          Code == '0x1f', 'Integrity check failed',
+          Code == '0x20', 'Ticket expired',
+          Code == '0x25', 'Clock skew too great',
+          strcat('Kerberos result code ', Code)),
+      // NTLM and 4625 both carry Windows NT status codes.
+      case(
+          Code == '0xc0000064', 'No such user name',
+          Code == '0xc000006a', 'Wrong password',
+          Code == '0xc000006d', 'Logon failure - no more specific reason given',
+          Code == '0xc000006e', 'Account restriction',
+          Code == '0xc000006f', 'Outside permitted logon hours',
+          Code == '0xc0000070', 'Workstation restriction',
+          Code == '0xc0000071', 'Password expired',
+          Code == '0xc0000072', 'Account disabled',
+          Code == '0xc0000133', 'Clock skew between the client and the domain controller',
+          Code == '0xc0000193', 'Account expired',
+          Code == '0xc0000224', 'Must change password at next logon',
+          Code == '0xc0000234', 'Account locked out',
+          strcat('NT status ', Code)))
+// '::ffff:10.16.0.8' is an IPv4 address wearing an IPv6 hat. Trimmed so it groups and sorts
+// with the plain form; '::1' is the domain controller talking to itself and is left as it is.
+| extend ClientIp = replace_string(tostring(column_ifexists('IpAddress', '')), '::ffff:', '')
+// A LABEL AND NOT A BOOLEAN, on purpose. The Log Analytics query API is untyped on the wire and
+// every column arrives in PowerShell as a string, so a boolean column comes back as the STRING
+// 'false' - which is a non-empty string, and therefore TRUE in a PowerShell condition. That
+// makes `Where-Object { -not $_.IsMachineAccount }` return nothing at all, silently, whichever
+// way the underlying value went. 'User' and 'Computer' survive the trip intact and compare the
+// way they read: Where-Object AccountType -eq 'User'.
+| extend AccountType = iff(Account endswith '$', 'Computer', 'User')
+// >>> END DOMAIN SERVICES AUTH NORMALIZATION <<<
+| project TimeGenerated,
+          Account,
+          Outcome,
+          Reason,
+          Method,
+          ClientIp,
+          Workstation,
+          Domain,
+          LogonType,
+          EventId,
+          // The raw code, so an unmapped one can be looked up rather than guessed at.
+          Code,
+          AccountType
+| order by TimeGenerated desc

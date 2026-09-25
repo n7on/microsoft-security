@@ -1,0 +1,37 @@
+// One row per Azure SQL database, with its server's fully qualified name.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType SqlServer -Name Databases.
+// The server view, and the posture that goes with it, is -Name All.
+//
+// ONE ROW PER DATABASE RATHER THAN PER SERVER, because that is the pair a caller needs: a
+// connection takes a server FQDN and a database name, and a database name only means anything
+// on the server it lives on.
+//
+// 'master' IS INCLUDED. It is a real database that accepts connections and is where a SQL
+// login lives, so a query about who can reach what has to see it. Filter it out at the call
+// site if a report only wants user databases.
+//
+// The server is recovered from the database's own resource id - Resource Graph does not carry
+// a parent reference - and the join brings back the FQDN, which is on the server and not the
+// database. leftouter, so a database whose server is somehow not readable still appears rather
+// than vanishing from an inventory.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.sql/servers/databases'
+| extend ServerId = tolower(substring(id, 0, indexof(id, '/databases/')))
+| project ServerId, Database = name, DatabaseId = id, Location = location
+| join kind=leftouter (
+    Resources
+    | where type =~ 'microsoft.sql/servers'
+    | project ServerId            = tolower(id),
+              ServerName          = name,
+              Fqdn                = tostring(properties.fullyQualifiedDomainName),
+              PublicNetworkAccess = tostring(properties.publicNetworkAccess),
+              ResourceGroup       = resourceGroup,
+              SubscriptionId      = subscriptionId
+  ) on ServerId
+| project ServerName, Fqdn, Database, PublicNetworkAccess, ResourceGroup, SubscriptionId, Location, DatabaseId
+| order by ServerName asc, Database asc

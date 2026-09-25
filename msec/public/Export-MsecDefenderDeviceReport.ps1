@@ -45,6 +45,14 @@ function Export-MsecDefenderDeviceReport {
         The .xlsx to write. Created if absent; an existing file is added to rather than
         replaced, so several tenants can share one document.
 
+    .PARAMETER OnboardingStatus
+        Only devices in these onboarding states, passed through to Get-MsecDefenderDevice.
+        MOST OF A DEFENDER INVENTORY IS NOT ONBOARDED - it also holds devices merely
+        DISCOVERED on the network. Measured on a live tenant, 717 rows were 217 onboarded and
+        500 discovered, 164 of which had no device name at all. Use
+        -OnboardingStatus Onboarded for an exposure report over the protected estate; omit it
+        to include discovered devices, which are a finding of a different kind.
+
     .PARAMETER HealthStatus
         Only devices in these health states, passed through to Get-MsecDefenderDevice. Omit
         for all of them - which is usually right for evidence, since an inactive device is
@@ -103,6 +111,9 @@ function Export-MsecDefenderDeviceReport {
                      'NoSensorDataImpairedCommunication', 'Unknown')]
         [string[]] $HealthStatus,
 
+        [ValidateSet('Onboarded', 'CanBeOnboarded', 'InsufficientInfo', 'Unsupported')]
+        [string[]] $OnboardingStatus,
+
         [ValidateSet('None', 'Low', 'Medium', 'High')]
         [string[]] $ExposureLevel,
 
@@ -160,6 +171,7 @@ function Export-MsecDefenderDeviceReport {
 
     $forward = @{}
     if ($HealthStatus)  { $forward['HealthStatus']  = $HealthStatus }
+    if ($OnboardingStatus) { $forward['OnboardingStatus'] = $OnboardingStatus }
     if ($ExposureLevel) { $forward['ExposureLevel'] = $ExposureLevel }
 
     $devices = @(Get-MsecDefenderDevice @forward)

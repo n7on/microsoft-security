@@ -133,6 +133,54 @@ Describe 'Get-MsecEntraMfaRegistrationStats' {
         $s.AdminsNotMfaCapableUpn | Should -BeNullOrEmpty
     }
 
+    It 'scopes the member percentages to members, so guests cannot dilute them' {
+        # Measured on a live tenant: 177 members, 202 guests. All-user SSPR coverage read
+        # 44.33% against a true member figure of 94.92%, and MFA 61.48% against 95.48%. A
+        # guest-heavy tenant is the normal case, not an edge case, so the denominator is
+        # the whole finding.
+        $s = InModuleScope Msec {
+            Mock Get-MsecEntraMfaRegistration -MockWith {
+                # 2 members, both covered on everything.
+                [pscustomobject]@{ UserType = 'member'; IsMfaCapable = $true;  IsMfaRegistered = $true
+                                   IsPasswordlessCapable = $true; IsSsprCapable = $true; IsAdmin = $false
+                                   MethodsRegistered = @('fido2SecurityKey') }
+                [pscustomobject]@{ UserType = 'member'; IsMfaCapable = $true;  IsMfaRegistered = $true
+                                   IsPasswordlessCapable = $true; IsSsprCapable = $true; IsAdmin = $false
+                                   MethodsRegistered = @('fido2SecurityKey') }
+                # 6 guests. A guest resets their password in their HOME tenant, so none is
+                # ever SSPR-capable here - that is structural, not a gap to close.
+                1..6 | ForEach-Object {
+                    [pscustomobject]@{ UserType = 'guest'; IsMfaCapable = $false; IsMfaRegistered = $false
+                                       IsPasswordlessCapable = $false; IsSsprCapable = $false; IsAdmin = $false
+                                       MethodsRegistered = @() }
+                }
+            }
+            Get-MsecEntraMfaRegistrationStats
+        }
+
+        $s.Members | Should -Be 2
+        $s.Guests  | Should -Be 6
+
+        # The member view: full coverage, which is the truth about the workforce.
+        $s.MembersMfaCapablePercent          | Should -Be 100
+        $s.MembersSsprCapablePercent         | Should -Be 100
+        $s.MembersPasswordlessCapablePercent | Should -Be 100
+
+        # The all-user view, kept for continuity of an existing workbook's history, is
+        # diluted by exactly the guests - 2 of 8.
+        $s.MfaCapablePercent  | Should -Be 25
+        $s.SsprCapablePercent | Should -Be 25
+
+        # Visible rather than implied: guests contribute nothing to SSPR.
+        $s.GuestsSsprCapable  | Should -Be 0
+        $s.MembersSsprCapable | Should -Be 2
+
+        # The count somebody reads out in a meeting. All-user says 6 cannot do MFA; the
+        # truth about the workforce is 0. Measured live the same shape gave 146 against 8.
+        $s.NotMfaCapable        | Should -Be 6
+        $s.MembersNotMfaCapable | Should -Be 0
+    }
+
     It 'propagates the licensing 403 from the underlying report' {
         InModuleScope Msec {
             Mock Invoke-MsecKeyVaultSign -MockWith { [byte[]](1..10) }

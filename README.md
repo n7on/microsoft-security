@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/github/license/n7on/microsoft-security)](https://github.com/n7on/microsoft-security/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#)
 
-A PowerShell module for reading Microsoft security posture - Secure Score, Defender XDR, Entra ID, Intune, Azure - as flat objects you can filter, group and export. Read-only by design. Authentication is certificate-based against an app registration, and the private key never leaves Azure Key Vault. Requires PowerShell 7 on Windows, Linux, or macOS.
+A PowerShell module for reading Microsoft security posture - Secure Score, Defender XDR, Entra ID, Intune, Azure - as flat objects you can filter, group and export. The app registration holds read permissions only, so the certificate in Key Vault cannot change your tenant; the few commands that write run as YOU, through a separate ``Connect-MsecAdmin`` sign-in. Authentication is certificate-based against that app registration, and the private key never leaves Azure Key Vault. Requires PowerShell 7 on Windows, Linux, or macOS.
 
 ## Install
 
@@ -38,6 +38,47 @@ doing.
 | SharePoint Online | `Sites.Read.All` on Graph **and** on SharePoint | nothing |
 | Microsoft Teams | `application_access` + directory role | nothing |
 | Azure DevOps | nothing - Entra has no say here | organization membership, and permissions per namespace |
+
+### Which identity a command uses
+
+Most commands run as the **app registration** - the certificate in Key Vault, read-only, and
+whatever `New-MsecApp` consented. A handful run as **you**, through the Az context, and need
+Azure RBAC on top of anything Entra granted. Two use both, deliberately.
+
+| Command | Runs as | Needs |
+|---|---|---|
+| `Search-MsecAzureResourceGraph` | you | Reader on the subscriptions |
+| `Search-MsecLogAnalytics` | you | Log Analytics Reader on the workspace |
+| `Get-MsecAzureCost` | you | Cost Management Reader - Reader is not enough |
+| `Get-MsecAzureSecureScore` | you | Reader (Defender for Cloud) |
+| `Get-MsecAzureDomainService` | you | Reader on the subscriptions holding the managed domain |
+| `Get-MsecKeyVaultCertificate` | you | list/get on the vault |
+| `Invoke-MsecAzureVMScript` | you | **Virtual Machine Contributor** - `runCommand/action`, which Reader does NOT grant |
+| `Set-MsecDefenderAlert` | you | delegated `SecurityAlert.ReadWrite.All` via `Connect-MsecAdmin` - the app cannot do this |
+| `Set-MsecDefenderIncident` | you | delegated `SecurityIncident.ReadWrite.All` via `Connect-MsecAdmin` |
+| `Get-MsecAzureRoleAssignment` | both | Reader for the assignments; the app resolves principal names through Graph |
+| `Select-MsecAzureContext` | both | an Az context to switch, and the app session to reconnect afterwards |
+
+`Invoke-MsecAzureVMScript` is the one to know about on the Azure side: Reader alone gets a 403
+there, because `runCommand/action` is a Contributor-level right even though the bundled scripts
+only read.
+
+`Set-MsecDefenderAlert` is the first command that changes something outside the module's own app
+registration, and it does so as you, not as the app - `New-MsecApp` consents only `*.Read.All`, so
+the certificate has no write permission to reach for. It refuses the app session by name rather
+than letting the write fail as an unexplained 403.
+
+`Set-MsecDefenderIncident` is the same shape. Comments are split across two APIs, because Graph has
+no writable comment on an alert - `comments` is read-only on `alerts_v2` in both v1.0 and beta. The
+Defender for Endpoint API does have one, so `Set-MsecDefenderAlert -Comment` writes there, keyed on
+`ProviderAlertId` and authenticated from your Az context rather than the Graph session. That API only
+knows ENDPOINT alerts (29 of 569 on one measured tenant), so `-Comment` refuses by name on anything
+else and points at `Set-MsecDefenderIncident -ResolvingComment`, which covers every incident.
+
+`Get-MsecAzureRoleAssignment` splits its lookups on purpose - assignments and role names
+through ARM, principals through the app's Graph session. `Get-AzADUser` on an ARM service
+connection with no Graph permissions does not fail, it returns blank names, so a report would
+come back full of empty principals with no error.
 
 ### Exchange Online, SharePoint Online, Teams
 
@@ -158,6 +199,7 @@ answer, and an empty result with one as unread.
 - [Connect-Msec](./docs/commands/Connect-Msec.md) - Open a session bound to a certificate in Azure Key Vault
 - [Disconnect-Msec](./docs/commands/Disconnect-Msec.md) - Clear the session and its cached tokens
 - [Select-MsecAzureContext](./docs/commands/Select-MsecAzureContext.md) - Switch Azure context by subscription name, warning if it leaves the msec session on another tenant
+- [Connect-MsecAdmin](./docs/commands/Connect-MsecAdmin.md) - Sign in AS YOU with delegated write scopes, for the commands that change something
 - [Connect-MsecGraphSdk](./docs/commands/Connect-MsecGraphSdk.md) - Hand the msec session's token to the Microsoft.Graph SDK, so Get-Mg* runs as the msec app
 - [Connect-MsecExchangeOnline](./docs/commands/Connect-MsecExchangeOnline.md) - Same for ExchangeOnlineManagement
 - [Connect-MsecSharePointOnline](./docs/commands/Connect-MsecSharePointOnline.md) - Same for PnP.PowerShell, with the token audience derived from the site host
@@ -172,7 +214,11 @@ answer, and an empty result with one as unread.
 ### Defender XDR
 - [Get-MsecDefenderIncidentStats](./docs/commands/Get-MsecDefenderIncidentStats.md) - Incident severity, classification and status breakdown, plus current backlog
 - [Get-MsecDefenderEmailStats](./docs/commands/Get-MsecDefenderEmailStats.md) - Inbound email volume and threat breakdown
+- [Get-MsecDefenderIncident](./docs/commands/Get-MsecDefenderIncident.md) - Defender XDR incidents, one row each, with triage state and time to resolve
+- [Get-MsecDefenderAlert](./docs/commands/Get-MsecDefenderAlert.md) - Defender XDR alerts across endpoint, Office 365, identity and DLP, with the incident each belongs to
 - [Get-MsecDefenderDevice](./docs/commands/Get-MsecDefenderDevice.md) - Device inventory with per-device vulnerability counts
+- [Set-MsecDefenderAlert](./docs/commands/Set-MsecDefenderAlert.md) - **Writes.** Resolve, classify or comment on alerts; needs `Connect-MsecAdmin`
+- [Set-MsecDefenderIncident](./docs/commands/Set-MsecDefenderIncident.md) - **Writes.** Resolve, classify or comment on incidents - the resolution comment lives here, not on the alert; needs `Connect-MsecAdmin`
 
 ### Entra ID
 - [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
@@ -198,10 +244,12 @@ answer, and an empty result with one as unread.
 ### Azure
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph
 - [Search-MsecLogAnalytics](./docs/commands/Search-MsecLogAnalytics.md) - Run a bundled KQL query against a Log Analytics workspace
+  - -ResourceType ResourceChange answers what changed on a resource in the last 14 days, who changed it and from what value
 - [Invoke-MsecAzureVMScript](./docs/commands/Invoke-MsecAzureVMScript.md) - Run a bundled script on one or more Azure VMs
 - [Get-MsecAzureRoleAssignment](./docs/commands/Get-MsecAzureRoleAssignment.md) - Azure RBAC across every subscription, with role and principal names resolved and deleted principals kept
 - [Get-MsecAzureCost](./docs/commands/Get-MsecAzureCost.md) - Cost per subscription or resource group, with the billing currency
 - [Get-MsecKeyVaultCertificate](./docs/commands/Get-MsecKeyVaultCertificate.md) - Certificates in every accessible Key Vault and when they expire
+- [Get-MsecAzureDomainService](./docs/commands/Get-MsecAzureDomainService.md) - Entra Domain Services managed domains: which weak protocols they still accept, and where their audit logs go
 
 ### Reporting
 - [Export-MsecPostureReport](./docs/commands/Export-MsecPostureReport.md) - Append this run's posture measurements to an Excel workbook, building a charted time series

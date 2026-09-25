@@ -61,6 +61,12 @@ function Search-MsecAzureResourceGraph {
         Safety ceiling on total rows returned across all pages. Default 50000. Hitting it
         emits a warning and stops; results are never truncated silently.
 
+    .PARAMETER CachedOnly
+        Return what is already cached and never query Azure - an empty result on a miss rather
+        than a fetch. For callers that must not block or fail: tab completers above all, which
+        fire on every keypress. Ignores the cache age window, because with no refetch available
+        a stale answer beats no answer. Cannot be combined with -NoCache.
+
     .PARAMETER NoCache
         Query Azure instead of reusing a recent result. The result still refreshes the cache.
 
@@ -163,7 +169,9 @@ function Search-MsecAzureResourceGraph {
 
         # Skip the cache and query Azure. The result still refreshes the cache.
         [Parameter()]
-        [switch] $NoCache
+        [switch] $NoCache,
+
+        [switch] $CachedOnly
     )
 
     if (-not (Get-AzContext -ErrorAction SilentlyContinue)) {
@@ -212,6 +220,10 @@ function Search-MsecAzureResourceGraph {
         Write-Verbose "Could not fingerprint the query, so the cache is bypassed this run: $($_.Exception.Message)"
     }
 
+    if ($NoCache -and $CachedOnly) {
+        throw '-NoCache and -CachedOnly are opposites: one forces a live query, the other forbids one.'
+    }
+
     if (-not $NoCache -and $queryHash) {
         $cached = Read-MsecCache -Name $cacheName -Envelope
         # A cached result written before fingerprinting existed has no QueryHash and is treated
@@ -224,8 +236,24 @@ function Search-MsecAzureResourceGraph {
                     "($([int]$age.TotalMinutes) minute(s) old, scope '$scopeLabel'). Use -NoCache to force a live query.")
                 return @($cached.Items)
             }
+            # -CachedOnly serves it anyway. There is no refetch to fall back on, and for the
+            # caller this exists for - a completer - a stale list of names is worth far more
+            # than none. The normal path still refetches.
+            if ($CachedOnly) {
+                Write-Verbose "Cache for '$cacheName' is $([int]$age.TotalMinutes) minute(s) old; -CachedOnly serves it rather than querying."
+                return @($cached.Items)
+            }
             Write-Verbose "Cache for '$cacheName' is $([int]$age.TotalMinutes) minute(s) old. Querying Azure."
         }
+    }
+
+    # NEVER REACHES AZURE. A completer fires on every keypress, so it needs "use what is already
+    # there, never fetch" - otherwise Tab is instant sometimes, seconds other times, and
+    # indefinite when ARM is unhealthy. A miss returns nothing rather than throwing, because a
+    # completer with no data must offer no completions, not an error in the prompt.
+    if ($CachedOnly) {
+        Write-Verbose "No usable cache for '$cacheName' and -CachedOnly forbids a live query."
+        return @()
     }
 
     # Resolve the subscription scope:

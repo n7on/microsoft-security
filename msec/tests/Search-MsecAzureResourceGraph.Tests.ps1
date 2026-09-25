@@ -745,7 +745,7 @@ Describe 'Bundled KQL files' {
         $offenders | Should -BeNullOrEmpty
     }
 
-    It 'every mv-expand in the AppGateway and Waf queries sets an explicit limit' {
+    It 'every mv-expand in the AppGateway, Waf and ResourceChange queries sets an explicit limit' {
         # Resource Graph's default mv-expand RowLimit is 128. An Application Gateway v2 allows
         # 200 listeners and 400 routing rules, and a DRS 2.1 policy can carry more overrides
         # than that, so the default silently truncates - and an under-reported security query
@@ -754,7 +754,7 @@ Describe 'Bundled KQL files' {
         # Scoped to these two folders deliberately: the older queries predate this rule and
         # tightening them is a separate change with its own risk.
         $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql/Graph'
-        $offenders = 'AppGateway', 'Waf' | ForEach-Object {
+        $offenders = 'AppGateway', 'Waf', 'ResourceChange' | ForEach-Object {
             Get-ChildItem -LiteralPath (Join-Path $kqlRoot $_) -Filter *.kql -File
         } | ForEach-Object {
             $file = $_
@@ -769,6 +769,22 @@ Describe 'Bundled KQL files' {
         }
 
         $offenders | Should -BeNullOrEmpty
+    }
+
+    It 'reads the ResourceChange queries from resourcechanges, not resources' {
+        # Change history lives in its own table. Pointed at `resources` these still parse and
+        # still run - they just return today's inventory with no changes in it, which reads as
+        # "nothing has changed" rather than as a broken query.
+        $folder = Join-Path (Get-Module Msec).ModuleBase 'kql/Graph/ResourceChange'
+        $files = @(Get-ChildItem -LiteralPath $folder -Filter *.kql -File)
+        $files.Count | Should -BeGreaterThan 0
+
+        foreach ($file in $files) {
+            $code = ((Get-Content -LiteralPath $file.FullName) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+            $code | Should -Match '(?m)^\s*resourcechanges\b'
+            # changeAttributes is where who/when/how lives; without it the rows are anonymous.
+            $code | Should -Match 'changeAttributes'
+        }
     }
 
     It 'every extract_all pattern has a capture group' {

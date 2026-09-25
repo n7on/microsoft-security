@@ -231,4 +231,37 @@ Describe 'Kql/Law bundled queries' {
         }
         $blocks[0] | Should -BeExactly $blocks[1]
     }
+
+    It 'shares a byte-identical normalization block between the two DomainServices queries' {
+        # Same reason as the Waf pair above. Diverged, Outcome and Reason would mean different
+        # things in the per-event view and the per-account one - and the per-account view is the
+        # one somebody runs an access review off.
+        $begin = '>>> BEGIN DOMAIN SERVICES AUTH NORMALIZATION'
+        $end   = '>>> END DOMAIN SERVICES AUTH NORMALIZATION'
+        $blocks = foreach ($name in 'All', 'Accounts') {
+            $q = (Get-Content -LiteralPath (Join-Path $script:LawRoot "DomainServices/$name.kql") -Raw) -replace "`r`n", "`n"
+            $q.Substring($q.IndexOf($begin), $q.IndexOf($end) - $q.IndexOf($begin) + $end.Length)
+        }
+        $blocks[0] | Should -BeExactly $blocks[1]
+    }
+
+    It 'decodes Kerberos and NTLM status codes from separate tables' {
+        # The codes overlap numerically and mean different things: 0x18 is a Kerberos
+        # pre-authentication failure (wrong password) and is not an NT status code at all,
+        # while 0xC000006A is the NTLM wrong-password status and is not a Kerberos result code.
+        # One shared lookup would mislabel every row of whichever protocol it was not written
+        # for, so the file must branch on Method before decoding.
+        $query = (Get-Content -LiteralPath (Join-Path $script:LawRoot 'DomainServices/All.kql') -Raw)
+        $code = ((Get-Content -LiteralPath (Join-Path $script:LawRoot 'DomainServices/All.kql')) |
+                     Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
+
+        $code | Should -Match "Method == 'Kerberos'"
+        # A Kerberos code and an NT status code, each present exactly once, in different arms.
+        $code | Should -Match "Code == '0x18'"
+        $code | Should -Match "Code == '0xc000006a'"
+        # Lower-cased before comparison, because 4776 reports 0xC000006A and 4625 reports
+        # 0xc0000064 for the same class of value.
+        $code | Should -Match 'tolower\('
+        $query | Should -Match 'two code spaces'
+    }
 }

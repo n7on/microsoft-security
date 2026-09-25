@@ -14,13 +14,35 @@ function Get-MsecEntraMfaRegistrationStats {
                          and AdminsNotMfaCapableUpn - the actual account names, because
                          "3 admins without MFA" is not actionable but a list is
           - Strength:    PasswordlessCapable, PhoneOnlyMfaCapable
-          - Recovery:    SsprCapable (+ percentage)
+          - Members:     MembersMfaCapable / MembersSsprCapable and their percentages,
+                         plus MembersPasswordlessCapablePercent - the coverage figures
+                         scoped to members. READ THESE, not the all-user ones, in any
+                         tenant that has guests
+          - Recovery:    SsprCapable (+ percentage), GuestsSsprCapable
           - ByMethod:    count of users per registered method
 
         **AdminsNotMfaCapable is the headline number.** A privileged account that cannot
         perform MFA is the single most exploitable identity condition in a tenant, and it
         is invisible to Conditional Access reporting - CA shows MFA being demanded, not
         whether the account can satisfy it.
+
+        **GUESTS DILUTE EVERY ALL-USER PERCENTAGE, AND FOR SSPR THEY DESTROY IT.**
+        MfaCapablePercent, PasswordlessCapablePercent and SsprCapablePercent all divide by
+        the WHOLE directory. Measured on a live tenant of 177 members and 202 guests:
+
+            MfaCapablePercent           61.48   MembersMfaCapablePercent           95.48
+            SsprCapablePercent          44.33   MembersSsprCapablePercent          94.92
+            NotMfaCapable                  146   MembersNotMfaCapable                   8
+            PasswordlessCapablePercent  33.51   MembersPasswordlessCapablePercent  71.75
+
+        The MFA case is blunt: a guest CAN be MFA-capable and some are. The SSPR case is
+        not - a guest resets their password in their HOME tenant, so they can essentially
+        never be SSPR-capable here (0 of 202 on that tenant), and every guest is dead
+        weight in the denominator. GuestsSsprCapable is reported so that is visible rather
+        than asserted.
+
+        Both sets are emitted. The all-user columns are unchanged so an existing posture
+        workbook's history stays comparable; the Members* ones are what to report.
 
         Coverage uses IsMfaCapable, not IsMfaRegistered: a method registered but disabled
         by the tenant's authentication-methods policy will not work, so counting it would
@@ -87,6 +109,24 @@ function Get-MsecEntraMfaRegistrationStats {
     $mfaRegistered = @($users | Where-Object IsMfaRegistered)
     $mfaCapable    = @($users | Where-Object IsMfaCapable)
 
+    # MEMBER-SCOPED COVERAGE. The percentages above divide by EVERY user, guests included,
+    # and guests distort them in two different ways. Measured on a live tenant with 177
+    # members and 202 guests: MFA coverage read 61.48% against a true member figure of
+    # 95.48%, and SSPR read 44.33% against 94.92%.
+    #
+    # The two are not the same kind of error. A guest CAN be MFA-capable and some are, so
+    # the all-user MFA number is blunt rather than wrong. A guest can essentially never be
+    # SSPR-capable, because they reset their password in their HOME tenant - measured live,
+    # 0 of 202 - so every guest is dead weight in that denominator and the all-user SSPR
+    # number understates recovery coverage by however many guests the tenant holds.
+    #
+    # Both sets are reported. The all-user columns are unchanged so an existing posture
+    # workbook's history stays comparable; these are the ones to read.
+    $membersMfaCapable  = @($members | Where-Object IsMfaCapable)
+    $membersPwlCapable  = @($members | Where-Object IsPasswordlessCapable)
+    $membersSsprCapable = @($members | Where-Object IsSsprCapable)
+    $guestsSsprCapable  = @($guests  | Where-Object IsSsprCapable)
+
     $admins            = @($users  | Where-Object IsAdmin)
     $adminsCapable     = @($admins | Where-Object IsMfaCapable)
     $adminsNotCapable  = @($admins | Where-Object { -not $_.IsMfaCapable })
@@ -125,8 +165,23 @@ function Get-MsecEntraMfaRegistrationStats {
         AdminsNotMfaCapable       = $adminsNotCapable.Count
         AdminsNotMfaCapableUpn    = @($adminsNotCapable.UserPrincipalName | Sort-Object)
 
+        # Member-scoped coverage - the honest measure in a tenant with guests. See the
+        # comment above the computation for why these exist alongside the all-user ones.
+        MembersMfaCapable                = $membersMfaCapable.Count
+        # The one to quote out loud. NotMfaCapable counts the whole directory, so in a
+        # guest-heavy tenant it states the problem as a sentence that is wrong by an order
+        # of magnitude - measured live, 146 against a true member figure of 8.
+        MembersNotMfaCapable             = $members.Count - $membersMfaCapable.Count
+        MembersMfaCapablePercent         = & $pct $membersMfaCapable.Count $members.Count
+        MembersPasswordlessCapablePercent = & $pct $membersPwlCapable.Count $members.Count
+        MembersSsprCapable               = $membersSsprCapable.Count
+        MembersSsprCapablePercent        = & $pct $membersSsprCapable.Count $members.Count
+
         # Guests
         GuestsMfaCapable          = @($guests | Where-Object IsMfaCapable).Count
+        # Reported so a reader can SEE that guests contribute nothing to SSPR rather than
+        # having to take it on trust: it is the whole reason the member figure exists.
+        GuestsSsprCapable         = $guestsSsprCapable.Count
 
         # Strength of what is registered
         PasswordlessCapable       = @($users | Where-Object IsPasswordlessCapable).Count

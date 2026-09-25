@@ -1,0 +1,65 @@
+// Logon SESSIONS on the managed domain's domain controllers, summarized per account and logon
+// type - the events DomainServices/All.kql deliberately leaves out.
+//
+// Loaded by Search-MsecLogAnalytics -Subject DomainServices -Name Sessions -WorkspaceName <ws>.
+//
+// WHY THIS IS A SUMMARY AND NOT A ROW PER EVENT. 4624 is the highest-volume event a domain
+// controller produces: measured on a live managed domain it ran to 1,088,013 rows in thirty
+// days, against 2,673 credential validations over the same window. The Log Analytics query API
+// caps a response at 500,000 rows with no continuation token, so the raw grain cannot be
+// fetched over any useful window - and would not be worth reading if it could. The summarize
+// runs server-side, so a month collapses to a few hundred rows.
+//
+// THIS IS NOT "WHO SIGNED IN". Most of these rows are machine accounts re-establishing sessions
+// with the domain controllers, which is ordinary background traffic and not a sign-in anybody
+// performed. The question "who authenticated, and did it work" is answered by -Name All, which
+// reads the credential validation events instead. This one answers a narrower question: which
+// accounts hold sessions on the DCs, of what kind, and from where.
+//
+// LOGON TYPE IS THE USEFUL DIMENSION here and it is a bare number in the data. Decoded below;
+// type 3 (network) is the overwhelming majority on a domain controller, and types 2 and 10
+// (interactive and remote interactive) are the ones worth a second look, because they mean
+// somebody logged on to a domain controller rather than through one.
+//
+// NO TIME FILTER IN THIS FILE, deliberately - Search-MsecLogAnalytics passes -Days to the API
+// as a server-side timespan.
+AADDomainServicesLogonLogoff
+| where OperationName endswith '4624'
+| extend Account     = tostring(column_ifexists('TargetUserName', '')),
+         Domain      = tostring(column_ifexists('TargetDomainName', '')),
+         LogonType   = tostring(column_ifexists('LogonType', '')),
+         Workstation = tostring(column_ifexists('WorkstationName', '')),
+         AuthPackage = tostring(column_ifexists('AuthenticationPackageName', ''))
+| summarize Logons      = count(),
+            AuthPackages = make_set_if(AuthPackage, isnotempty(AuthPackage), 5),
+            Workstations = make_set_if(Workstation, isnotempty(Workstation) and Workstation != '-', 10),
+            FirstSeen   = min(TimeGenerated),
+            LastSeen    = max(TimeGenerated)
+        by Account, Domain, LogonType
+// The numbers are Windows logon types. Decoded here because a report that prints '3' has moved
+// the lookup onto the reader.
+| extend LogonTypeName = case(
+      LogonType == '2',  'Interactive - signed on at the console',
+      LogonType == '3',  'Network - reached the DC over the network',
+      LogonType == '4',  'Batch - scheduled task',
+      LogonType == '5',  'Service',
+      LogonType == '7',  'Unlock',
+      LogonType == '8',  'NetworkCleartext - password sent in the clear',
+      LogonType == '9',  'NewCredentials - runas /netonly',
+      LogonType == '10', 'RemoteInteractive - RDP',
+      LogonType == '11', 'CachedInteractive',
+      strcat('Logon type ', LogonType))
+// A label rather than a boolean - see the note in All.kql. Every column arrives in PowerShell
+// as a string, and the string 'false' is TRUE in a condition.
+| extend AccountType = iff(Account endswith '$', 'Computer', 'User')
+| project Account,
+          AccountType,
+          LogonTypeName,
+          Logons,
+          Domain,
+          AuthPackages,
+          Workstations,
+          FirstSeen,
+          LastSeen,
+          LogonType
+| order by Logons desc

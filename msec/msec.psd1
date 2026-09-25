@@ -6,7 +6,7 @@
     Copyright         = '(c) 2026 Anton Lindström. Licensed under the MIT License.'
     # Shown at the top of the Gallery listing, so it names every area the module covers.
     # Kept in step with the first paragraph of README.md.
-    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Exchange Online, SharePoint Online, Microsoft Teams, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by design: every Get-Msec* command reads, and the only command that writes is New-MsecApp, which creates its own app registration and grants it read permissions - and, when asked with -Workload Exchange or Teams, assigns it a directory role, which those services require and which is a tenant-wide privilege grant rather than an API permission. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there, so no key material reaches the machine running the module.'
+    Description       = 'Read Microsoft security posture - Secure Score, Defender XDR, Entra ID (directory roles, Conditional Access, MFA, licensing), Intune, Exchange Online, SharePoint Online, Microsoft Teams, Azure and Azure DevOps - as flat PowerShell objects you can filter, group and export. Read-only by default: every Get-Msec* command reads, and the app registration is consented read permissions only, so the certificate cannot change your tenant. Commands that write run as the signed-in user via Connect-MsecAdmin, never as the app - currently Set-MsecDefenderAlert. New-MsecApp creates that app registration and grants it read permissions - and, when asked with -Workload Exchange or Teams, assigns it a directory role, which those services require and which is a tenant-wide privilege grant rather than an API permission. Authentication is certificate-based via that app registration, and the private key never leaves Azure Key Vault - signing happens there, so no key material reaches the machine running the module.'
     PowerShellVersion = '7.0'
 
     # Az.Accounts: the user logs into Azure (their own identity) to reach Key Vault and is used for
@@ -39,6 +39,7 @@
         'New-MsecApp',
         'Connect-Msec',
         'Disconnect-Msec',
+        'Connect-MsecAdmin',
         'Connect-MsecGraphSdk',
         'Connect-MsecExchangeOnline',
         'Connect-MsecSharePointOnline',
@@ -47,11 +48,16 @@
         'Get-MsecAzureCost',
         'Get-MsecAzureRoleAssignment',
         'Get-MsecAzureSecureScore',
+        'Get-MsecAzureDomainService',
         'Get-MsecDefenderScoreExposure',
         'Get-MsecDefenderScoreDeviceConfiguration',
+        'Get-MsecDefenderAlert',
+        'Get-MsecDefenderIncident',
         'Get-MsecDefenderDevice',
         'Get-MsecDefenderEmailStats',
         'Get-MsecDefenderIncidentStats',
+        'Set-MsecDefenderAlert',
+        'Set-MsecDefenderIncident',
         'Get-MsecKeyVaultCertificate',
         'Get-MsecIntuneConfigurationProfile',
         'Get-MsecIntuneCompliancePolicy',

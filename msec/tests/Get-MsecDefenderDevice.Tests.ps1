@@ -251,6 +251,50 @@ Describe 'Get-MsecDefenderDevice' {
         $rows.DeviceName    | Should -Be 'web01'
     }
 
+    It 'filters on onboarding status, which is what separates real endpoints from discovered ones' {
+        # The inventory API returns devices Defender merely SAW on the network alongside the
+        # ones it protects. Measured on a live tenant: 717 rows, of which only 217 were
+        # onboarded and 164 had no device name at all - every unnamed one discovered rather
+        # than onboarded. Without this filter an exposure report is 3x the protected estate.
+        $rows = InModuleScope Msec {
+            Mock Invoke-MsecDefenderRequest -ParameterFilter { $Path -eq '/api/machines' } -MockWith {
+                [pscustomobject]@{ id = 'd1'; computerDnsName = 'web01'; healthStatus = 'Active'
+                                   onboardingStatus = 'Onboarded' }
+                [pscustomobject]@{ id = 'd2'; computerDnsName = 'db01';  healthStatus = 'Active'
+                                   onboardingStatus = 'Onboarded' }
+                # Discovered on the network, never onboarded, and nameless - the shape that
+                # inflates the row count.
+                [pscustomobject]@{ id = 'd3'; computerDnsName = '';      healthStatus = 'Inactive'
+                                   onboardingStatus = 'InsufficientInfo' }
+                [pscustomobject]@{ id = 'd4'; computerDnsName = 'printer'; healthStatus = 'Active'
+                                   onboardingStatus = 'CanBeOnboarded' }
+                [pscustomobject]@{ id = 'd5'; computerDnsName = 'tv';    healthStatus = 'Inactive'
+                                   onboardingStatus = 'Unsupported' }
+            }
+            Mock Invoke-MsecDefenderRequest -ParameterFilter { $Path -match 'machinesVulnerabilities' } -MockWith { @() }
+            Get-MsecDefenderDevice -OnboardingStatus Onboarded
+        }
+
+        @($rows).Count | Should -Be 2
+        @($rows.DeviceName) | Should -Be @('web01', 'db01')
+    }
+
+    It 'returns discovered devices by default, because an unmanaged device is its own finding' {
+        $rows = InModuleScope Msec {
+            Mock Invoke-MsecDefenderRequest -ParameterFilter { $Path -eq '/api/machines' } -MockWith {
+                [pscustomobject]@{ id = 'd1'; computerDnsName = 'web01'; healthStatus = 'Active'
+                                   onboardingStatus = 'Onboarded' }
+                [pscustomobject]@{ id = 'd4'; computerDnsName = 'printer'; healthStatus = 'Active'
+                                   onboardingStatus = 'CanBeOnboarded' }
+            }
+            Mock Invoke-MsecDefenderRequest -ParameterFilter { $Path -match 'machinesVulnerabilities' } -MockWith { @() }
+            Get-MsecDefenderDevice
+        }
+
+        # Nothing is dropped unless asked: CanBeOnboarded is a worklist, not noise.
+        @($rows).Count | Should -Be 2
+    }
+
     It 'names the missing permission when the device list itself is forbidden' {
         InModuleScope Msec {
             Mock Invoke-MsecDefenderRequest -MockWith { throw 'Response status code does not indicate success: 403 (Forbidden).' }

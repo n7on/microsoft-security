@@ -27,13 +27,40 @@ Returns one PSCustomObject covering:
                  and AdminsNotMfaCapableUpn - the actual account names, because
                  "3 admins without MFA" is not actionable but a list is
   - Strength:    PasswordlessCapable, PhoneOnlyMfaCapable
-  - Recovery:    SsprCapable (+ percentage)
+  - Members:     MembersMfaCapable / MembersSsprCapable and their percentages,
+                 plus MembersPasswordlessCapablePercent - the coverage figures
+                 scoped to members.
+READ THESE, not the all-user ones, in any
+                 tenant that has guests
+  - Recovery:    SsprCapable (+ percentage), GuestsSsprCapable
   - ByMethod:    count of users per registered method
 
 **AdminsNotMfaCapable is the headline number.** A privileged account that cannot
 perform MFA is the single most exploitable identity condition in a tenant, and it
 is invisible to Conditional Access reporting - CA shows MFA being demanded, not
 whether the account can satisfy it.
+
+**GUESTS DILUTE EVERY ALL-USER PERCENTAGE, AND FOR SSPR THEY DESTROY IT.**
+MfaCapablePercent, PasswordlessCapablePercent and SsprCapablePercent all divide by
+the WHOLE directory.
+Measured on a live tenant of 177 members and 202 guests:
+
+    MfaCapablePercent           61.48   MembersMfaCapablePercent           95.48
+    SsprCapablePercent          44.33   MembersSsprCapablePercent          94.92
+    NotMfaCapable                  146   MembersNotMfaCapable                   8
+    PasswordlessCapablePercent  33.51   MembersPasswordlessCapablePercent  71.75
+
+The MFA case is blunt: a guest CAN be MFA-capable and some are.
+The SSPR case is
+not - a guest resets their password in their HOME tenant, so they can essentially
+never be SSPR-capable here (0 of 202 on that tenant), and every guest is dead
+weight in the denominator.
+GuestsSsprCapable is reported so that is visible rather
+than asserted.
+
+Both sets are emitted.
+The all-user columns are unchanged so an existing posture
+workbook's history stays comparable; the Members* ones are what to report.
 
 Coverage uses IsMfaCapable, not IsMfaRegistered: a method registered but disabled
 by the tenant's authentication-methods policy will not work, so counting it would

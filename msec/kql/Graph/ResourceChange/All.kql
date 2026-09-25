@@ -1,0 +1,72 @@
+// One row per CHANGE to an Azure resource - what changed, when, by whom, and through which
+// client. Fourteen days, which is all Resource Graph keeps.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType ResourceChange.
+// Its companion, -Name Properties, gives one row per changed PROPERTY with the old and new
+// values - that is the one that answers "who changed this specific setting".
+//
+// FOURTEEN DAYS IS A HARD CEILING. Resource Graph keeps change records for 14 days and there is
+// no setting to extend it. Measured on a live tenant: oldest record exactly 14 days old. Asking
+// for more returns nothing rather than failing, so an empty result for last month is NOT
+// "nothing changed" - it is "out of retention". For anything longer-lived you need the Activity
+// Log (90 days) or a diagnostic setting shipping it to a workspace.
+//
+// THIS IS A SNAPSHOT DIFF, NOT AN AUDIT LOG. Resource Graph periodically snapshots each resource
+// and reports the difference between consecutive snapshots. The consequences worth knowing:
+//   * Two changes between snapshots collapse into one record, and a change that was reverted
+//     before the next snapshot leaves no trace at all.
+//   * Only properties Resource Graph projects are diffed. That covers the resource body, which
+//     is why a patch-orchestration change shows up (see below), but not sub-resources it does
+//     not model.
+//   * The Activity Log remains the authoritative record of who called what.
+//
+// MOST OF THE VOLUME IS THE PLATFORM TALKING TO ITSELF. ChangedByType 'System' is Azure updating
+// its own runtime fields - provisioningState, instanceView, powerState - and on a live tenant
+// that was 562 of the records with no human involved. Filter on ChangedByType to get to changes
+// somebody made:
+//     Search-MsecAzureResourceGraph -ResourceType ResourceChange |
+//         Where-Object ChangedByType -in 'User', 'Application'
+// It is NOT filtered here, because "the platform restarted this VM" is a real answer to "why did
+// this change", and a query that hid it would make the platform's own actions invisible.
+//
+// PATCH ORCHESTRATION IS IN HERE. patchMode lives on the VM resource body
+// (properties.osProfile.windowsConfiguration.patchSettings.patchMode), so moving a machine
+// between 'Windows Automatic Updates' (AutomaticByOS) and an Azure-orchestrated mode is an ARM
+// write on the VM and is diffed like any other property - whether it was done in the Azure
+// Update Manager blade, the CLI or a template. Use -Name Properties to see it:
+//     Search-MsecAzureResourceGraph -ResourceType ResourceChange -Name Properties |
+//         Where-Object PropertyName -like '*patchSettings*'
+//
+// CHANGEDBY IS NOT ALWAYS A PERSON. 'User' carries a sign-in name, 'Application' a service
+// principal, 'System' is Azure itself, and 'Unspecified' is a change whose origin was not
+// recorded. All four are reported as they come rather than normalised, because "Azure did it"
+// and "we do not know who did it" are different answers.
+//
+// NB: no time filter in this file. Resource Graph has no timespan parameter - filter in
+// PowerShell on ChangedUtc, which is a real datetime rather than one of the strings the Log
+// Analytics API hands back.
+
+resourcechanges
+| extend Attributes = properties.changeAttributes
+| extend ResourceId = tostring(properties.targetResourceId)
+| project ChangedUtc     = todatetime(Attributes.timestamp),
+          ChangeType     = tostring(properties.changeType),
+          // The resource name is only present inside the id.
+          ResourceName   = tostring(split(ResourceId, '/')[-1]),
+          ResourceType   = tostring(properties.targetResourceType),
+          // 'User', 'Application', 'System' or 'Unspecified' - see the note above.
+          ChangedByType  = tostring(Attributes.changedByType),
+          ChangedBy      = tostring(Attributes.changedBy),
+          // How it was done: Azure Portal, CLI, PowerShell, ARM Template, Terraform, .NET SDK,
+          // a DevOps task, or a bare GUID for a first-party service with no friendly name.
+          Client         = tostring(Attributes.clientType),
+          // The ARM operation, e.g. Microsoft.Compute/virtualMachines/write.
+          Operation      = tostring(Attributes.operation),
+          ChangeCount    = toint(Attributes.changesCount),
+          // Every property that moved, named. -Name Properties gives the values.
+          ChangedProperties = strcat_array(bag_keys(properties.changes), ', '),
+          CorrelationId  = tostring(Attributes.correlationId),
+          ResourceGroup  = tostring(resourceGroup),
+          SubscriptionId = tostring(subscriptionId),
+          ResourceId
+| order by ChangedUtc desc

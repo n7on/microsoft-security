@@ -105,4 +105,29 @@ INSIDE Azure DevOps, not through Entra API permissions, so New-MsecApp cannot do
 
 Verified against a live organization: 13 policies in 4 groups.
 
+A POLICY THAT IS ON IS A SETTING, NOT A CAPABILITY.
+These rows report what the
+organization has configured; they do not report what Azure DevOps will actually let
+anyone do.
+The two can disagree, and 'Allow public projects' is the case where they
+did: measured on a live organization it read Value True and IsExplicit True - somebody
+had deliberately turned it on - while the product refused to create a public project at
+all, offering GitHub instead.
+The reason is that PUBLIC PROJECTS ARE RETIRED: Microsoft
+removed the ability to create one or to make a private project public, and existing
+public projects convert to private during 2027.
+The toggle still renders, still stores
+a value and still reports IsExplicit - and means nothing.
+A vestigial setting is a
+worse failure than a wrong one, because it reads as a live permission in both
+directions.
+
+So an enabled policy here is the right place to START a question, not the answer to it.
+Reading 'Allow public projects: True' as "this organization can publish its code" was
+wrong on the one organization it was tested against - the only way to know is to try it,
+or to check what the projects actually are (Get-MsecAzureDevOpsRepository reports the
+repositories; project visibility is on the project).
+The reverse error is not possible
+in the same way: a policy that is OFF really does mean the capability is unavailable.
+
 ## RELATED LINKS

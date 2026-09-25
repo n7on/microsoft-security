@@ -8,13 +8,14 @@ schema: 2.0.0
 # Get-MsecDefenderDevice
 
 ## SYNOPSIS
-Every device onboarded to Defender for Endpoint, with its exposure level and how many
-vulnerabilities have been discovered on it.
+Every device in the Defender for Endpoint inventory - onboarded endpoints AND devices
+merely discovered on the network - with exposure level and vulnerability counts.
 
 ## SYNTAX
 
 ```
-Get-MsecDefenderDevice [[-HealthStatus] <String[]>] [[-ExposureLevel] <String[]>] [<CommonParameters>]
+Get-MsecDefenderDevice [[-HealthStatus] <String[]>] [[-ExposureLevel] <String[]>]
+ [[-OnboardingStatus] <String[]>] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -62,6 +63,29 @@ HealthStatus
 and LastSeen are the columns that separate them, which is why they are on every row
 rather than left to a second call.
 Sort on them before reading a 0 as good news.
+
+MOST OF THIS INVENTORY IS NOT ONBOARDED, AND THAT SURPRISES PEOPLE.
+Defender's device
+DISCOVERY finds things on the network it has no sensor on - phones, printers, unmanaged
+laptops - and returns them from the same API as real endpoints.
+Measured on a live
+tenant of 717 devices:
+
+    Onboarded         217   Defender is protecting these
+    InsufficientInfo  209   discovered, too little data to act on
+    CanBeOnboarded    178   discovered, could take a sensor
+    Unsupported       113   discovered, cannot take one
+
+So a report over the unfiltered result is 3x the size of the estate being protected,
+and 164 of those rows had NO DEVICE NAME AT ALL - every one of them discovered rather
+than onboarded.
+Use -OnboardingStatus Onboarded for "what Defender protects".
+
+The discovered rows are NOT noise to be thrown away, which is why nothing is filtered
+by default: an unmanaged laptop on the corporate network is a finding in its own right,
+and CanBeOnboarded is a worklist.
+They just answer a different question from the one an
+exposure report asks.
 
 ## EXAMPLES
 
@@ -127,6 +151,23 @@ Aliases:
 
 Required: False
 Position: 2
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -OnboardingStatus
+Only devices in these onboarding states.
+'Onboarded' is the one that means Defender
+is actually protecting the device; omit for all four.
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: 3
 Default value: None
 Accept pipeline input: False
 Accept wildcard characters: False

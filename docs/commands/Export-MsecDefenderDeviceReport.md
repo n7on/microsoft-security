@@ -14,8 +14,9 @@ it is exposed to, and how many vulnerabilities have been discovered on it.
 ## SYNTAX
 
 ```
-Export-MsecDefenderDeviceReport [-Path] <String> [-HealthStatus <String[]>] [-ExposureLevel <String[]>]
- [-TableStyle <String>] [-ChartWidth <Int32>] [-ChartHeight <Int32>] [-PassThru] [-Force] [-WhatIf] [-Confirm] [<CommonParameters>]
+Export-MsecDefenderDeviceReport [-Path] <String> [-HealthStatus <String[]>] [-OnboardingStatus <String[]>]
+ [-ExposureLevel <String[]>] [-TableStyle <String>] [-ChartWidth <Int32>] [-ChartHeight <Int32>] [-PassThru]
+ [-Force] [-WhatIf] [-Confirm] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -106,6 +107,28 @@ Only devices in these health states, passed through to Get-MsecDefenderDevice.
 Omit
 for all of them - which is usually right for evidence, since an inactive device is
 part of the estate whether or not anyone is looking after it.
+
+```yaml
+Type: String[]
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: None
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -OnboardingStatus
+Only devices in these onboarding states, passed through to Get-MsecDefenderDevice.
+MOST OF A DEFENDER INVENTORY IS NOT ONBOARDED - it also holds devices merely
+DISCOVERED on the network.
+Measured on a live tenant, 717 rows were 217 onboarded and
+500 discovered, 164 of which had no device name at all.
+Use
+-OnboardingStatus Onboarded for an exposure report over the protected estate; omit it
+to include discovered devices, which are a finding of a different kind.
 
 ```yaml
 Type: String[]

@@ -68,7 +68,7 @@ never look the same.
 
 Most commands run as the **app registration** - the certificate in Key Vault, read-only, and
 whatever `New-MsecApp` consented. A handful run as **you**, through the Az context, and need
-Azure RBAC on top of anything Entra granted. Three use two identities, each for a stated reason.
+Azure RBAC on top of anything Entra granted. Four use two identities, each for a stated reason.
 
 | Command | Runs as | Needs |
 |---|---|---|
@@ -83,7 +83,7 @@ Azure RBAC on top of anything Entra granted. Three use two identities, each for 
 | `Set-MsecDefenderIncident` | you | delegated `SecurityIncident.ReadWrite.All` via `Connect-MsecAdmin` |
 | `Grant-MsecAzureDevOpsPermission` | you | permission to manage ADO permissions (Project Collection Administrator or equivalent) |
 | `Get-MsecAzureRoleAssignment` | both | Reader for the assignments; the app resolves principal names through Graph |
-| `Select-MsecAzureContext` | you | an Az context to switch between subscriptions |
+| `Select-MsecAzureContext` | both | an Az context to switch, and the saved profile to reconnect the app session behind it |
 
 `Invoke-MsecAzureVMScript` is the one to know about on the Azure side: Reader alone gets a 403
 there, because `runCommand/action` is a Contributor-level right even though the bundled scripts
@@ -105,7 +105,45 @@ are stated in each command's help: `Connect-Msec` signs the app assertion with y
 is the bootstrap), `Connect-MsecTeams -AsCurrentUser` selects between two modes explicitly, and
 `Get-MsecAzureRoleAssignment` reads assignments through ARM while resolving principal NAMES through
 the app's Graph session, because `Get-AzADUser` on a permissionless ARM connection returns blank
-names rather than failing.
+names rather than failing, and `Select-MsecAzureContext` moves both on purpose - see below.
+
+### Switching tenant or subscription
+
+Two identities means two things to move, and moving one used to leave the other behind: switch the
+Az context to another tenant and every Graph or Defender call kept answering for the tenant you
+just left. Nothing failed, which is what made it dangerous.
+
+`Select-MsecAzureContext` moves both. It picks from the contexts Az has already saved - one per
+account, tenant, subscription and cloud you have signed in to - and **`Connect-Msec` follows it
+automatically**:
+
+```powershell
+# Tab-completes subscription names; -User only when one subscription is signed in twice.
+Select-MsecAzureContext 'Production'
+
+# SubscriptionName : Production
+# TenantId         : 7a13befb-...
+# Account          : you@contoso.com
+```
+
+`Connect-Msec` saves a profile per tenant - vault name, client id, certificate name - and the
+switch replays it. **No secret is stored and none is needed**: signing happens inside Key Vault
+and the private key never leaves it.
+
+Three things worth knowing:
+
+- **It only reconnects when the tenant actually changes.** Switching between two subscriptions in
+  the same tenant costs nothing.
+- **A tenant with no saved profile still switches**, and warns that the app session is now
+  misaligned. Run `Connect-Msec` once for that tenant and later switches handle themselves.
+- **A failed reconnect does not fail the switch.** The context change is what was asked for and it
+  stands; losing the convenience warns rather than throws.
+
+Use `-NoConnect` to move the Az context and deliberately leave the app session where it is.
+
+The Exchange and Purview sessions realign too, but lazily rather than here: they are checked
+against the current tenant on next use, and a session belonging to the previous tenant is closed
+and reopened rather than silently reused.
 
 
 ### Exchange Online, SharePoint Online, Teams
@@ -228,7 +266,7 @@ answer, and an empty result with one as unread.
 - [New-MsecApp](./docs/commands/New-MsecApp.md) - Create or update the msec app registration, its Key Vault certificate, and admin consent
 - [Connect-Msec](./docs/commands/Connect-Msec.md) - Open a session bound to a certificate in Azure Key Vault
 - [Disconnect-Msec](./docs/commands/Disconnect-Msec.md) - Clear the session and its cached tokens
-- [Select-MsecAzureContext](./docs/commands/Select-MsecAzureContext.md) - Switch Azure context by subscription name, warning if it leaves the msec session on another tenant
+- [Select-MsecAzureContext](./docs/commands/Select-MsecAzureContext.md) - Switch Azure context by subscription name; the msec app session follows it into the new tenant
 - [Connect-MsecAdmin](./docs/commands/Connect-MsecAdmin.md) - Sign in AS YOU with delegated write scopes, for the commands that change something
 - [Connect-MsecGraphSdk](./docs/commands/Connect-MsecGraphSdk.md) - Hand the msec session's token to the Microsoft.Graph SDK, so Get-Mg* runs as the msec app
 - [Connect-MsecExchangeOnline](./docs/commands/Connect-MsecExchangeOnline.md) - Same for ExchangeOnlineManagement

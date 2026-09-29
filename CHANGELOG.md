@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
   mocks the real command and the two behave identically. Same pattern the Purview tests already
   use for the optional ExchangeOnlineManagement cmdlets.
 
+  THE STUBS CARRY THE REAL PARAMETER NAMES, which the first attempt at this did not. A stub of
+  `param()` with no `[CmdletBinding()]` is a SIMPLE function: it accepts any argument into
+  `$args` rather than rejecting it, so `Connect-MgGraph -TenantId x` did not fail - `$TenantId`
+  simply never bound. A `-ParameterFilter { $TenantId -eq 'tenant-1' }` then matched nothing and
+  the assertion failed as "expected 1 call, got 0", which reads as the command never having been
+  called. Every stub now declares `[CmdletBinding()]` and the parameters the tests filter on.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

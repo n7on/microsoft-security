@@ -25,9 +25,27 @@ BeforeAll {
     #
     # Stubbed only when absent, so a machine that has the real module still mocks the real
     # command and the two behave identically.
-    foreach ($graphCmd in 'Get-MgContext', 'Connect-MgGraph', 'Disconnect-MgGraph') {
+    # The stubs carry the REAL parameter names, not an empty param(). A -ParameterFilter is
+    # evaluated against the mocked command's own signature, so a stub without -TenantId leaves
+    # $TenantId unbound and the filter silently matches nothing - the mock is invoked, the
+    # assertion counts zero calls, and the failure looks like the command was never called.
+    $graphStubs = @{
+        'Get-MgContext'      = { [CmdletBinding()] param() }
+        'Disconnect-MgGraph' = { [CmdletBinding()] param() }
+        'Connect-MgGraph'    = {
+            [CmdletBinding()]
+            param(
+                [string[]] $Scopes,
+                [string]   $TenantId,
+                [switch]   $NoWelcome,
+                           $AccessToken,
+                [string]   $Environment
+            )
+        }
+    }
+    foreach ($graphCmd in $graphStubs.Keys) {
         if (-not (Get-Command $graphCmd -ErrorAction SilentlyContinue)) {
-            Set-Item "function:global:$graphCmd" -Value { param() } -Force
+            Set-Item "function:global:$graphCmd" -Value $graphStubs[$graphCmd] -Force
             $script:StubbedGraphCommands += $graphCmd
         }
     }

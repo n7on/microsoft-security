@@ -1,0 +1,12 @@
+// Logon activity per account. IsLocalAdmin is counted rather than filtered, so an account that
+// is usually a standard user and occasionally an admin still shows both.
+DeviceLogonEvents
+| summarize
+    Logons     = count(),
+    Failed     = countif(ActionType == "LogonFailed"),
+    Devices    = dcount(DeviceId),
+    LocalAdmin = countif(IsLocalAdmin == true),
+    RemoteIPs  = dcount(RemoteIP),
+    LastSeen   = max(Timestamp)
+    by AccountName, AccountDomain, LogonType
+| sort by Logons desc

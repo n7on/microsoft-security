@@ -18,6 +18,25 @@ Get-MsecIntuneDevice [<CommonParameters>]
 ```
 
 ## DESCRIPTION
+HOW A DEVICE WAS ENROLLED DECIDES WHETHER A USER CAN REMOVE MANAGEMENT.
+An Apple device
+enrolled through Automated Device Enrollment (deviceEnrollmentType appleBulkWithUser or
+appleBulkWithoutUser) has a management profile the user cannot remove.
+One enrolled
+manually - userEnrollment - does not, so every policy, compliance check and Conditional
+Access decision that depends on management can be ended by the person holding the laptop.
+Measured live: 9 of 19 Macs and 128 of 130 iOS devices were manually enrolled.
+
+IsSupervised IS NOT THE ANSWER TO THAT QUESTION.
+It came back True on all 19 Macs
+regardless of how they were enrolled, so filtering on it finds nothing.
+EnrollmentType is
+the discriminator.
+
+IsAutomatedEnrollment IS $null ON WINDOWS AND ANDROID, not $false.
+The enum reports
+windowsAzureADJoin for both Autopilot and a manual Entra join, so it cannot answer the
+question there - and a $false would claim it had. 
 Calls Microsoft Graph /v1.0/deviceManagement/managedDevices with a $select
 for the audit-relevant columns, paginates through @odata.nextLink, and
 emits one PSCustomObject per device.
@@ -40,11 +59,19 @@ A clearer error is raised on the typical 403.
 
 ### EXAMPLE 1
 ```
+# Apple devices a user could unenrol at will.
+Get-MsecIntuneDevice |
+    Where-Object { $_.IsAutomatedEnrollment -eq $false } |
+    Format-Table DeviceName, Os, OsVersion, EnrollmentType, ComplianceState
+```
+
+### EXAMPLE 2
+```
 # Compliance counts.
 Get-MsecIntuneDevice | Group-Object ComplianceState | Sort-Object Count -Descending
 ```
 
-### EXAMPLE 2
+### EXAMPLE 3
 ```
 # Devices not seen in 30 days - stale management. A device that stopped checking
 # in keeps its last compliance verdict, so these read as compliant while being
@@ -53,13 +80,13 @@ Get-MsecIntuneDevice |
     Where-Object { $_.LastSyncDateTime -lt (Get-Date).AddDays(-30) }
 ```
 
-### EXAMPLE 3
+### EXAMPLE 4
 ```
 # OS family breakdown.
 Get-MsecIntuneDevice | Group-Object Os | Select-Object Name, Count
 ```
 
-### EXAMPLE 4
+### EXAMPLE 5
 ```
 # Snapshot-style headline percentages for an archive or a posture report.
 $d = Get-MsecIntuneDevice

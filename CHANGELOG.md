@@ -5,6 +5,149 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `Get-MsecIntuneDevice` now returns `EnrollmentType`, `IsSupervised`, `EnrollmentProfile` and
+  `IsAutomatedEnrollment`. How a device was enrolled decides whether a user can simply remove
+  management, and nothing in the previous output could answer that.
+
+  An Apple device enrolled through Automated Device Enrollment has a management profile the user
+  cannot remove. One enrolled manually does not - so every configuration profile, compliance
+  check and Conditional Access decision resting on management can be ended by whoever is holding
+  the laptop. Measured live: 9 of 19 Macs and 128 of 130 iOS devices were manually enrolled, and
+  on the Mac side both devices on an unsupported OS version and both devices that had stopped
+  checking in were in that group.
+
+  `IsSupervised` IS NOT THE ANSWER and is included so nobody reaches for it: it came back True
+  on all 19 Macs regardless of enrolment method, so a filter on it finds nothing.
+
+  `IsAutomatedEnrollment` IS `$null` ON WINDOWS AND ANDROID, not `$false`. The enum reports
+  `windowsAzureADJoin` for both an Autopilot deployment and a manual Entra join, so it cannot
+  answer the question there and a `$false` would claim that it had.
+
+  NB `autopilotEnrolled` is beta-only and returns HTTP 400 against v1.0 `managedDevice` - it was
+  tried and removed, and there is a comment in the `$select` list saying so.
+- `Get-MsecPurviewAlertPolicy` - Purview alert policies, the area every other Purview command
+  here was missing. The rest report what is PREVENTED; this reports what is NOTICED, and it was
+  a blind spot: measured live, 65 policies of which 14 were the organisation's own, and all 7
+  disabled ones were theirs rather than Microsoft's.
+
+  A DISABLED ALERT POLICY IS SILENT IN EXACTLY THE WAY A WORKING ONE IS, which is why nobody
+  finds these until an incident review asks why no one was told. "Shared files externally" and
+  "User copies a file with sensitive data to a removable drive" were both off.
+
+  `IsEnabled` INVERTS THE RAW PROPERTY. The service stores `Disabled`, so a filter written
+  against it reads backwards and `Where-Object Disabled` quietly returns the healthy policies.
+  Both are on the row, positive form first.
+
+  `NotificationEnabled` IS NOT WHETHER THE ALERT FIRES - it is whether anyone is emailed. An
+  enabled policy with it off raises the alert in the portal and tells nobody. Measured live,
+  three custom policies were in that state, including the alert attached to the one GDPR DLP
+  rule that actually enforces.
+
+  `IsSystemRule` separates Microsoft's built-ins from local configuration, because a count that
+  mixes them says nothing about how much alerting anyone here set up. `-CustomOnly` narrows to
+  the latter.
+- `Get-MsecPurviewDlpPolicy` now returns `WorkloadClaims` and `ClaimsEmailWithoutTarget`, because
+  the raw `Workload` property is the most misleading thing about a DLP policy and omitting it
+  left no way to see why.
+
+  `Workload` IS DECLARATIVE, NOT DERIVED. Measured live: all eight policies on one tenant listed
+  "Exchange" in `Workload` while every Exchange targeting property - `ExchangeLocation`,
+  `ExchangeSender`, `ExchangeSenderMemberOf`, `ExchangeAdaptiveScopes` - was empty. Microsoft's
+  parameter reference is explicit that this means email is excluded: "If you don't want to
+  include email messages in the policy, don't use this parameter." So a policy can assert email
+  coverage it does not have, and an experienced admin reading `Workload` will reasonably conclude
+  the opposite of the truth.
+
+  Hiding the property would have been the wrong fix - the scopes were already right, and someone
+  checking msec against the portal or against `Get-DlpCompliancePolicy` would keep rediscovering
+  the discrepancy and assuming msec was wrong. `ClaimsEmailWithoutTarget` names it instead.
+- `Get-MsecPurviewAutoLabelingPolicy` and `Get-MsecPurviewInformationBarrier`, closing the two
+  gaps that would otherwise have gone into a Purview review with no command behind them.
+
+  AUTO-LABELING IS THE ONLY THING THAT APPLIES A SENSITIVITY LABEL WITHOUT A USER. A tenant with
+  labels published and no auto-labeling policy relies entirely on people classifying their own
+  content - so zero rows is a finding, not an empty section, and the command answers cleanly
+  rather than erroring on it. Same configured-versus-enforcing split as the DLP command: only
+  Mode 'Enable' labels anything, every Test* mode simulates.
+
+  Information barriers are absent on most tenants and that is a legitimate answer - they exist
+  for regulated separation. Reporting the absence is the point, because a deliberate "no
+  barriers" and an overlooked one look identical until someone asks. `State` is not `IsActive`:
+  a barrier is authored inactive and protects nobody until applied, while still counting as a
+  policy.
+
+  BOTH PROJECTIONS ARE UNVERIFIED AGAINST LIVE DATA, and say so in their help. They were written
+  on a tenant with zero of each, and Microsoft's cmdlet reference does not document the returned
+  properties. So they are built to degrade rather than guess: a property PowerShell cannot find
+  is `$null` rather than an error, locations go through `Resolve-MsecPurviewLocation` which
+  already handles absent ones, and `Raw` carries the untouched object so a missed column can be
+  recovered without a module change. A test pins that `Raw` survives.
+
+  `RuleCount` is `$null` rather than `0` when `Get-AutoSensitivityLabelRule` is not exposed:
+  "this policy has no conditions" and "the rules could not be read" are different claims.
+- Microsoft Purview coverage: `Connect-MsecPurview`, `Get-MsecPurviewDlpPolicy`,
+  `Get-MsecPurviewSensitivityLabel` and `Get-MsecPurviewRetention`.
+
+  NO NEW CONSENT WAS NEEDED. Purview's configuration is not in Graph - DLP policies, DLP rules,
+  sensitivity label actions and label policies have no Graph endpoint - so this goes through
+  Security & Compliance PowerShell. `Connect-IPPSSession` takes `-AccessToken` and `-AppId`, the
+  same shape `Connect-MsecExchangeOnline` already uses, so the existing Key Vault certificate
+  reaches the compliance endpoint as the app. The app does need a directory role (Global Reader
+  or Compliance Administrator) and a 403 there is translated into a message saying so, because
+  it is a role problem far more often than a permission one. `-Organization` is optional and
+  resolved from Graph.
+
+  CONFIGURED IS NOT ENFORCING, and the count people quote is the configured one. A DLP policy's
+  `Mode` is independent of its `Enabled` flag: `Disable` does nothing, `TestWithNotifications`
+  reports without blocking, only `Enable` stops anything. `IsEnforcing` collapses that, with
+  `Mode` and `Enabled` kept on the row. `BlockingRuleCount` matters just as much - measured
+  live, a policy enforcing across all SharePoint and OneDrive had zero blocking rules.
+
+  GET-LABEL HAS NO EncryptionEnabled PROPERTY. Asking for one returns empty on every label,
+  which reads exactly like "nothing encrypts anything" - an earlier pass at this tenant reported
+  precisely that, and it was wrong. The settings live in `LabelActions`, a collection of JSON
+  documents, one per action. `EncryptionConfigured` and `EncryptionEnabled` are therefore
+  separate columns: measured live, `Internal` and `Confidential` both carry an encrypt action
+  and both have it switched off, which is a decision to revisit rather than work never done.
+
+  THE `disabled` FLAG IS THE STRING `'true'`/`'false'`, and `[bool]'false'` is `$true` in
+  PowerShell, so a truthiness test marks every configured action as disabled. The comparison is
+  explicit and a test pins it.
+
+  `'All'` IS AN ORDINARY MEMBER of a DLP location collection rather than a flag, so an
+  estate-wide policy and a single site named "All" are indistinguishable until you inspect the
+  type. `Resolve-MsecPurviewLocation` turns each workload into a `Scope` of All/Named/None plus
+  a count of named locations - and the count is 0 for All, because there is no list to count and
+  reading it as coverage would be backwards.
+
+  Rule columns go `$null` rather than `0` when the rules cannot be read: on a control question,
+  "no blocking rule" and "could not tell" must not look alike. Same for `IsPublished` when the
+  label policies are unreadable.
+- `Search-MsecDefenderHunting` - runs bundled advanced hunting KQL against the Defender XDR
+  event store, completing the set alongside `Search-MsecAzureResourceGraph` and
+  `Search-MsecLogAnalytics`. Nine queries under `kql/Hunting/`: SignIn (All, Failed, ByUser),
+  Device (All, Logon), Email (All, Threats), Alert (All), Vulnerability (All). Every one was run
+  against a live tenant before shipping rather than eyeballed.
+
+  THE THREE SEARCH COMMANDS READ THREE DIFFERENT STORES, and the README now says so in a table.
+  Advanced hunting is Defender's own lake of roughly thirty days of raw telemetry - not a Log
+  Analytics workspace. Nothing a diagnostic setting routes lands there; nothing there reaches a
+  workspace without the Sentinel connector.
+
+  THE .kql FILES CARRY NO TIME FILTER. Graph's `runHuntingQuery` takes `timespan` as its own
+  parameter - confirmed from `$metadata` and then live: one query returned 12 / 57 / 2245 / 6544
+  rows at PT1H / P1D / P7D / P30D. Same split as `Search-MsecLogAnalytics`, and a lint test
+  holds the rule for the new tree.
+
+  AN UN-ONBOARDED TABLE FAILS TO RESOLVE RATHER THAN RETURNING ZERO ROWS, and the command
+  translates that into a plain sentence naming the likely cause. "0 results" and "this product
+  is not installed" reading alike is the worst failure available to a security query. Measured
+  on one tenant: every `Identity*` table at zero (no Defender for Identity sensors on a managed
+  domain) and `CloudAppEvents` at zero, against 2.4M rows in `AADSignInEventsBeta`.
+
+  `-Days` is capped at 30 because that is the store's retention, not an arbitrary limit, and a
+  bare-integer `-Timespan` is refused - PowerShell reads it as TICKS, so `-Timespan 7` means
+  700 nanoseconds and returns nothing that looks exactly like "nothing to find".
 - `Connect-MsecAdmin` - a delegated, interactive sign-in for the commands that will write.
   Reads stay on the app certificate; writes run as a named person.
 
@@ -85,6 +228,117 @@ All notable changes to this project will be documented in this file.
   pipeline is a good way to lose Defender's own text.
 
 ### Fixed
+- `Get-MsecIntuneCompliancePolicy` returned only name, platform, type and assignment count - so
+  a policy that ENFORCES NOTHING was indistinguishable from a healthy one, which is the single
+  most misleading thing a compliance-policy list can do.
+
+  A policy with no settings configured reports every device as compliant, because there is
+  nothing to fail. Measured live: a macOS baseline assigned to all licensed users since 2021,
+  with `osMinimumVersion` empty and password, encryption, firewall and system-integrity all
+  false, showed 17 of 19 devices compliant - including two on an unsupported major version. The
+  same tenant's properly configured macOS policy, with 11 checks and a minimum version, was
+  assigned to nobody. From the old output the two looked equally fine.
+
+  Rows now always carry `OsMinimumVersion`, `ConfiguredCheckCount`, `ChecksNothing` and
+  `ConfiguredChecks`, and `-IncludeSettings` attaches every setting. None of it costs an extra
+  API call - the list endpoint already returned all 26 properties and the command was throwing
+  them away.
+
+  WHAT COUNTS AS "CONFIGURED" IS WRITTEN DOWN, in `Get-MsecCompliancePolicyCheck`, rather than
+  guessed at: a boolean counts only when true (false means "not required", not "required to be
+  false"); a string counts unless it is one of Graph's do-nothing sentinels (`deviceDefault`,
+  `unavailable`, `notConfigured`, `userDefined` - measured, those account for nine of fourteen
+  string values on one tenant); a number counts only when non-zero. The test is deliberately
+  generic rather than a per-platform allowlist, because Microsoft adds compliance settings and
+  an allowlist would silently stop counting them.
+- `Assert-MsecExoCmdlet` said an absent cmdlet meant the TENANT lacked the feature. It does not:
+  the compliance endpoint imports cmdlets per IDENTITY, based on Purview role groups, so a
+  cmdlet missing from an app-only session says nothing about whether the feature exists or is in
+  daily use by people in the portal.
+
+  THE OLD WORDING PUT A FALSE STATEMENT INTO A COMPLIANCE REPORT. Measured on one tenant:
+  `Get-ComplianceSearch`, `Get-InsiderRiskPolicy` and `Get-SupervisoryReviewPolicyV2` were all
+  absent from the app session, while `eDiscoveryManager`, `InsiderRiskManagement` and
+  `CommunicationCompliance` each had three members and were actively used. Inferring "we do not
+  have eDiscovery" from that is the kind of error that is worse than no report at all, because
+  it reads as evidence.
+
+  The message now says the feature may well be in use, that it is a role-group problem rather
+  than an API permission one, that granting an API permission will not help, and that the fix is
+  to add the identity to the matching view-only Purview role group. "Not measurable from here"
+  replaced "not measurable" - the qualifier is the whole point.
+- `Get-MsecPurviewDlpPolicy` and `Get-MsecPurviewAutoLabelingPolicy` reported the wrong name for
+  any policy that had been renamed, so the output did not match the Purview portal and a reader
+  could not find the policy being described.
+
+  A DLP POLICY HAS TWO NAMES. Renaming one changes its `DisplayName` and leaves `Name` at
+  whatever it was created as, so they drift apart the moment anyone tidies a name up. Measured
+  live on one tenant, two of eight had drifted: the portal's `DLP - Confidential document shared`
+  is still `TEST - Label-based DLP (pilot)` underneath, and `DLP - Passwords` is still
+  `DLP - Passwords - Teams + SharePoint/OneDrive`. `Name` now carries the display name, with
+  `InternalName` beside it and a `Renamed` flag; `-Name` matches either, because a portal reader
+  and a script author know different strings.
+
+  THE RULE JOIN STILL USES THE INTERNAL NAME, and that is not incidental. `ParentPolicyName`
+  tracks `Name`, never `DisplayName` - measured at 10 of 10 rules, matching the display name only
+  where the two happened to be equal. Switching the join to the display name would silently drop
+  the rules of every renamed policy, and `RuleCount = 0` reads as "this policy has no
+  conditions". A test pins both halves: the row shows the display name, the join finds the rule.
+- The `Get-MsecPurview*` commands now say a tenant CANNOT BE ASKED rather than returning nothing
+  when the feature is absent. The compliance endpoint imports only the cmdlets a tenant is
+  licensed for and the connecting identity's role group allows, so on a tenant without DLP or
+  labels the cmdlet is simply not there - measured on a fully working tenant,
+  `Get-ComplianceSearch`, `Get-InsiderRiskPolicy` and `Get-SupervisoryReviewPolicyV2` are all
+  absent while the DLP and label ones are present.
+
+  Calling one anyway raised `CommandNotFoundException` - "The term X is not recognized" -
+  surfacing from a `Get-Msec*` command as though the module were broken. Worse would have been
+  catching it and returning an empty result: "this tenant has no DLP policies" and "this tenant
+  cannot be asked" are opposite conclusions on a compliance report, and only one of them is
+  true. `Assert-MsecExoCmdlet` names the cmdlet, says it is a capability limit rather than a
+  missing API permission (so nobody spends an afternoon granting one), and states plainly that
+  it is not the same as "none are configured".
+
+  `Get-MsecPurviewRetention` checks per half and only for the half being read, so a tenant that
+  exposes retention labels but not retention policies can still answer `-Kind Label` - and the
+  error for the other half says so.
+- A workload session is now reused only when it belongs to the tenant the msec session is
+  currently on. It previously matched on "is something connected to this endpoint", which is
+  wrong the moment anyone switches tenant: `Connect-Msec` to tenant B after using Purview or
+  Exchange on tenant A left the old session live, and the next command happily read TENANT A'S
+  DATA and reported it under tenant B's name. Nothing about that looks like an error, which is
+  what makes it worth a test rather than a comment. `Get-ConnectionInformation` carries
+  `TenantID`, so the comparison was available all along.
+
+  A stale session is CLOSED, not left alongside a new one - two live sessions let the cmdlets
+  pick between them invisibly, turning a consistently wrong tenant into an intermittent one. The
+  warning names both tenants.
+
+  Identity is deliberately NOT part of the check. A caller who signed in as themselves has
+  rights the app lacks, and reconnecting as the app would quietly remove them - the trap
+  `Get-MsecTeamsPolicy` already avoids with its `-AsCurrentUser` guard. Tenant is the
+  correctness question; a different `AppId` on the right tenant is only noted verbosely.
+
+### Changed
+- `Get-MsecExchangeMailboxPermission` now opens its Exchange session on first use, which was the
+  last command in the module still demanding a manual connect. `Get-MsecTeamsPolicy` and
+  `Get-MsecSharePointSiteUser` already connected themselves, and the Purview commands now do -
+  Exchange was the odd one out rather than the rule.
+
+  Its connected-check was also wrong: `Get-Command Get-EXOMailbox` answers whether the MODULE IS
+  INSTALLED, not whether anything is connected. It returned true on a machine that had never
+  signed in, and every call after it then failed on transport instead of on a sentence.
+
+- `Connect-MsecExchangeOnline -Organization` is now optional, resolved from Graph like
+  `Connect-MsecPurview` - shared as `Get-MsecTenantDomain`, since the app already holds
+  `Organization.Read.All`. A mandatory argument the caller rarely has to hand was the only
+  reason Exchange could not connect itself.
+
+- Exchange and Purview now share one session initializer, `Initialize-MsecExoSession -Endpoint`.
+  They differ only in endpoint and connect cmdlet, and the part that is easy to get wrong - the
+  tenant check - must not exist in two copies. `Get-MsecExoConnection` keeps the two endpoints
+  apart; they come from one module and differ only by URI, which carries a regional prefix
+  (`eur01b.ps.compliance...`), so the match is a substring by design.
 - `Set-MsecDefenderAlert` now reports comment refusals ONCE per run instead of once per alert,
   and hands over the command that does work. Every non-endpoint alert fails the same rule, so a
   near-identical warning per row buried the ones that were actually specific to an alert. The
@@ -160,6 +414,25 @@ All notable changes to this project will be documented in this file.
   "corrects" the ValidateSet from the stale page.
 
 ### Changed
+- The `Get-MsecPurview*` commands now open their compliance session themselves on first use, so
+  `Connect-Msec` is all a caller needs. `Connect-MsecPurview` stays public and is now optional -
+  use it to pass a specific `-Organization`, or to choose when a few hundred compliance cmdlet
+  names land in the runspace - measured at 102, none clashing with the ExchangeOnlineManagement
+  module's own exports.
+
+  Requiring a manual connect for exactly one area of the module was an implementation detail
+  leaking into the interface. It is not an identity difference - Purview uses the same Key Vault
+  certificate as every other command - it is that this endpoint has no usable per-request REST
+  model. Calling `/adminapi/beta/{org}/InvokeCommand` directly with the app token was tried:
+  it authenticates (500s, never 401 or 403) and then fails on `orgUnit` routing state that only
+  the module's handshake establishes, which is undocumented internal plumbing no published
+  module should depend on.
+
+  THE CONNECT IS REPORTED, NOT SILENT. The handshake takes about nine seconds and imports
+  hundreds of cmdlets; a `Get-` command doing that quietly reads as a hang. `Write-Progress`
+  says what is happening, stays out of the pipeline and clears itself. Measured end to end:
+  ~15s for the first call, ~5s for each one after, and a test pins that a second call does not
+  reconnect.
 - `-MaxCount` is REMOVED from `Set-MsecDefenderAlert` and `Set-MsecDefenderIncident`. It capped a
   run at 25 objects and refused the whole pipeline above that, which got in the way of the
   bulk triage these commands exist for. There is now no cap: the pipeline writes everything the

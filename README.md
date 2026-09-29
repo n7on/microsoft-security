@@ -39,6 +39,26 @@ doing.
 | Microsoft Teams | `application_access` + directory role | nothing |
 | Azure DevOps | nothing - Entra has no say here | organization membership, and permissions per namespace |
 
+### Which store a KQL question belongs in
+
+Three commands take KQL and none of them search the same place. Picking the wrong one wastes
+time, because no amount of query rewriting moves a question between stores.
+
+| Command | Searches | Holds |
+|---|---|---|
+| `Search-MsecDefenderHunting` | Defender XDR's own event lake | ~30 days of raw device, email, sign-in and alert telemetry |
+| `Search-MsecAzureResourceGraph` | Azure Resource Manager metadata | current resource configuration, no history |
+| `Search-MsecLogAnalytics` | a Log Analytics workspace | whatever diagnostic settings route there, for whatever retention you pay for |
+
+Advanced hunting is NOT a workspace: nothing a diagnostic setting routes appears there, and
+nothing there reaches a workspace unless the Sentinel connector is wired up. Entra Domain
+Services audit logs are a workspace question; what a device or mailbox did is a hunting one.
+
+Which hunting tables exist depends entirely on what is onboarded. A table belonging to a product
+you do not run does not come back empty - it fails to resolve, and `Search-MsecDefenderHunting`
+turns that into a sentence saying so, because "0 rows" and "this product is not installed" must
+never look the same.
+
 ### Which identity a command uses
 
 Most commands run as the **app registration** - the certificate in Key Vault, read-only, and
@@ -220,8 +240,30 @@ answer, and an empty result with one as unread.
 - [Set-MsecDefenderAlert](./docs/commands/Set-MsecDefenderAlert.md) - **Writes.** Resolve, classify or comment on alerts; needs `Connect-MsecAdmin`
 - [Set-MsecDefenderIncident](./docs/commands/Set-MsecDefenderIncident.md) - **Writes.** Resolve, classify or comment on incidents - the resolution comment lives here, not on the alert; needs `Connect-MsecAdmin`
 
-### Entra ID
-- [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
+### Microsoft Purview
+- [Connect-MsecPurview](./docs/commands/Connect-MsecPurview.md) - App-only Security & Compliance session. Optional: the Get-MsecPurview* commands open one themselves
+- [Get-MsecPurviewDlpPolicy](./docs/commands/Get-MsecPurviewDlpPolicy.md) - DLP policies with where they apply and whether they actually enforce
+- [Get-MsecPurviewSensitivityLabel](./docs/commands/Get-MsecPurviewSensitivityLabel.md) - Sensitivity labels, the protection each applies, and which policy publishes it
+- [Get-MsecPurviewRetention](./docs/commands/Get-MsecPurviewRetention.md) - Retention labels and policies, with whether either is in force
+- [Get-MsecPurviewAutoLabelingPolicy](./docs/commands/Get-MsecPurviewAutoLabelingPolicy.md) - Auto-labeling policies - the only thing that applies a sensitivity label without a user
+- [Get-MsecPurviewInformationBarrier](./docs/commands/Get-MsecPurviewInformationBarrier.md) - Information barrier policies, and whether each is applied or merely authored
+- [Get-MsecPurviewAlertPolicy](./docs/commands/Get-MsecPurviewAlertPolicy.md) - Purview alert policies - what gets NOTICED, including detection that has been switched off
+
+`Connect-Msec` is all you need - the Purview commands open their compliance session on first
+use and reuse it afterwards (measured: ~15s for the first call, ~5s after).
+
+Purview's configuration is not in Microsoft Graph - DLP policies, DLP rules, sensitivity label
+actions and label policies have no Graph endpoint - so these go through Security & Compliance
+PowerShell, which is the one area of the module needing a stateful session. That is not an
+identity difference: the token is minted from the same Key Vault certificate as everything else,
+just for a different audience. Calling the REST endpoint directly instead was tried and rejected
+- it authenticates, then fails on routing state (`orgUnit`) that only the module handshake
+establishes, and that is undocumented internal plumbing to depend on.
+
+Nothing extra needs consenting, but the app does need a directory role (Global Reader or
+Compliance Administrator), which is what a 403 there usually means.
+
+### Entra ID- [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
 - [Get-MsecEntraLicense](./docs/commands/Get-MsecEntraLicense.md) - Subscribed SKUs and the service plans each one turns on
 - [Get-MsecEntraRoleHolder](./docs/commands/Get-MsecEntraRoleHolder.md) - Who holds which directory role, separating what a role is assigned to from who effectively holds it, including PIM-eligible assignments and role-assignable groups expanded
 - [Get-MsecEntraConditionalAccessPolicy](./docs/commands/Get-MsecEntraConditionalAccessPolicy.md) - Conditional Access policies with conditions and grant controls flattened to columns
@@ -244,6 +286,7 @@ answer, and an empty result with one as unread.
 ### Azure
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph
 - [Search-MsecLogAnalytics](./docs/commands/Search-MsecLogAnalytics.md) - Run a bundled KQL query against a Log Analytics workspace
+- [Search-MsecDefenderHunting](./docs/commands/Search-MsecDefenderHunting.md) - Advanced hunting KQL against the Defender XDR event store (~30 days of raw telemetry)
   - -ResourceType ResourceChange answers what changed on a resource in the last 14 days, who changed it and from what value
 - [Invoke-MsecAzureVMScript](./docs/commands/Invoke-MsecAzureVMScript.md) - Run a bundled script on one or more Azure VMs
 - [Get-MsecAzureRoleAssignment](./docs/commands/Get-MsecAzureRoleAssignment.md) - Azure RBAC across every subscription, with role and principal names resolved and deleted principals kept

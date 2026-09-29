@@ -1,0 +1,12 @@
+// Entra sign-in volume and failure rate per application.
+// No time filter here: Search-MsecDefenderHunting passes the window as the API's timespan.
+AADSignInEventsBeta
+| summarize
+    SignIns   = count(),
+    Failures  = countif(ErrorCode != 0),
+    Users     = dcount(AccountObjectId),
+    Countries = dcount(Country),
+    LastSeen  = max(Timestamp)
+    by Application
+| extend FailureRate = round(100.0 * Failures / SignIns, 1)
+| sort by SignIns desc

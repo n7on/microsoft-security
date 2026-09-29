@@ -14,7 +14,7 @@ Get-EXO* commands run as the msec app without its private key leaving Key Vault.
 ## SYNTAX
 
 ```
-Connect-MsecExchangeOnline [-Organization] <String> [[-MinimumMinutes] <Int32>] [-ShowBanner] [<CommonParameters>]
+Connect-MsecExchangeOnline [[-Organization] <String>] [[-MinimumMinutes] <Int32>] [-ShowBanner] [<CommonParameters>]
 ```
 
 ## DESCRIPTION
@@ -65,6 +65,8 @@ Connect-MsecExchangeOnline -Organization contoso.com -MinimumMinutes 30
 ## PARAMETERS
 
 ### -Organization
+Optional.
+Resolved from Graph (the tenant's default verified domain) when omitted.
 The tenant's primary domain, e.g.
 contoso.onmicrosoft.com or contoso.com.
 Exchange
@@ -75,7 +77,7 @@ Type: String
 Parameter Sets: (All)
 Aliases:
 
-Required: True
+Required: False
 Position: 1
 Default value: None
 Accept pipeline input: False

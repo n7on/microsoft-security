@@ -139,3 +139,47 @@ Describe 'Get-MsecIntuneDevice' {
         }
     }
 }
+
+Describe 'Enrollment type decides whether management can be removed' {
+    BeforeEach {
+        InModuleScope Msec {
+            $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
+        }
+    }
+
+    It 'marks Apple ADE as automated and manual enrolment as not' {
+        # An ADE-enrolled Mac has a management profile the user cannot remove; a manually
+        # enrolled one does not, so every policy and CA decision resting on management can be
+        # ended by whoever holds the laptop. Measured live: 9 of 19 Macs were manual.
+        $rows = InModuleScope Msec {
+            Mock Invoke-MsecGraphRequest -MockWith {
+                @(
+                    [pscustomobject]@{ id='1'; deviceName='ADE Mac';    operatingSystem='macOS'
+                                       deviceEnrollmentType='appleBulkWithUser'; isSupervised=$true }
+                    [pscustomobject]@{ id='2'; deviceName='Manual Mac'; operatingSystem='macOS'
+                                       deviceEnrollmentType='userEnrollment';    isSupervised=$true }
+                )
+            }
+            @(Get-MsecIntuneDevice)
+        }
+
+        ($rows | Where-Object DeviceName -eq 'ADE Mac').IsAutomatedEnrollment    | Should -BeTrue
+        ($rows | Where-Object DeviceName -eq 'Manual Mac').IsAutomatedEnrollment | Should -BeFalse
+        # Both report supervised, which is why IsSupervised cannot be used for this.
+        ($rows | Where-Object DeviceName -eq 'Manual Mac').IsSupervised          | Should -BeTrue
+    }
+
+    It 'leaves IsAutomatedEnrollment null on Windows, where the enum cannot answer' {
+        # windowsAzureADJoin covers both Autopilot and a manual Entra join. $false would be a
+        # claim the data does not support.
+        $rows = InModuleScope Msec {
+            Mock Invoke-MsecGraphRequest -MockWith {
+                @([pscustomobject]@{ id='3'; deviceName='PC'; operatingSystem='Windows'
+                                     deviceEnrollmentType='windowsAzureADJoin' })
+            }
+            @(Get-MsecIntuneDevice)
+        }
+        $rows[0].IsAutomatedEnrollment | Should -BeNullOrEmpty
+        $rows[0].EnrollmentType        | Should -Be 'windowsAzureADJoin'
+    }
+}

@@ -1,0 +1,12 @@
+// Failed sign-ins grouped by user and Entra error code. A single user against many IPs or
+// countries is the shape worth looking at, so both are counted rather than listed per row.
+AADSignInEventsBeta
+| where ErrorCode != 0
+| summarize
+    Failures  = count(),
+    Apps      = dcount(Application),
+    IPs       = dcount(IPAddress),
+    Countries = make_set(Country, 10),
+    LastSeen  = max(Timestamp)
+    by AccountUpn, ErrorCode
+| sort by Failures desc

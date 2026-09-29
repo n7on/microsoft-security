@@ -28,6 +28,7 @@ function Connect-MsecExchangeOnline {
         so msec installs and runs normally on a machine that has never heard of Exchange.
 
     .PARAMETER Organization
+        Optional. Resolved from Graph (the tenant's default verified domain) when omitted.
         The tenant's primary domain, e.g. contoso.onmicrosoft.com or contoso.com. Exchange
         identifies the tenant by domain rather than by id, and app-only connections require it.
 
@@ -58,7 +59,7 @@ function Connect-MsecExchangeOnline {
     #>
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
+        [Parameter()]
         [string] $Organization,
 
         [ValidateRange(0, 60)]
@@ -77,6 +78,11 @@ function Connect-MsecExchangeOnline {
     # Exchange Online's own audience. Commercial only - the sovereign clouds use different
     # hosts, and guessing one would produce a token Exchange rejects with an error that looks
     # like a permission problem.
+    if (-not $Organization) {
+        $Organization = Get-MsecTenantDomain
+        Write-Verbose "Resolved organization from Graph: $Organization"
+    }
+
     $resource = 'https://outlook.office365.com'
     $environment = $script:MsecSession.Endpoints.EnvironmentName
     if ($environment -and $environment -ne 'AzureCloud') {

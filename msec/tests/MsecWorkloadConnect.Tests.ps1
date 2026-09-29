@@ -159,6 +159,11 @@ Describe 'Get-MsecExchangeMailboxPermission' -Skip:(-not $script:HasExo) {
 
     It 'drops NT AUTHORITY\SELF, which every mailbox grants itself' {
         $rows = InModuleScope Msec {
+            $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
+            Mock Get-ConnectionInformation -MockWith {
+                [PSCustomObject]@{ ConnectionUri = 'https://outlook.office365.com'
+                                   TenantID = 't'; AppId = 'c'; ConnectionId = 'x' }
+            }
             Mock Get-EXOMailbox -MockWith {
                 [pscustomobject]@{ DisplayName = 'Finance'; UserPrincipalName = 'finance@x.com'
                                    PrimarySmtpAddress = 'finance@x.com'; RecipientTypeDetails = 'SharedMailbox' }
@@ -177,6 +182,11 @@ Describe 'Get-MsecExchangeMailboxPermission' -Skip:(-not $script:HasExo) {
 
     It 'says "None" for a mailbox nobody else can open, and "Unreadable" when it could not look' {
         $rows = InModuleScope Msec {
+            $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
+            Mock Get-ConnectionInformation -MockWith {
+                [PSCustomObject]@{ ConnectionUri = 'https://outlook.office365.com'
+                                   TenantID = 't'; AppId = 'c'; ConnectionId = 'x' }
+            }
             Mock Get-EXOMailbox -MockWith {
                 [pscustomobject]@{ DisplayName = 'Private'; UserPrincipalName = 'p@x.com'; PrimarySmtpAddress = 'p@x.com'; RecipientTypeDetails = 'SharedMailbox' }
                 [pscustomobject]@{ DisplayName = 'Denied';  UserPrincipalName = 'd@x.com'; PrimarySmtpAddress = 'd@x.com'; RecipientTypeDetails = 'SharedMailbox' }
@@ -195,6 +205,11 @@ Describe 'Get-MsecExchangeMailboxPermission' -Skip:(-not $script:HasExo) {
 
     It 'names the directory role requirement when listing mailboxes is refused' {
         InModuleScope Msec {
+            $script:MsecSession = @{ TenantId = 't'; ClientId = 'c'; Tokens = @{} }
+            Mock Get-ConnectionInformation -MockWith {
+                [PSCustomObject]@{ ConnectionUri = 'https://outlook.office365.com'
+                                   TenantID = 't'; AppId = 'c'; ConnectionId = 'x' }
+            }
             Mock Get-EXOMailbox -MockWith { throw 'The term is not recognized as an authorized operation' }
             # Exchange.ManageAsApp alone is NOT enough, and Exchange does not say so.
             { Get-MsecExchangeMailboxPermission } | Should -Throw '*directory role*'

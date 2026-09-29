@@ -1,0 +1,7 @@
+// Device inventory as Defender last saw it. arg_max collapses the per-day rows DeviceInfo
+// writes to one current row per device, so a count here is devices and not observations.
+DeviceInfo
+| summarize arg_max(Timestamp, *) by DeviceId
+| project DeviceName, OSPlatform, OSVersion, JoinType, OnboardingStatus, SensorHealthState,
+          ExposureLevel, IsInternetFacing, DeviceType, LastSeen = Timestamp
+| sort by DeviceName asc

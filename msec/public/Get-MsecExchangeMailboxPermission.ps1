@@ -34,8 +34,8 @@ function Get-MsecExchangeMailboxPermission {
 
     .EXAMPLE
         Connect-Msec -KeyVaultName kv-msec -TenantId <guid> -ClientId <guid>
-        Connect-MsecExchangeOnline -Organization contoso.onmicrosoft.com
-        Get-MsecExchangeMailboxPermission
+        Connect-Msec -KeyVaultName kv-msec
+        Get-MsecExchangeMailboxPermission      # connects to Exchange by itself
 
     .EXAMPLE
         # The access review question: who can read mailboxes they do not own?
@@ -52,7 +52,7 @@ function Get-MsecExchangeMailboxPermission {
         PSCustomObject per grant, PSTypeName 'MsecExchangeMailboxPermission'.
 
     .NOTES
-        Needs Connect-MsecExchangeOnline first - see that command for why Exchange requires a
+        Needs Connect-Msec. The Exchange session is opened on first use - see Connect-MsecExchangeOnline for why Exchange requires a
         DIRECTORY ROLE and not just the Exchange.ManageAsApp app role.
 
         A mailbox whose permissions cannot be read emits a row with Grantee 'Unreadable' rather
@@ -68,9 +68,14 @@ function Get-MsecExchangeMailboxPermission {
         [switch] $IncludeInherited
     )
 
-    if (-not (Get-Command Get-EXOMailbox -ErrorAction SilentlyContinue)) {
-        throw 'Not connected to Exchange Online. Run Connect-MsecExchangeOnline -Organization <domain> first.'
-    }
+    # CONNECTS ITSELF, like Get-MsecTeamsPolicy and the Get-MsecPurview* commands: every other
+    # command here is one call after Connect-Msec, and a second connect step for this one is a
+    # trap rather than a feature.
+    #
+    # The old check was Get-Command Get-EXOMailbox, which answers whether the MODULE IS
+    # INSTALLED rather than whether anything is connected - true on a machine that has never
+    # signed in, and every call after it then failed on transport instead.
+    Initialize-MsecExoSession -Endpoint Exchange
 
     $mailboxParams = @{ ErrorAction = 'Stop' }
     if ($RecipientTypeDetails -notcontains 'All') {

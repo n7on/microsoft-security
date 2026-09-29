@@ -1,0 +1,12 @@
+// One row per user: how much they signed in, how often it failed, and from how many places.
+AADSignInEventsBeta
+| summarize
+    SignIns   = count(),
+    Failures  = countif(ErrorCode != 0),
+    Apps      = dcount(Application),
+    IPs       = dcount(IPAddress),
+    Countries = make_set(Country, 10),
+    Risky     = countif(isnotempty(RiskLevelDuringSignIn) and RiskLevelDuringSignIn != "none"),
+    LastSeen  = max(Timestamp)
+    by AccountUpn
+| sort by SignIns desc

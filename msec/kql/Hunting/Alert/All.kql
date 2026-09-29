@@ -1,0 +1,7 @@
+// Alerts grouped by what raised them and what they were called.
+AlertInfo
+| summarize
+    Alerts   = count(),
+    LastSeen = max(Timestamp)
+    by Severity, ServiceSource, DetectionSource, Title, Category
+| sort by Alerts desc

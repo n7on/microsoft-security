@@ -5,7 +5,21 @@ function Get-MsecIntuneDevice {
         shape suitable for filtering / grouping / exporting.
 
     .DESCRIPTION
-        Calls Microsoft Graph /v1.0/deviceManagement/managedDevices with a $select
+
+        HOW A DEVICE WAS ENROLLED DECIDES WHETHER A USER CAN REMOVE MANAGEMENT. An Apple device
+        enrolled through Automated Device Enrollment (deviceEnrollmentType appleBulkWithUser or
+        appleBulkWithoutUser) has a management profile the user cannot remove. One enrolled
+        manually - userEnrollment - does not, so every policy, compliance check and Conditional
+        Access decision that depends on management can be ended by the person holding the laptop.
+        Measured live: 9 of 19 Macs and 128 of 130 iOS devices were manually enrolled.
+
+        IsSupervised IS NOT THE ANSWER TO THAT QUESTION. It came back True on all 19 Macs
+        regardless of how they were enrolled, so filtering on it finds nothing. EnrollmentType is
+        the discriminator.
+
+        IsAutomatedEnrollment IS $null ON WINDOWS AND ANDROID, not $false. The enum reports
+        windowsAzureADJoin for both Autopilot and a manual Entra join, so it cannot answer the
+        question there - and a $false would claim it had.        Calls Microsoft Graph /v1.0/deviceManagement/managedDevices with a $select
         for the audit-relevant columns, paginates through @odata.nextLink, and
         emits one PSCustomObject per device.
 
@@ -18,6 +32,12 @@ function Get-MsecIntuneDevice {
         permission. Different from DeviceManagementConfiguration.Read.All (which
         msec also has) - configuration is about POLICIES, this is about
         DEVICES. A clearer error is raised on the typical 403.
+
+    .EXAMPLE
+        # Apple devices a user could unenrol at will.
+        Get-MsecIntuneDevice |
+            Where-Object { $_.IsAutomatedEnrollment -eq $false } |
+            Format-Table DeviceName, Os, OsVersion, EnrollmentType, ComplianceState
 
     .EXAMPLE
         # Compliance counts.
@@ -100,6 +120,11 @@ function Get-MsecIntuneDevice {
         'enrolledDateTime'
         'lastSyncDateTime'
         'serialNumber'
+        # How the device was enrolled decides whether a user can simply remove management.
+        # NB autopilotEnrolled is beta-only and 400s on v1.0 - do not add it here.
+        'deviceEnrollmentType'
+        'isSupervised'
+        'enrollmentProfileName'
     ) -join ','
 
     $path = "/v1.0/deviceManagement/managedDevices?`$select=$select"
@@ -143,6 +168,20 @@ function Get-MsecIntuneDevice {
             LastSyncDateTime     = if ($d.lastSyncDateTime) { [datetime]$d.lastSyncDateTime } else { $null }
             ComplianceGraceUntil = $grace
             SerialNumber         = $d.serialNumber
+            EnrollmentType       = $d.deviceEnrollmentType
+            IsSupervised         = $d.isSupervised
+            EnrollmentProfile    = $d.enrollmentProfileName
+            # $true only where the enum actually proves automated enrolment, $null where it
+            # cannot - see the help. Never $false on a platform the enum cannot answer for.
+            IsAutomatedEnrollment = $(
+                switch -Wildcard ([string] $d.deviceEnrollmentType) {
+                    'appleBulk*'      { $true;  break }   # ADE / Apple Business Manager
+                    'appleUser*'      { $false; break }   # Apple User Enrollment - removable
+                    'userEnrollment'  { $false; break }   # manual - removable
+                    ''                { $null;  break }
+                    default           { $null }           # Windows/Android: enum does not say
+                }
+            )
         }
     }
 }

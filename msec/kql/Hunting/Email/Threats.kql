@@ -1,0 +1,11 @@
+// Mail Defender flagged as a threat. Delivered counts the ones that reached a mailbox anyway -
+// LatestDeliveryLocation, not DeliveryLocation, so post-delivery action (ZAP) is accounted for.
+EmailEvents
+| where isnotempty(ThreatTypes)
+| summarize
+    Messages   = count(),
+    Recipients = dcount(RecipientEmailAddress),
+    Delivered  = countif(LatestDeliveryLocation !in ("Quarantine", "Deleted items", "Junk folder")),
+    LastSeen   = max(Timestamp)
+    by ThreatTypes, DetectionMethods, SenderFromDomain
+| sort by Messages desc

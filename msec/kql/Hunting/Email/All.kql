@@ -1,0 +1,9 @@
+// Mail flow by direction and where it landed.
+EmailEvents
+| summarize
+    Messages = count(),
+    Threats  = countif(isnotempty(ThreatTypes)),
+    Senders  = dcount(SenderFromAddress),
+    LastSeen = max(Timestamp)
+    by EmailDirection, DeliveryAction, DeliveryLocation
+| sort by Messages desc

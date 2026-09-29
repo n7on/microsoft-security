@@ -132,6 +132,11 @@ Update-TypeData -TypeName 'MsecIntuneScriptResult' `
 # decides whether a row needs looking at. ExclusionGroup shows up in AssignmentType, so a
 # carve-out is still visible here; AssignmentExcludedGroup names it. The count stays on the
 # object, just out of the default view.
+# ChecksNothing next to AssignmentCount, because that pair is the finding: a policy can be
+# assigned, report every device compliant, and enforce nothing at all.
+Update-TypeData -TypeName 'MsecIntuneCompliancePolicy' `
+    -DefaultDisplayPropertySet 'DisplayName', 'Platform', 'AssignmentCount', 'OsMinimumVersion', 'ConfiguredCheckCount', 'ChecksNothing' `
+    -Force
 Update-TypeData -TypeName 'MsecIntuneConfigurationProfile' `
     -DefaultDisplayPropertySet 'DisplayName', 'Source', 'Platform', 'AssignmentType', 'AssignmentGroup', 'Status' `
     -Force
@@ -154,6 +159,32 @@ Update-TypeData -TypeName 'MsecDefenderAlert' `
 # a re-read returned, not what was requested, and Changed is false when any field did not hold.
 Update-TypeData -TypeName 'MsecDefenderAlertChange' `
     -DefaultDisplayPropertySet 'Id', 'Severity', 'Title', 'StatusBefore', 'StatusAfter', 'Changed', 'CommentAdded' `
+    -Force
+
+# Purview rows are wide because the interesting facts are the derived ones: Mode vs IsEnforcing,
+# and configured vs enabled. These tables show the columns a reviewer scans first.
+Update-TypeData -TypeName 'MsecPurviewDlpPolicy' `
+    -DefaultDisplayPropertySet 'Name', 'Mode', 'IsEnforcing', 'ExchangeScope', 'SharePointScope', 'OneDriveScope', 'TeamsScope', 'BlockingRuleCount' `
+    -Force
+
+Update-TypeData -TypeName 'MsecPurviewSensitivityLabel' `
+    -DefaultDisplayPropertySet 'Priority', 'DisplayName', 'EncryptionConfigured', 'EncryptionEnabled', 'ContentMarkingEnabled', 'IsPublished' `
+    -Force
+
+Update-TypeData -TypeName 'MsecPurviewRetention' `
+    -DefaultDisplayPropertySet 'Kind', 'Name', 'Action', 'Duration', 'IsInForce' `
+    -Force
+
+Update-TypeData -TypeName 'MsecPurviewAutoLabelingPolicy' `
+    -DefaultDisplayPropertySet 'Name', 'Mode', 'IsEnforcing', 'AppliedLabel', 'SharePointScope', 'OneDriveScope', 'RuleCount' `
+    -Force
+
+Update-TypeData -TypeName 'MsecPurviewInformationBarrier' `
+    -DefaultDisplayPropertySet 'Name', 'State', 'IsActive', 'AssignedSegment' `
+    -Force
+
+Update-TypeData -TypeName 'MsecPurviewAlertPolicy' `
+    -DefaultDisplayPropertySet 'Name', 'Category', 'Severity', 'IsEnabled', 'NotificationEnabled', 'IsSystemRule' `
     -Force
 
 Update-TypeData -TypeName 'MsecDefenderIncidentChange' `

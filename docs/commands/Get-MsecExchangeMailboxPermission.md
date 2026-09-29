@@ -46,8 +46,8 @@ collapsing them would hide one of them being removed.
 ### EXAMPLE 1
 ```
 -ClientId <guid>
-Connect-MsecExchangeOnline -Organization contoso.onmicrosoft.com
-Get-MsecExchangeMailboxPermission
+Connect-Msec -KeyVaultName kv-msec
+Get-MsecExchangeMailboxPermission      # connects to Exchange by itself
 ```
 
 ### EXAMPLE 2
@@ -113,7 +113,8 @@ This cmdlet supports the common parameters: -Debug, -ErrorAction, -ErrorVariable
 
 ### PSCustomObject per grant, PSTypeName 'MsecExchangeMailboxPermission'.
 ## NOTES
-Needs Connect-MsecExchangeOnline first - see that command for why Exchange requires a
+Needs Connect-Msec.
+The Exchange session is opened on first use - see Connect-MsecExchangeOnline for why Exchange requires a
 DIRECTORY ROLE and not just the Exchange.ManageAsApp app role.
 
 A mailbox whose permissions cannot be read emits a row with Grantee 'Unreadable' rather

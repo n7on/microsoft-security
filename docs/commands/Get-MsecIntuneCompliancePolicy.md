@@ -14,10 +14,29 @@ Lists Intune compliance policies - what defines whether a device is "compliant"
 ## SYNTAX
 
 ```
-Get-MsecIntuneCompliancePolicy [-IncludeStatus] [<CommonParameters>]
+Get-MsecIntuneCompliancePolicy [-IncludeStatus] [-IncludeSettings]
+ [<CommonParameters>]
 ```
 
 ## DESCRIPTION
+A POLICY THAT CHECKS NOTHING LOOKS EXACTLY LIKE A HEALTHY ONE.
+Name, platform and
+assignment count say nothing about whether the policy enforces anything, and a policy
+with no settings configured reports every device as compliant because there is nothing
+to fail.
+Measured live: a macOS baseline assigned to all licensed users since 2021 had
+osMinimumVersion empty and password, encryption, firewall and system-integrity all
+False - 17 of 19 devices "compliant", including two on an unsupported major version.
+
+So ConfiguredCheckCount and ChecksNothing are on every row, not behind a switch.
+The
+rules for deciding whether a setting counts are written down in
+Get-MsecCompliancePolicyCheck rather than guessed at per platform.
+
+OsMinimumVersion IS PROMOTED OUT OF THE SETTINGS because it is the one compliance
+setting that turns a device inventory into a patch-compliance answer.
+Empty means the
+policy does not care what version a device runs, which is a finding rather than a blank. 
 Compliance policies are *separate from* configuration policies in Intune:
   - Configurations enforce a state on a device (e.g.
 "BitLocker on").
@@ -39,11 +58,25 @@ the same permission Get-MsecIntuneConfigurationProfile uses.
 
 ### EXAMPLE 1
 ```
+# Assigned, reporting compliant, and enforcing nothing.
+Get-MsecIntuneCompliancePolicy |
+    Where-Object { $_.AssignmentCount -gt 0 -and $_.ChecksNothing }
+```
+
+### EXAMPLE 2
+```
+# Which platforms have a minimum OS version, and which do not.
+Get-MsecIntuneCompliancePolicy |
+    Format-Table DisplayName, Platform, AssignmentCount, OsMinimumVersion, ConfiguredCheckCount
+```
+
+### EXAMPLE 3
+```
 # Quick inventory:
 Get-MsecIntuneCompliancePolicy | Format-Table -AutoSize
 ```
 
-### EXAMPLE 2
+### EXAMPLE 4
 ```
 # Compliance policies with devices failing:
 Get-MsecIntuneCompliancePolicy -IncludeStatus |
@@ -58,6 +91,23 @@ Get-MsecIntuneCompliancePolicy -IncludeStatus |
 Fetch the per-policy device check-in counts.
 Off by default to keep the call cheap
 on large tenants.
+
+```yaml
+Type: SwitchParameter
+Parameter Sets: (All)
+Aliases:
+
+Required: False
+Position: Named
+Default value: False
+Accept pipeline input: False
+Accept wildcard characters: False
+```
+
+### -IncludeSettings
+Attach every compliance setting and its value as a Settings property.
+Costs nothing
+extra - the list endpoint already returns them.
 
 ```yaml
 Type: SwitchParameter

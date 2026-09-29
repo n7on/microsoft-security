@@ -14,9 +14,28 @@
 #   obvious afterwards. It is refused, and the half-open Graph session is closed on the way out.
 
 BeforeAll {
+    $script:StubbedGraphCommands = @()
     Import-Module (Join-Path $PSScriptRoot '..' 'msec.psm1') -Force -ErrorAction Stop
+
+    # Microsoft.Graph.Authentication is NOT a dependency of msec - only Connect-MsecAdmin needs
+    # it, and it checks at run time. It is preinstalled on the Windows and Ubuntu GitHub images
+    # but NOT on the macOS one, so these tests passed on two runners and failed on the third:
+    # Pester's Mock requires the command to EXIST, and a missing one fails as "Could not find
+    # Command Get-MgContext" rather than as anything pointing at the real cause.
+    #
+    # Stubbed only when absent, so a machine that has the real module still mocks the real
+    # command and the two behave identically.
+    foreach ($graphCmd in 'Get-MgContext', 'Connect-MgGraph', 'Disconnect-MgGraph') {
+        if (-not (Get-Command $graphCmd -ErrorAction SilentlyContinue)) {
+            Set-Item "function:global:$graphCmd" -Value { param() } -Force
+            $script:StubbedGraphCommands += $graphCmd
+        }
+    }
 }
-AfterAll { Remove-Module msec -Force -ErrorAction SilentlyContinue }
+AfterAll {
+    foreach ($graphCmd in $script:StubbedGraphCommands) {
+        Remove-Item "function:global:$graphCmd" -ErrorAction SilentlyContinue
+    } Remove-Module msec -Force -ErrorAction SilentlyContinue }
 
 Describe 'Connect-MsecAdmin' {
 

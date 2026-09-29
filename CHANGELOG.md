@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- The `Connect-MsecAdmin`, `Set-MsecDefenderAlert` and `Set-MsecDefenderIncident` tests failed on
+  the macOS CI runner and passed on Windows and Ubuntu.
+
+  They mock `Get-MgContext`, `Connect-MgGraph` and `Disconnect-MgGraph`, and Pester's `Mock`
+  requires the command to EXIST - a missing one fails as "Could not find Command Get-MgContext"
+  rather than as anything pointing at the real cause. `Microsoft.Graph.Authentication` is
+  preinstalled on the Windows and Ubuntu GitHub images but not the macOS one, so the same suite
+  passed on two runners and failed on the third.
+
+  Installing it in CI was the wrong fix: unlike Az, it is deliberately NOT a dependency of msec -
+  only `Connect-MsecAdmin` needs it, and it checks at run time. The tests now stub those three
+  commands, and ONLY when they are genuinely absent, so a machine with the real module still
+  mocks the real command and the two behave identically. Same pattern the Purview tests already
+  use for the optional ExchangeOnlineManagement cmdlets.
+
 ## [0.4.0] - 2026-09-29
 
 ### Added

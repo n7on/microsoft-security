@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-29
+
 ### Added
 - `Get-MsecIntuneDevice` now returns `EnrollmentType`, `IsSupervised`, `EnrollmentProfile` and
   `IsAutomatedEnrollment`. How a device was enrolled decides whether a user can simply remove

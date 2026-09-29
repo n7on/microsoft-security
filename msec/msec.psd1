@@ -1,6 +1,6 @@
 @{
     RootModule        = 'msec.psm1'
-    ModuleVersion     = '0.3.0'
+    ModuleVersion     = '0.4.0'
     GUID              = '5a8c1f2b-9d4e-4b7c-8a3f-1e6d2b9c4a7f'
     Author            = 'Anton Lindstrom'
     Copyright         = '(c) 2026 Anton Lindström. Licensed under the MIT License.'
@@ -135,6 +135,40 @@
             ProjectUri = 'https://github.com/n7on/microsoft-security'
 
             ReleaseNotes = @'
+v0.4.0
+- Microsoft Purview: Connect-MsecPurview plus Get-MsecPurviewDlpPolicy,
+  Get-MsecPurviewSensitivityLabel, Get-MsecPurviewRetention, Get-MsecPurviewAutoLabelingPolicy,
+  Get-MsecPurviewInformationBarrier and Get-MsecPurviewAlertPolicy. No new consent needed - the
+  existing Key Vault certificate reaches Security & Compliance PowerShell. Rows separate what is
+  CONFIGURED from what is IN FORCE, because a disabled DLP policy, an unpublished retention
+  label and a label whose encryption is switched off all look healthy in a policy list.
+- Search-MsecDefenderHunting: advanced hunting KQL against the Defender XDR event store, with
+  nine bundled queries under kql/Hunting. The .kql files carry no time filter - the window is
+  the API's own timespan parameter. A table belonging to an un-onboarded product fails to
+  resolve rather than returning zero rows, and the error says so.
+- FIRST WRITE COMMANDS: Connect-MsecAdmin establishes a delegated, interactive session, and
+  Set-MsecDefenderAlert / Set-MsecDefenderIncident use it. The app registration still holds only
+  *.Read.All, so the certificate cannot change anything - writes run as a named person, subject
+  to Conditional Access and bounded by that person's own RBAC. Both re-read after writing and
+  report the OBSERVED state, polling briefly because XDR settles asynchronously.
+- Grant-MsecAzureDevOpsPermission replaces tools/Grant-MsecAzureDevOpsPermission.ps1, which was
+  referenced by four help texts and never shipped with the module. It no longer needs a personal
+  access token - the namespace, ACL and identity APIs all accept an ordinary Entra token - and
+  -Apply is replaced by -WhatIf / -Confirm.
+- Get-MsecIntuneCompliancePolicy now reports OsMinimumVersion, ConfiguredCheckCount and
+  ChecksNothing. A policy with no settings configured reports every device compliant because
+  there is nothing to fail, and was previously indistinguishable from a healthy one.
+- Get-MsecIntuneDevice now reports EnrollmentType and IsAutomatedEnrollment. An Apple device
+  enrolled manually has a management profile the user can remove; one enrolled through Automated
+  Device Enrollment does not. IsAutomatedEnrollment is $null on Windows, where the enum cannot
+  tell Autopilot from a manual Entra join.
+- Get-MsecDefenderAlert and Get-MsecDefenderIncident: row-level Defender XDR, with redirected
+  incidents visible and droppable rather than silently double-counted.
+- Get-MsecAzureDomainService, plus KQL for Entra Domain Services sign-ins, Azure resource change
+  history and SQL Server posture.
+- "Read-only by design" is now stated accurately: the app registration holds read permissions
+  only, and the commands that write do so as the signed-in user.
+
 v0.3.0
 - Microsoft Teams: Connect-MsecTeams and Get-MsecTeamsPolicy - external access and federation,
   guest access, meeting lobby and anonymous join, recording, app installation, and file sharing

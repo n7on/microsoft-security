@@ -1,17 +1,17 @@
-# Msec
+# msec
 
 [![CI](https://github.com/n7on/microsoft-security/actions/workflows/ci.yml/badge.svg)](https://github.com/n7on/microsoft-security/actions/workflows/ci.yml)
-[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/Msec)](https://www.powershellgallery.com/packages/Msec)
-[![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/Msec)](https://www.powershellgallery.com/packages/Msec)
+[![PowerShell Gallery Version](https://img.shields.io/powershellgallery/v/msec)](https://www.powershellgallery.com/packages/msec)
+[![PowerShell Gallery Downloads](https://img.shields.io/powershellgallery/dt/msec)](https://www.powershellgallery.com/packages/msec)
 [![License](https://img.shields.io/github/license/n7on/microsoft-security)](https://github.com/n7on/microsoft-security/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)](#)
 
-A PowerShell module for reading Microsoft security posture - Secure Score, Defender XDR, Entra ID, Intune, Azure - as flat objects you can filter, group and export. The app registration holds read permissions only, so the certificate in Key Vault cannot change your tenant; the few commands that write run as YOU, through a separate ``Connect-MsecAdmin`` sign-in. Authentication is certificate-based against that app registration, and the private key never leaves Azure Key Vault. Requires PowerShell 7 on Windows, Linux, or macOS.
+A PowerShell module for reading Microsoft security posture - Secure Score, Defender XDR, Entra ID, Intune, Azure - as flat objects you can filter, group and export. The app registration holds read permissions only, so the certificate in Key Vault cannot change your tenant; the few commands that write run as YOU, through a separate `Connect-MsecAdmin` sign-in. Authentication is certificate-based against that app registration, and the private key never leaves Azure Key Vault. Requires PowerShell 7 on Windows, Linux, or macOS.
 
 ## Install
 
 ```powershell
-Install-Module Msec
+Install-Module msec
 
 # One-time setup: creates the app registration, its certificate in Key Vault, and
 # consents the read permissions. Safe to re-run - it updates rather than duplicates.
@@ -20,8 +20,12 @@ New-MsecApp -KeyVaultName kv-msec -TenantId <guid>
 Connect-Msec -KeyVaultName kv-msec -TenantId <guid> -ClientId <guid>
 ```
 
-Every `Get-Msec*` command reads. Nothing in this module writes to a tenant except
-`New-MsecApp`, which exists to create its own app registration.
+Every `Get-Msec*` and `Search-Msec*` command reads. Four commands write, and all four run as
+YOU rather than as the app: `New-MsecApp` creates the app registration,
+`Grant-MsecAzureDevOpsPermission` grants it access inside Azure DevOps, and
+`Set-MsecDefenderAlert` / `Set-MsecDefenderIncident` change alert and incident state through a
+separate `Connect-MsecAdmin` sign-in. The app registration itself holds only `*.Read.All`, so
+the certificate in Key Vault cannot change anything.
 
 ## Setup by workload
 
@@ -37,6 +41,7 @@ doing.
 | Exchange Online | `Exchange.ManageAsApp` + directory role | nothing |
 | SharePoint Online | `Sites.Read.All` on Graph **and** on SharePoint | nothing |
 | Microsoft Teams | `application_access` + directory role | nothing |
+| Microsoft Purview | `Exchange.ManageAsApp` + directory role | nothing - but role groups decide which cmdlets the app sees |
 | Azure DevOps | nothing - Entra has no say here | organization membership, and permissions per namespace |
 
 ### Which store a KQL question belongs in
@@ -63,7 +68,7 @@ never look the same.
 
 Most commands run as the **app registration** - the certificate in Key Vault, read-only, and
 whatever `New-MsecApp` consented. A handful run as **you**, through the Az context, and need
-Azure RBAC on top of anything Entra granted. Two use both, deliberately.
+Azure RBAC on top of anything Entra granted. Three use two identities, each for a stated reason.
 
 | Command | Runs as | Needs |
 |---|---|---|
@@ -76,8 +81,9 @@ Azure RBAC on top of anything Entra granted. Two use both, deliberately.
 | `Invoke-MsecAzureVMScript` | you | **Virtual Machine Contributor** - `runCommand/action`, which Reader does NOT grant |
 | `Set-MsecDefenderAlert` | you | delegated `SecurityAlert.ReadWrite.All` via `Connect-MsecAdmin` - the app cannot do this |
 | `Set-MsecDefenderIncident` | you | delegated `SecurityIncident.ReadWrite.All` via `Connect-MsecAdmin` |
+| `Grant-MsecAzureDevOpsPermission` | you | permission to manage ADO permissions (Project Collection Administrator or equivalent) |
 | `Get-MsecAzureRoleAssignment` | both | Reader for the assignments; the app resolves principal names through Graph |
-| `Select-MsecAzureContext` | both | an Az context to switch, and the app session to reconnect afterwards |
+| `Select-MsecAzureContext` | you | an Az context to switch between subscriptions |
 
 `Invoke-MsecAzureVMScript` is the one to know about on the Azure side: Reader alone gets a 403
 there, because `runCommand/action` is a Contributor-level right even though the bundled scripts
@@ -101,10 +107,6 @@ is the bootstrap), `Connect-MsecTeams -AsCurrentUser` selects between two modes 
 the app's Graph session, because `Get-AzADUser` on a permissionless ARM connection returns blank
 names rather than failing.
 
-`Get-MsecAzureRoleAssignment` splits its lookups on purpose - assignments and role names
-through ARM, principals through the app's Graph session. `Get-AzADUser` on an ARM service
-connection with no Graph permissions does not fail, it returns blank names, so a report would
-come back full of empty principals with no error.
 
 ### Exchange Online, SharePoint Online, Teams
 
@@ -136,8 +138,6 @@ it, and grant the group what it needs. A group rather than the app directly: the
 then granted once and membership becomes the control.
 
 ```powershell
-$pat = Read-Host -AsSecureString 'PAT'   # Security (manage) scope, short-lived
-
 # What can be granted?
 Grant-MsecAzureDevOpsPermission -Organization contoso -ListPermissions
 
@@ -147,11 +147,15 @@ Grant-MsecAzureDevOpsPermission -Organization contoso `
     -Scope Organization
 ```
 
-Drop `-Apply` for a dry run; it reads the current ACL and reports what it would change.
+Add `-WhatIf` for a dry run; it reads the current ACL and reports what it would change.
 
-A PAT is needed because the delegated Azure token cannot read or write ACLs - Azure DevOps
-answers 403. The permission bit and namespace id are resolved by NAME at run time, so a
-renumbered bit fails loudly rather than granting something else.
+No personal access token is needed. The security namespace, access control list and identity
+APIs all accept an ordinary Entra token, so this uses the sign-in you already have. It runs as
+YOU rather than as the app, deliberately: the app is usually the grantee, and an identity that
+could grant itself permissions would make the exercise circular.
+
+The permission bit and namespace id are resolved by NAME at run time, so a renumbered bit fails
+loudly rather than granting something else.
 
 Which permission each command needs:
 
@@ -269,7 +273,8 @@ establishes, and that is undocumented internal plumbing to depend on.
 Nothing extra needs consenting, but the app does need a directory role (Global Reader or
 Compliance Administrator), which is what a 403 there usually means.
 
-### Entra ID- [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
+### Entra ID
+- [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
 - [Get-MsecEntraLicense](./docs/commands/Get-MsecEntraLicense.md) - Subscribed SKUs and the service plans each one turns on
 - [Get-MsecEntraRoleHolder](./docs/commands/Get-MsecEntraRoleHolder.md) - Who holds which directory role, separating what a role is assigned to from who effectively holds it, including PIM-eligible assignments and role-assignable groups expanded
 - [Get-MsecEntraConditionalAccessPolicy](./docs/commands/Get-MsecEntraConditionalAccessPolicy.md) - Conditional Access policies with conditions and grant controls flattened to columns
@@ -334,6 +339,7 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Export-MsecAzureDevOpsReport](./docs/commands/Export-MsecAzureDevOpsReport.md) - Every area above in one snapshot workbook, with a chart apiece
 - [Get-MsecAzureDevOpsRepository](./docs/commands/Get-MsecAzureDevOpsRepository.md) - Every repository with the protections on its default branch: reviewers, build validation, secret push protection
 - [Get-MsecAzureDevOpsServiceConnection](./docs/commands/Get-MsecAzureDevOpsServiceConnection.md) - Every service connection in an organization, with its auth scheme and the projects it is shared to
+- [Grant-MsecAzureDevOpsPermission](./docs/commands/Grant-MsecAzureDevOpsPermission.md) - **Writes.** Grants the app its access inside Azure DevOps, which Entra cannot; runs as you, no PAT needed
 
 Every command has full help, including the reasoning behind its output shape:
 

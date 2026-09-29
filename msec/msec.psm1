@@ -158,7 +158,7 @@ Update-TypeData -TypeName 'MsecDefenderAlert' `
 # StatusBefore sits next to StatusAfter because the pair is the point: the second column is what
 # a re-read returned, not what was requested, and Changed is false when any field did not hold.
 Update-TypeData -TypeName 'MsecDefenderAlertChange' `
-    -DefaultDisplayPropertySet 'Id', 'Severity', 'Title', 'StatusBefore', 'StatusAfter', 'Changed', 'CommentAdded' `
+    -DefaultDisplayPropertySet 'Id', 'Severity', 'Title', 'StatusBefore', 'StatusAfter', 'Changed' `
     -Force
 
 # Purview rows are wide because the interesting facts are the derived ones: Mode vs IsEnforcing,
@@ -222,6 +222,18 @@ Update-TypeData -TypeName 'MsecAzureDevOpsExtension' `
 
 Update-TypeData -TypeName 'MsecAzureDevOpsOrganization' `
     -DefaultDisplayPropertySet 'Organization', 'Owner', 'Url' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsGrant' `
+    -DefaultDisplayPropertySet 'Target', 'Identity', 'Granted', 'Mechanism', 'Result' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsPermissionName' `
+    -DefaultDisplayPropertySet 'Namespace', 'Name', 'Bit', 'DisplayName' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsRoleAssignment' `
+    -DefaultDisplayPropertySet 'Project', 'Resource', 'Identity', 'Role', 'Access' `
     -Force
 
 # Not a posture row: one per AREA of Export-MsecAzureDevOpsReport, saying what was collected

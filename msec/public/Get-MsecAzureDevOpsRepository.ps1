@@ -67,8 +67,8 @@ function Get-MsecAzureDevOpsRepository {
         repositories the app happens to see and says nothing about the rest - measured on a live
         organization, 95 of 220. Grant it once for the whole organization:
 
-            ./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization <org> `
-                -Identity <group> -Permission GenericRead -Scope Organization -Pat $pat -Apply
+            Grant-MsecAzureDevOpsPermission -Organization <org> `
+                -Identity <group> -Permission GenericRead -Scope Organization
     #>
     [CmdletBinding()]
     [OutputType([PSCustomObject])]

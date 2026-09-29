@@ -320,6 +320,32 @@ All notable changes to this project will be documented in this file.
   correctness question; a different `AppId` on the right tenant is only noted verbosely.
 
 ### Changed
+- `tools/Grant-MsecAzureDevOpsPermission.ps1` is now the `Grant-MsecAzureDevOpsPermission`
+  command, shipped with the module.
+
+  THE HELP POINTED AT A FILE NOBODY HAD. `tools/` sits outside the module folder, so it is not
+  published - but four places referenced it, including the 403 guidance in
+  `Get-MsecAzureDevOpsRepository` and `Get-MsecAzureDevOpsServiceConnection`. Anyone who
+  installed from the Gallery, hit a permissions error and followed the help was sent to
+  `./tools/Grant-MsecAzureDevOpsPermission.ps1`, which did not exist on their machine.
+
+  Its stated reason for living outside was "msec is read-only and this WRITES". That premise was
+  removed by `Connect-MsecAdmin` and the `Set-*` commands, and `New-MsecApp` already ships a
+  setup command that writes considerably more - it creates an app registration, grants API
+  permissions and assigns directory roles.
+
+  THE PERSONAL ACCESS TOKEN IS GONE. It took a PAT; it never needed one. The security namespace,
+  access control list and identity APIs all accept an ordinary Entra token for the Azure DevOps
+  resource - verified against all three before the parameter was removed. A PAT is a long-lived
+  credential, and asking people to create one for a setup task is worse than using the sign-in
+  they already have. That also makes the command single-identity, which is now the module's rule.
+
+  It runs as the SIGNED-IN USER rather than as the app, deliberately: the app is usually the
+  grantee, and an identity that could grant itself permissions would make the exercise circular.
+
+  `-Apply` is replaced by the standard `-WhatIf` / `-Confirm` with `ConfirmImpact = 'High'`, and
+  the list modes emit objects instead of `Write-Host`, so `-ListPermissions` and `-ListRoles`
+  can be filtered and exported like every other command's output.
 - `Get-MsecExchangeMailboxPermission` now opens its Exchange session on first use, which was the
   last command in the module still demanding a manual connect. `Get-MsecTeamsPolicy` and
   `Get-MsecSharePointSiteUser` already connected themselves, and the Purview commands now do -
@@ -1672,6 +1698,27 @@ All notable changes to this project will be documented in this file.
   from user-context scripts are not covered.
 
 ### Removed
+- `Set-MsecDefenderAlert -Comment`, and the `Invoke-MsecAdminDefenderRequest` helper behind it.
+
+  IT PUT TWO DIFFERENT USER IDENTITIES INSIDE ONE COMMAND. Status and classification went through
+  the Connect-MsecAdmin delegated session; the comment went to the Defender for Endpoint API on a
+  separate Az-context token, because that host will not accept a Graph token. Nothing stopped those
+  being two different people - an alert could be resolved by one and commented by another - and
+  nothing in the output said which was which.
+
+  It bought very little. The Defender API only knows ENDPOINT alerts: measured, 29 of 569 on one
+  tenant, and none of the alerts anyone there actually triaged, which are Defender for Cloud and
+  report `serviceSource` `unknownFutureValue`. Five per cent coverage did not justify a second
+  authentication path.
+
+  Notes belong on the incident - `Set-MsecDefenderIncident -ResolvingComment` - which Microsoft
+  describes as explaining the resolution and the classification choice and which works for every
+  incident whatever raised it. `Get-MsecDefenderAlert` keeps `ProviderAlertId`: it is the alert's
+  id in the product that raised it and is useful for cross-referencing the portal, independently of
+  the removed feature.
+
+  A test now asserts the command reaches only the delegated Graph session, so a second transport
+  reappearing is a failure whatever it authenticates with.
 - `Export-MsecWordReport`. It was the module's only optional-dependency command, requiring
   PSWriteOffice to be installed separately, and its tests skipped entirely when that module
   was absent - so on CI and on most machines it was shipped but never exercised. Pipe to

@@ -139,14 +139,13 @@ Describe 'Set-MsecDefenderIncident' {
         $values | Should -Contain 'awaitingAction'
     }
 
-    It 'keeps the two comment routes distinct: -Comment on alerts, -ResolvingComment on incidents' {
-        # These are not the same field and must not be conflated. An alert comment is written to
-        # the Defender for Endpoint API and only works on endpoint alerts; an incident's
-        # resolvingComment is a Graph property that works on every incident. Graph has no
-        # writable comment on an alert, which is why the alert one is not called that.
-        (Get-Command Set-MsecDefenderAlert).Parameters.Keys    | Should -Contain 'Comment'
-        (Get-Command Set-MsecDefenderAlert).Parameters.Keys    | Should -Not -Contain 'ResolvingComment'
+    It 'is the only place a note can be written - alerts have no comment at all' {
+        # Graph has no writable comment on an alert. Set-MsecDefenderAlert briefly had a -Comment
+        # that routed to the Defender for Endpoint API, which covered 29 of 569 alerts on the
+        # measured tenant and put a second user identity inside one command. It was removed, so
+        # resolvingComment on the incident is now the single route for a resolution note.
         (Get-Command Set-MsecDefenderIncident).Parameters.Keys | Should -Contain 'ResolvingComment'
-        (Get-Command Set-MsecDefenderIncident).Parameters.Keys | Should -Not -Contain 'Comment'
+        (Get-Command Set-MsecDefenderAlert).Parameters.Keys    | Should -Not -Contain 'Comment'
+        (Get-Command Set-MsecDefenderAlert).Parameters.Keys    | Should -Not -Contain 'ResolvingComment'
     }
 }

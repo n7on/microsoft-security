@@ -245,8 +245,8 @@ function Get-MsecAzureDevOpsServiceConnection {
     #   ViewEndpoint (bit 16) -> inherited Reader -> still an empty list
     #   Use          (bit 1)  -> inherited User   -> what this API checks
     #
-    #   ./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization <org> -Identity <group> `
-    #       -Namespace ServiceEndpoints -Permission Use -Scope Organization -Pat $pat -Apply
+    #   Grant-MsecAzureDevOpsPermission -Organization <org> -Identity <group> `
+    #       -Namespace ServiceEndpoints -Permission Use -Scope Organization
     #
     # Verified: one write took an organization from 70 connections in 1 project to 243 across 14.
     # Per-project role assignments (-RoleName User -Scope Project) do the same thing one project

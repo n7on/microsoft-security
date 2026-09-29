@@ -296,160 +296,6 @@ Describe 'Set-MsecDefenderAlert' {
         }
     }
 
-    Context 'the comment, which is not a Graph operation' {
-
-        BeforeEach {
-            InModuleScope msec {
-                $script:MsecAdminSession = [PSCustomObject]@{
-                    Account = 'me@contoso.com'; TenantId = 't'
-                    GrantedScope = @('SecurityAlert.ReadWrite.All')
-                }
-            }
-        }
-
-        It 'sends an endpoint alert comment to the Defender API keyed on providerAlertId' {
-            $sent = InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    @{ id = 'a1'; title = 'T'; severity = 'low'; status = 'new'
-                       serviceSource = 'microsoftDefenderForEndpoint'; providerAlertId = 'da-1_1' }
-                }
-                $script:path = $null; $script:body = $null
-                Mock Invoke-MsecAdminDefenderRequest -MockWith {
-                    if ($Method -eq 'PATCH') { $script:path = $Path; $script:body = $Body }
-                    @{ comments = @(@{ comment = 'Authorised test' }) }
-                }
-
-                $null = 'a1' | Set-MsecDefenderAlert -Comment 'Authorised test' -Confirm:$false
-                [PSCustomObject]@{ Path = $script:path; Body = $script:body }
-            }
-
-            # Keyed on the provider id, not the Graph id.
-            $sent.Path | Should -Be '/api/alerts/da-1_1'
-            $sent.Body['comment'] | Should -Be 'Authorised test'
-        }
-
-        It 'REFUSES by name on a non-endpoint alert instead of dropping the comment' {
-            $result = InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    @{ id = 'a1'; title = 'T'; severity = 'low'; status = 'new'
-                       serviceSource = 'microsoftDefenderForOffice365'; providerAlertId = 'x' }
-                }
-                Mock Invoke-MsecAdminDefenderRequest -MockWith { @{} }
-
-                $row = 'a1' | Set-MsecDefenderAlert -Comment 'nope' -Confirm:$false `
-                    -WarningVariable w -WarningAction SilentlyContinue
-                [PSCustomObject]@{ Row = $row; Warnings = $w }
-            }
-
-            $result.Row.CommentAdded | Should -BeFalse
-            ($result.Warnings -join ' ') | Should -Match 'microsoftDefenderForOffice365'
-            ($result.Warnings -join ' ') | Should -Match 'Set-MsecDefenderIncident'
-            Should -Invoke Invoke-MsecAdminDefenderRequest -Times 0 -Scope It -ModuleName msec
-        }
-
-        It 'reports CommentAdded false when the comment is not in the thread on re-read' {
-            $row = InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    @{ id = 'a1'; title = 'T'; severity = 'low'; status = 'new'
-                       serviceSource = 'microsoftDefenderForEndpoint'; providerAlertId = 'da-1_1' }
-                }
-                # PATCH returns 200, but the thread comes back without it.
-                Mock Invoke-MsecAdminDefenderRequest -MockWith { @{ comments = @() } }
-
-                'a1' | Set-MsecDefenderAlert -Comment 'vanished' -Confirm:$false `
-                    -WarningAction SilentlyContinue
-            }
-
-            $row.CommentAdded | Should -BeFalse
-        }
-
-        It 'leaves CommentAdded null when it was never asked for' {
-            $row = InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    @{ id = 'a1'; title = 'T'; severity = 'low'; status = 'resolved'
-                       serviceSource = 'microsoftDefenderForEndpoint' }
-                }
-                'a1' | Set-MsecDefenderAlert -Status resolved -Confirm:$false
-            }
-
-            $row.CommentAdded | Should -BeNullOrEmpty
-            $row.Changed      | Should -BeTrue
-        }
-
-        It 'allows a comment with no other change, as the Defender API does' {
-            InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    @{ id = 'a1'; title = 'T'; severity = 'low'; status = 'new'
-                       serviceSource = 'microsoftDefenderForEndpoint'; providerAlertId = 'da-1_1' }
-                }
-                Mock Invoke-MsecAdminDefenderRequest -MockWith { @{ comments = @(@{ comment = 'note' }) } }
-
-                $null = 'a1' | Set-MsecDefenderAlert -Comment 'note' -Confirm:$false
-
-                # No Graph PATCH at all - the comment is not a Graph operation.
-                Should -Invoke Invoke-MsecAdminGraphRequest -Times 0 -Scope It `
-                    -ParameterFilter { $Method -eq 'PATCH' }
-            }
-        }
-
-        It 'sends no comment under -WhatIf' {
-            InModuleScope msec {
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith { @{ id = 'a1' } }
-                Mock Invoke-MsecAdminDefenderRequest -MockWith { @{} }
-
-                Set-MsecDefenderAlert -Id 'a1' -Comment 'dry run' -WhatIf
-
-                Should -Invoke Invoke-MsecAdminDefenderRequest -Times 0 -Scope It
-            }
-        }
-    }
-
-    Context 'comment refusals are summarised, not repeated' {
-
-        It 'warns ONCE for many non-endpoint alerts and names the incidents to use instead' {
-            $result = InModuleScope msec {
-                $script:MsecAdminSession = [PSCustomObject]@{
-                    Account = 'me@contoso.com'; TenantId = 't'
-                    GrantedScope = @('SecurityAlert.ReadWrite.All')
-                }
-                Mock Get-MgContext -MockWith { [PSCustomObject]@{ Account = 'me'; TenantId = 't' } }
-                Mock Start-Sleep -MockWith { }
-                Mock Invoke-MsecAdminGraphRequest -MockWith {
-                    # incidentId differs per alert so the summary can collect them.
-                    $n = if ($Path -match 'a(\d+)$') { $Matches[1] } else { '0' }
-                    @{ id = "a$n"; title = 'T'; severity = 'medium'; status = 'resolved'
-                       serviceSource = 'unknownFutureValue'; incidentId = "58$n" }
-                }
-
-                $rows = @('a1', 'a2', 'a3' | Set-MsecDefenderAlert -Status resolved -Comment 'note' `
-                    -Confirm:$false -WarningVariable w -WarningAction SilentlyContinue)
-                [PSCustomObject]@{ Rows = $rows; Warnings = @($w) }
-            }
-
-            $result.Rows.Count | Should -Be 3
-            $result.Rows | ForEach-Object { $_.CommentAdded | Should -BeFalse }
-
-            # One warning for all three, not one each.
-            $result.Warnings.Count | Should -Be 1
-            $result.Warnings[0] | Should -Match '3 alert\(s\) did not take a comment'
-            $result.Warnings[0] | Should -Match 'unknownFutureValue'
-            # and it hands over the exact command, with every incident id
-            $result.Warnings[0] | Should -Match 'Set-MsecDefenderIncident -Id 581,582,583'
-        }
-    }
-
     Context 'the enum values Graph actually accepts' {
 
         It 'takes the wire status value new, not the CSDL member newAlert' {
@@ -473,5 +319,27 @@ Describe 'Set-MsecDefenderAlert' {
             $meta.SupportsShouldProcess | Should -BeTrue
             $meta.ConfirmImpact | Should -Be 'High'
         }
+    }
+}
+
+Describe 'One identity per command' {
+
+    It 'has no Comment parameter, and no second authentication path' {
+        # A -Comment switch existed briefly, routed to the Defender for Endpoint API on a
+        # separate Az-context token. That put two different USER identities inside one command -
+        # the alert could be resolved by one person and commented by another - in exchange for
+        # covering 29 of 569 alerts on the measured tenant. Removed; the note goes on the
+        # incident instead.
+        (Get-Command Set-MsecDefenderAlert).Parameters.Keys | Should -Not -Contain 'Comment'
+        (Get-Command Set-MsecDefenderIncident).Parameters.Keys | Should -Contain 'ResolvingComment'
+    }
+
+    It 'reaches only the delegated Graph session' {
+        # The whole point: one principal, one session. A second transport appearing here is a
+        # regression whatever it is authenticated with.
+        $body = (Get-Command Set-MsecDefenderAlert).Definition
+        $body | Should -Match 'Invoke-MsecAdminGraphRequest'
+        $body | Should -Not -Match 'Invoke-MsecAdminDefenderRequest'
+        $body | Should -Not -Match 'Get-AzAccessToken'
     }
 }

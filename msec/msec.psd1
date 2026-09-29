@@ -37,6 +37,7 @@
 
     FunctionsToExport = @(
         'New-MsecApp',
+        'Grant-MsecAzureDevOpsPermission',
         'Connect-Msec',
         'Disconnect-Msec',
         'Connect-MsecAdmin',

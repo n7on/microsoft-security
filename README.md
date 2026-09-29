@@ -88,12 +88,18 @@ registration, and it does so as you, not as the app - `New-MsecApp` consents onl
 the certificate has no write permission to reach for. It refuses the app session by name rather
 than letting the write fail as an unexplained 403.
 
-`Set-MsecDefenderIncident` is the same shape. Comments are split across two APIs, because Graph has
-no writable comment on an alert - `comments` is read-only on `alerts_v2` in both v1.0 and beta. The
-Defender for Endpoint API does have one, so `Set-MsecDefenderAlert -Comment` writes there, keyed on
-`ProviderAlertId` and authenticated from your Az context rather than the Graph session. That API only
-knows ENDPOINT alerts (29 of 569 on one measured tenant), so `-Comment` refuses by name on anything
-else and points at `Set-MsecDefenderIncident -ResolvingComment`, which covers every incident.
+`Set-MsecDefenderIncident` is the same shape, and is where a resolution comment goes. Graph has no
+writable comment on an alert - `comments` is read-only on `alerts_v2` in v1.0 and beta alike. The
+Defender for Endpoint API does have one, and `Set-MsecDefenderAlert -Comment` briefly used it, but
+that API only knows ENDPOINT alerts (29 of 569 on one measured tenant) and it put a second identity
+inside a single command. It was removed: notes go on the incident, which covers every case.
+
+**One command, one identity.** Every call a command makes uses a single principal. The exceptions
+are stated in each command's help: `Connect-Msec` signs the app assertion with your Az token (that
+is the bootstrap), `Connect-MsecTeams -AsCurrentUser` selects between two modes explicitly, and
+`Get-MsecAzureRoleAssignment` reads assignments through ARM while resolving principal NAMES through
+the app's Graph session, because `Get-AzADUser` on a permissionless ARM connection returns blank
+names rather than failing.
 
 `Get-MsecAzureRoleAssignment` splits its lookups on purpose - assignments and role names
 through ARM, principals through the app's Graph session. `Get-AzADUser` on an ARM service
@@ -133,12 +139,12 @@ then granted once and membership becomes the control.
 $pat = Read-Host -AsSecureString 'PAT'   # Security (manage) scope, short-lived
 
 # What can be granted?
-./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso -Pat $pat -ListPermissions
+Grant-MsecAzureDevOpsPermission -Organization contoso -ListPermissions
 
 # Advanced Security alerts, once, for the whole organization
-./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso `
+Grant-MsecAzureDevOpsPermission -Organization contoso `
     -Identity 'Security Reporting Readers' -Permission ViewAdvSecAlerts `
-    -Scope Organization -Pat $pat -Apply
+    -Scope Organization
 ```
 
 Drop `-Apply` for a dry run; it reads the current ACL and reports what it would change.
@@ -177,9 +183,9 @@ at a namespace ROOT token surfaces as an inherited ROLE on every project and res
 
 ```powershell
 # Service connections, once for the whole organization
-./tools/Grant-MsecAzureDevOpsPermission.ps1 -Organization contoso `
+Grant-MsecAzureDevOpsPermission -Organization contoso `
     -Identity 'Security Reporting Readers' -Namespace ServiceEndpoints `
-    -Permission Use -Scope Organization -Pat $pat -Apply
+    -Permission Use -Scope Organization
 ```
 
 `Use` surfaces as the `User` role, which is what the endpoints list API checks. `ViewEndpoint`
@@ -237,7 +243,7 @@ answer, and an empty result with one as unread.
 - [Get-MsecDefenderIncident](./docs/commands/Get-MsecDefenderIncident.md) - Defender XDR incidents, one row each, with triage state and time to resolve
 - [Get-MsecDefenderAlert](./docs/commands/Get-MsecDefenderAlert.md) - Defender XDR alerts across endpoint, Office 365, identity and DLP, with the incident each belongs to
 - [Get-MsecDefenderDevice](./docs/commands/Get-MsecDefenderDevice.md) - Device inventory with per-device vulnerability counts
-- [Set-MsecDefenderAlert](./docs/commands/Set-MsecDefenderAlert.md) - **Writes.** Resolve, classify or comment on alerts; needs `Connect-MsecAdmin`
+- [Set-MsecDefenderAlert](./docs/commands/Set-MsecDefenderAlert.md) - **Writes.** Resolve, classify or assign alerts; needs `Connect-MsecAdmin`
 - [Set-MsecDefenderIncident](./docs/commands/Set-MsecDefenderIncident.md) - **Writes.** Resolve, classify or comment on incidents - the resolution comment lives here, not on the alert; needs `Connect-MsecAdmin`
 
 ### Microsoft Purview

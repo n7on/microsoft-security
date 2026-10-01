@@ -90,6 +90,13 @@ Update-TypeData -TypeName 'MsecEntraAppCredential' `
     -DefaultDisplayPropertySet 'DisplayName', 'CredentialType', 'CredentialName', 'EndDateTime', 'DaysUntilExpiry' `
     -Force
 
+# Permission and PermissionType lead because an Application grant and a Delegated grant of the
+# same name are different sizes of problem; ConsentType then says whether one user agreed or an
+# administrator agreed for everyone.
+Update-TypeData -TypeName 'MsecEntraAppConsent' `
+    -DefaultDisplayPropertySet 'ClientDisplayName', 'ResourceDisplayName', 'Permission', 'PermissionType', 'ConsentType', 'IsHighRisk' `
+    -Force
+
 Update-TypeData -TypeName 'MsecEntraGroupMember' `
     -DefaultDisplayPropertySet 'GroupName', 'MemberName', 'MemberUserPrincipalName', 'MemberType', 'MembershipType' `
     -Force
@@ -163,6 +170,26 @@ Update-TypeData -TypeName 'MsecDefenderAlertChange' `
 
 # Purview rows are wide because the interesting facts are the derived ones: Mode vs IsEnforcing,
 # and configured vs enabled. These tables show the columns a reviewer scans first.
+# Forwarding first: it is the reason to run this. The protocol columns matter less often and
+# are still one Select-Object away.
+Update-TypeData -TypeName 'MsecExchangeTransportRule' `
+    -DefaultDisplayPropertySet 'Name', 'State', 'Mode', 'IsActive', 'BypassesFiltering', 'RedirectsMail' `
+    -Force
+
+# IsApplied next to the value, because a setting on a policy nothing references is not a
+# finding and a weak setting on a live one is.
+Update-TypeData -TypeName 'MsecDefenderOfficePolicy' `
+    -DefaultDisplayPropertySet 'PolicyType', 'PolicyName', 'Setting', 'Value', 'IsApplied', 'AppliedBy' `
+    -Force
+Update-TypeData -TypeName 'MsecExchangeMailbox' `
+    -DefaultDisplayPropertySet 'UserPrincipalName', 'MailboxType', 'ForwardingKind', 'ForwardingTarget', 'IsForwardingExternal', 'DeliverToMailboxAndForward' `
+    -Force
+
+# RiskReasons rather than the individual action flags: a rule is worth reading because of what
+# it does in combination, and six boolean columns bury that.
+Update-TypeData -TypeName 'MsecExchangeInboxRule' `
+    -DefaultDisplayPropertySet 'Mailbox', 'RuleName', 'Enabled', 'ForwardsExternally', 'IsRisky', 'RiskReasons' `
+    -Force
 Update-TypeData -TypeName 'MsecPurviewDlpPolicy' `
     -DefaultDisplayPropertySet 'Name', 'Mode', 'IsEnforcing', 'ExchangeScope', 'SharePointScope', 'OneDriveScope', 'TeamsScope', 'BlockingRuleCount' `
     -Force

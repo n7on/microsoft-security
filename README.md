@@ -325,6 +325,7 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Convert-MsecEntraSid](./docs/commands/Convert-MsecEntraSid.md) - Convert an Entra SID (`S-1-12-1-...`) to its objectId and back
 - [Get-MsecEntraGroupMember](./docs/commands/Get-MsecEntraGroupMember.md) - Members of named groups, with nested groups expanded to the people inside them
 - [Get-MsecEntraAppCredential](./docs/commands/Get-MsecEntraAppCredential.md) - App registration and service principal secrets and certificates, and when they expire
+- [Get-MsecEntraAppConsent](./docs/commands/Get-MsecEntraAppConsent.md) - Which applications have been granted access to tenant data, what they can do, and who consented
 
 ### Intune
 - [Get-MsecIntuneConfigurationProfile](./docs/commands/Get-MsecIntuneConfigurationProfile.md) - Settings Catalog and classic configuration profiles merged, with assignment targets resolved
@@ -353,7 +354,12 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Export-MsecAzureDevOpsReport](./docs/commands/Export-MsecAzureDevOpsReport.md) - A whole Azure DevOps organization's security posture in one workbook: a sheet per area and a chart per area
 
 ### Exchange Online
+- [Get-MsecExchangeMailbox](./docs/commands/Get-MsecExchangeMailbox.md) - Mailboxes with where mail is forwarded and which legacy protocols are open
+- [Get-MsecExchangeTransportRule](./docs/commands/Get-MsecExchangeTransportRule.md) - Mail flow rules, flagging the ones that bypass filtering or send mail elsewhere
+- [Get-MsecDefenderOfficePolicy](./docs/commands/Get-MsecDefenderOfficePolicy.md) - Anti-phishing, Safe Links, Safe Attachments, anti-spam, anti-malware and outbound spam policies, with whether each one applies to anyone
+- [Get-MsecExchangeOrganizationSetting](./docs/commands/Get-MsecExchangeOrganizationSetting.md) - Tenant-wide Exchange posture in one row: both auto-forwarding controls, SMTP AUTH, audit
 - [Get-MsecExchangeMailboxPermission](./docs/commands/Get-MsecExchangeMailboxPermission.md) - Who can open, send as, or send on behalf of each mailbox
+- [Get-MsecExchangeInboxRule](./docs/commands/Get-MsecExchangeInboxRule.md) - User-created inbox rules, flagging the ones that send mail out of the tenant or hide it from the mailbox owner
 
 ### SharePoint Online
 - [Get-MsecSharePointSite](./docs/commands/Get-MsecSharePointSite.md) - Every site in the tenant, classified, with Loop and Designer containers separated out
@@ -362,6 +368,7 @@ Compliance Administrator), which is what a 403 there usually means.
 
 ### Microsoft Teams
 - [Get-MsecTeamsPolicy](./docs/commands/Get-MsecTeamsPolicy.md) - External access, guest access, meeting lobby, recording, app installation and file sharing, one row per setting
+- [Get-MsecTeamsPolicyAssignment](./docs/commands/Get-MsecTeamsPolicyAssignment.md) - How many users each per-user Teams policy actually applies to, including the ones that apply to nobody
 
 ### Azure DevOps
 - [Get-MsecAzureDevOpsOrganization](./docs/commands/Get-MsecAzureDevOpsOrganization.md) - Every organization in the tenant and who owns it - the list every other command needs

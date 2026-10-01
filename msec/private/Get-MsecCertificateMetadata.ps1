@@ -5,8 +5,18 @@ function Get-MsecCertificateMetadata {
 
     .DESCRIPTION
         Used by Connect-Msec to set up the session. We do NOT pull the cert's PFX (private key);
-        signing happens inside Key Vault via Invoke-AzKeyVaultKeyOperation. This call requires
-        only the 'Key Vault Certificate User' role (cert read).
+        signing happens inside Key Vault via Invoke-MsecKeyVaultSign.
+
+        'Key Vault Reader' is the right role for this call: its data action
+        Microsoft.KeyVault/vaults/*/read covers certificates/read, and its control-plane
+        Actions let Az resolve the vault by name.
+
+        Do NOT grant 'Key Vault Certificate User' for this. That role also carries
+        Microsoft.KeyVault/vaults/secrets/getSecret/action, and a Key Vault-generated
+        certificate is readable as a secret of the same name - which returns the full PFX
+        INCLUDING the private key. Granting it hands over the ability to impersonate the
+        app registration anywhere, which is exactly what keeping the key in Key Vault is
+        meant to prevent.
 
         Returns the SHA-1 thumbprint as both hex (informational) and bytes (used directly in the
         JWT x5t header per RFC 7515), and the key name (same as the cert name when KV created

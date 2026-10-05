@@ -288,6 +288,9 @@ answer, and an empty result with one as unread.
 - [Set-MsecDefenderAlert](./docs/commands/Set-MsecDefenderAlert.md) - **Writes.** Resolve, classify or assign alerts; needs `Connect-MsecAdmin`
 - [Set-MsecDefenderIncident](./docs/commands/Set-MsecDefenderIncident.md) - **Writes.** Resolve, classify or comment on incidents - the resolution comment lives here, not on the alert; needs `Connect-MsecAdmin`
 
+### Power Platform
+- [Get-MsecPowerPlatformEnvironment](./docs/commands/Get-MsecPowerPlatformEnvironment.md) - Power Platform environments and whether a connector DLP policy actually covers each one. Runs as the signed-in user, not the msec app
+
 ### Microsoft Purview
 - [Connect-MsecPurview](./docs/commands/Connect-MsecPurview.md) - App-only Security & Compliance session. Optional: the Get-MsecPurview* commands open one themselves
 - [Get-MsecPurviewDlpPolicy](./docs/commands/Get-MsecPurviewDlpPolicy.md) - DLP policies with where they apply and whether they actually enforce
@@ -315,6 +318,7 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Get-MsecEntraTenantSecuritySetting](./docs/commands/Get-MsecEntraTenantSecuritySetting.md) - Tenant-wide posture in one row: security defaults, licensed workloads, default user permissions, privileged-role counts
 - [Get-MsecEntraLicense](./docs/commands/Get-MsecEntraLicense.md) - Subscribed SKUs and the service plans each one turns on
 - [Get-MsecEntraRoleHolder](./docs/commands/Get-MsecEntraRoleHolder.md) - Who holds which directory role, separating what a role is assigned to from who effectively holds it, including PIM-eligible assignments and role-assignable groups expanded
+- [Get-MsecEntraPimPolicy](./docs/commands/Get-MsecEntraPimPolicy.md) - The PIM rules for each directory role: what activation demands, and whether a permanent assignment is allowed at all
 - [Get-MsecEntraConditionalAccessPolicy](./docs/commands/Get-MsecEntraConditionalAccessPolicy.md) - Conditional Access policies with conditions and grant controls flattened to columns
 - [Get-MsecEntraConditionalAccessStats](./docs/commands/Get-MsecEntraConditionalAccessStats.md) - Aggregated Conditional Access outcomes over a period
 - [Get-MsecEntraConditionalAccessSignInLog](./docs/commands/Get-MsecEntraConditionalAccessSignInLog.md) - Raw sign-in events with their Conditional Access outcomes
@@ -332,6 +336,9 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Get-MsecIntuneCompliancePolicy](./docs/commands/Get-MsecIntuneCompliancePolicy.md) - Compliance policies: what makes a device compliant, and therefore allowed through Conditional Access
 - [Get-MsecIntuneDevice](./docs/commands/Get-MsecIntuneDevice.md) - Every managed device known to Intune
 - [Get-MsecIntuneScriptResult](./docs/commands/Get-MsecIntuneScriptResult.md) - Per-device results from every kind of Intune script: remediations, platform scripts, macOS custom attributes and custom compliance scripts
+
+### Microsoft Sentinel
+- [Get-MsecSentinelRule](./docs/commands/Get-MsecSentinelRule.md) - Analytics rules with their tuning state - severity, alert grouping, suppression - and the id that joins them to the alerts they produced. Runs as the signed-in user
 
 ### Azure
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph
@@ -373,6 +380,7 @@ Compliance Administrator), which is what a 403 there usually means.
 ### Azure DevOps
 - [Get-MsecAzureDevOpsOrganization](./docs/commands/Get-MsecAzureDevOpsOrganization.md) - Every organization in the tenant and who owns it - the list every other command needs
 - [Get-MsecAzureDevOpsUser](./docs/commands/Get-MsecAzureDevOpsUser.md) - Users and the groups they belong to, for an access review
+- [Get-MsecAzureDevOpsWorkItem](./docs/commands/Get-MsecAzureDevOpsWorkItem.md) - Work items with tags, state category and age, for tracking whether findings get closed. Measures your process, not your tenant
 - [Get-MsecAzureDevOpsVariableGroup](./docs/commands/Get-MsecAzureDevOpsVariableGroup.md) - Variable groups, what secrets they hold, and whether any pipeline may use them
 - [Get-MsecAzureDevOpsOrganizationPolicy](./docs/commands/Get-MsecAzureDevOpsOrganizationPolicy.md) - Organization policies: guest access, OAuth, SSH, PAT creation, public projects
 - [Get-MsecAzureDevOpsAlert](./docs/commands/Get-MsecAzureDevOpsAlert.md) - Advanced Security alerts: secrets, dependencies and code scanning findings

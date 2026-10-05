@@ -111,6 +111,13 @@ Update-TypeData -TypeName 'MsecEntraRoleHolder' `
     -DefaultDisplayPropertySet 'EffectiveName', 'EffectiveType', 'RoleName', 'AssignmentType', 'PrincipalName', 'PrincipalType' `
     -Force
 
+# HasEligibleHolder next to the value: a PIM rule on a role nobody is eligible for governs
+# nothing, and without that column a tenant with 150 lax policies and one that matters look
+# the same.
+Update-TypeData -TypeName 'MsecEntraPimPolicy' `
+    -DefaultDisplayPropertySet 'RoleName', 'Setting', 'Value', 'HasEligibleHolder', 'IsHighlyPrivileged' `
+    -Force
+
 # Two views for one row shape. Direction is deliberately out of both: it repeats
 # what the caller already asked for, and only matters when rows from both
 # directions are mixed. Convert-MsecEntraSid -Resolve pushes the ...Resolved type
@@ -214,6 +221,12 @@ Update-TypeData -TypeName 'MsecPurviewAlertPolicy' `
     -DefaultDisplayPropertySet 'Name', 'Category', 'Severity', 'IsEnabled', 'NotificationEnabled', 'IsSystemRule' `
     -Force
 
+# IsCoveredByDlp leads the detail columns: an environment with no connector policy has no
+# restriction at all, which is the reason to run this.
+Update-TypeData -TypeName 'MsecPowerPlatformEnvironment' `
+    -DefaultDisplayPropertySet 'DisplayName', 'Type', 'IsDefault', 'HasDataverse', 'IsCoveredByDlp', 'DlpPolicies' `
+    -Force
+
 Update-TypeData -TypeName 'MsecDefenderIncidentChange' `
     -DefaultDisplayPropertySet 'Id', 'Severity', 'DisplayName', 'StatusBefore', 'StatusAfter', 'Changed' `
     -Force
@@ -261,6 +274,18 @@ Update-TypeData -TypeName 'MsecAzureDevOpsPermissionName' `
 
 Update-TypeData -TypeName 'MsecAzureDevOpsRoleAssignment' `
     -DefaultDisplayPropertySet 'Project', 'Resource', 'Identity', 'Role', 'Access' `
+    -Force
+
+# AgeDays earns its place in the default view: the question this command exists for is not
+# what is open, it is what has been open too long.
+# GroupingEnabled in the default view because it is the lever nobody has pulled: a Content Hub
+# rule ships with alert grouping off, and with it off every alert becomes its own incident.
+Update-TypeData -TypeName 'MsecSentinelRule' `
+    -DefaultDisplayPropertySet 'DisplayName', 'Enabled', 'Severity', 'GroupingEnabled', 'SuppressionEnabled', 'Kind' `
+    -Force
+
+Update-TypeData -TypeName 'MsecAzureDevOpsWorkItem' `
+    -DefaultDisplayPropertySet 'Id', 'Type', 'State', 'Tags', 'AgeDays', 'Title' `
     -Force
 
 # Not a posture row: one per AREA of Export-MsecAzureDevOpsReport, saying what was collected

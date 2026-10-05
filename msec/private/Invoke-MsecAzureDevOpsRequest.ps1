@@ -30,6 +30,15 @@ function Invoke-MsecAzureDevOpsRequest {
 
         [string] $ApiVersion = '7.1-preview.1',
 
+        # GET for every resource that is simply read. POST is needed by the few ADO APIs that
+        # take a request body to express the query - wiql and workitemsbatch - and is additive:
+        # every existing caller omits it and is unaffected.
+        [ValidateSet('GET', 'POST')]
+        [string] $Method = 'GET',
+
+        # Request body for POST. A hashtable or object is serialised; a string is sent as-is.
+        $Body,
+
         # Follow the continuation header to the end. Off by default so a single-object call
         # (one group, one user) does not pay for a loop it cannot use.
         [switch] $All
@@ -61,12 +70,35 @@ function Invoke-MsecAzureDevOpsRequest {
         # out-variable side effect - which cannot be produced by a mock, so the paging loop
         # would be untestable and this is the one part that must not be got wrong.
         try {
-            $web = Invoke-WebRequest -Method GET -Uri $uri -Headers $headers -ErrorAction Stop
+            $invokeParams = @{
+                Method      = $Method
+                Uri         = $uri
+                Headers     = $headers
+                ErrorAction = 'Stop'
+            }
+            if ($PSBoundParameters.ContainsKey('Body')) {
+                $invokeParams['ContentType'] = 'application/json'
+                $invokeParams['Body'] = if ($Body -is [string]) { $Body } else { ($Body | ConvertTo-Json -Depth 20) }
+            }
+            $web = Invoke-WebRequest @invokeParams
             $response = if ($web.Content) { $web.Content | ConvertFrom-Json } else { $null }
             $responseHeaders = $web.Headers
         }
         catch {
             $detail = $_.Exception.Message
+
+            # AZURE DEVOPS PUTS THE REAL REASON IN THE RESPONSE BODY, NOT THE STATUS LINE. The
+            # exception message is only 'Response status code does not indicate success: 400
+            # (Bad Request)', which names nothing a reader can act on, while the body carries
+            # the actual fault - 'VS402337: The number of work items returned exceeds the size
+            # limit of 20000', 'TF51005: The query references a field that does not exist'.
+            # Without this, every ADO command reports 400s that are indistinguishable from one
+            # another.
+            $responseBody = $_.ErrorDetails.Message
+            if ($responseBody) {
+                $message = try { ($responseBody | ConvertFrom-Json).message } catch { $null }
+                if ($message) { $detail = "$message ($detail)" }
+            }
             if ($detail -match '401|403|Unauthorized|Forbidden') {
                 # DELIBERATELY DOES NOT NAME A CAUSE. Two different things produce a 403 here -
                 # the app not being an organization member at all, and the app being a member

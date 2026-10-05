@@ -64,5 +64,42 @@
         </TableRowEntries>
       </TableControl>
     </View>
+    <View>
+      <Name>MsecAzureDevOpsWorkItem</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecAzureDevOpsWorkItem</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Id</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Type</Label><Width>18</Width></TableColumnHeader>
+          <TableColumnHeader><Label>State</Label><Width>11</Width></TableColumnHeader>
+          <!--
+            Tags is a string[] so callers can test it exactly - Where-Object Tags -contains
+            'Internal IT'. Storing Azure DevOps' own 'Exchange; Internal IT' string instead
+            forced -like '*Internal IT*' on every query, which also matches a tag named
+            'Internal IT Legacy', and silently returned nothing for the -contains and -in
+            people reach for first. Joined here, for the table only.
+          -->
+          <TableColumnHeader><Label>Tags</Label><Width>28</Width></TableColumnHeader>
+          <TableColumnHeader><Label>AgeDays</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Title</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Id</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Type</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>State</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>@($_.Tags) -join '; '</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>AgeDays</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Title</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
   </ViewDefinitions>
 </Configuration>

@@ -28,6 +28,150 @@ All notable changes to this project will be documented in this file.
   called. Every stub now declares `[CmdletBinding()]` and the parameters the tests filter on.
 
 ### Added
+- `Get-MsecSentinelRule` - Sentinel analytics rules with their tuning state, and the id that
+  joins them to the alerts they produced.
+
+  RULEID IS THE JOIN TO THE ALERTS. A rule's resource name is a GUID, and that GUID is the
+  `alertPolicyId` on every alert the rule raised - so `RuleId` joins straight to
+  `Get-MsecDefenderAlert`'s `Raw.alertPolicyId`. Matching on display name looks equivalent and
+  is not: titles get edited, duplicated between a stock rule and a tuned copy, and localised.
+
+  TUNING STATE IS THE POINT, NOT THE QUERY. `GroupingEnabled`, `SuppressionEnabled` and
+  `TriggerThreshold` decide how much noise a rule makes. Measured on one workspace: 48 rules,
+  45 enabled, 48 still stock from their Content Hub template, and `0` with alert grouping or
+  suppression enabled. With grouping off, every alert becomes its own incident.
+
+  GROUPING ABSENT IS NOT GROUPING DISABLED. A Fusion rule carries no `incidentConfiguration`,
+  so `GroupingEnabled` is ``; a Scheduled rule with it switched off is ``.
+
+  A NAMED WORKSPACE THAT IS NOT FOUND THROWS. Building the request URL from an empty
+  ResourceId yields `/providers/Microsoft.SecurityInsights/...` with no scope, and Azure
+  rejects that as an AUTHORIZATION failure - sending the reader to check RBAC for a workspace
+  that was never located. That happened while writing the command, so there is a test for it.
+  A workspace that exists but is not Sentinel-onboarded is named too; one found during
+  discovery is skipped quietly, since most Log Analytics workspaces are not Sentinels.
+
+  Runs as the signed-in user through ARM, like `Get-MsecAzureSecureScore` - the app
+  certificate holds Graph permissions, not Azure RBAC.
+
+- `Get-MsecAzureDevOpsWorkItem` - work items with tags, state category and age, for tracking
+  whether security findings are actually being closed.
+
+  THIS MEASURES YOUR PROCESS, NOT YOUR TENANT. Every other Get-Msec* command reads a Microsoft
+  system and reports how it is configured; this reads your own backlog and reports how the team
+  is responding. Both are security questions but they are different ones, so it stays out of
+  `Export-MsecPostureReport` - a remediation count must not blur into a posture score.
+
+  NO BUNDLED QUERIES. Area paths, tags, states and type names differ in every organisation, so
+  the conventions are PARAMETERS rather than shipped WIQL files. Shipping a query that referred
+  to one tenant's taxonomy would return nothing, or something misleading, in anyone else's.
+
+  'OPEN' IS NOT A STATE NAME, IT IS A STATE CATEGORY. Agile uses New/Active/Resolved/Closed,
+  Scrum uses New/Approved/Committed/Done, Basic uses To Do/Doing/Done. `System.StateCategory`
+  is NOT a queryable WIQL field, so `-OpenOnly` resolves each type's states through the states
+  API and keeps anything not Completed or Removed. An item whose state could not be classified
+  is KEPT, never dropped - shrinking the list someone uses to chase outstanding work is the
+  worst available failure.
+
+  `Invoke-MsecAzureDevOpsRequest` gained `-Method` and `-Body` so it can POST to wiql and
+  workitemsbatch. Additive: every existing caller omits both and is unaffected. Note the helper
+  ALREADY UNWRAPS the response's `value` array - taking `.value` again yields nothing, and the
+  symptom is a correct row count with every field blank.
+
+  AZURE DEVOPS PUTS THE REAL REASON IN THE RESPONSE BODY, not the status line, and
+  `Invoke-MsecAzureDevOpsRequest` was discarding it - so every ADO command reported 400s as an
+  indistinguishable 'Response status code does not indicate success'. It now surfaces the body's
+  message, which is how 'VS402337: The number of work items returned exceeds the size limit of
+  20000' and 'TF51005: The query references a field that does not exist' reach the caller. This
+  improves all 14 ADO commands, not just the new one.
+
+  ROWS ARE NOT IN BOARD ORDER unless you ask for it. They come back newest-first by Id; board
+  order is a drag-and-drop rank, and WHICH FIELD HOLDS IT DEPENDS ON THE PROCESS - Scrum writes
+  `Microsoft.VSTS.Common.BacklogPriority`, Agile and CMMI write `Microsoft.VSTS.Common.StackRank`.
+  Both are requested and whichever is populated becomes `BacklogRank`, so `Sort-Object
+  BacklogRank` reproduces the backlog. An item never ranked has a NULL rank, not 0: zero would
+  sort it to the top as though someone had deliberately put it first. `BoardColumn` is returned
+  too, and is not the same as State - a board can map several columns onto one state.
+
+  A TEAM'S BACKLOG IS SEVERAL AREA PATHS, NOT ONE, and each carries its own includeChildren
+  flag, so `-Team` reads the team's real definition from Azure DevOps instead of making the
+  caller guess it. Measured on one project, 'Security and Regulatory compliance' spans four
+  area paths and one of them excludes its children - UNDER for all four would over-report, `=`
+  for all four would drop most of the backlog. `-AreaPath` now takes several values too.
+
+  THE 20,000 LIMIT IS ENFORCED BEFORE ANY RESULT IS RETURNED, so `-MaxItems` cannot help - it
+  caps a list Azure DevOps refused to produce. WIQL has no TOP clause on this endpoint (it
+  answers TF51006), so `-ChangedWithinDays` was added as the server-side lever, and the
+  size-limit error names it instead of suggesting a larger cap.
+
+  TAGS IS A string[], NOT THE JOINED STRING AZURE DEVOPS SENDS. ADO returns 'Exchange; Internal
+  IT'; keeping that shape forces every caller onto `-like '*Internal IT*'`, which also matches a
+  tag named 'Internal IT Legacy' and silently returns NOTHING for the `-contains` and `-in` that
+  people reach for first. msec.format.ps1xml joins it for the table, the data stays typed - the
+  rule the format file already stated for AssignmentGroup, which this got wrong on the first
+  pass and a real query then hit.
+
+  A 404 from the wiql endpoint is AMBIGUOUS - a misspelled organization, a misspelled project,
+  and a project the identity cannot see all return the same Not Found - so the error names both
+  rather than sending the reader to check a spelling that was already right.
+
+  Measured on one project: 143 items, 124 open, 7 open longer than 90 days, and 98 of the 124
+  carrying no tag at all.
+
+- `Get-MsecPowerPlatformEnvironment` - Power Platform environments and whether a connector DLP
+  policy actually covers each one.
+
+  A Power Automate flow runs as the person who built it, needs no approval, and can move data
+  between any two connectors it is permitted to use. A connector DLP policy is the only thing
+  constraining that, and an environment no policy is scoped to has no connector restriction at
+  all - not a weak one, none. Measured on one tenant: 8 environments, 0 DLP policies, so every
+  one of them is unrestricted.
+
+  RUNS AS THE SIGNED-IN USER, NOT AS THE APP. The Power Platform admin APIs return 403 to the
+  msec certificate, and app-only access requires registering the application as a Power
+  Platform MANAGEMENT APPLICATION - which grants administrative, not read-only, access to the
+  whole estate. Taking that route would break the promise that the Key Vault certificate
+  cannot change the tenant, so this follows Search-MsecAzureResourceGraph and uses the Az
+  context. One command, one identity.
+
+  DLP SCOPE IS A FILTER TYPE, NOT A LIST. A policy carries `environmentFilterType` of `none`
+  (every environment), `include` or `exclude`. Reading only the environment array would report
+  a tenant-wide policy - filter type `none`, empty list - as covering nothing, turning a
+  protected tenant into a page of false findings and burying any real one. An unrecognised
+  filter type is not credited as covering.
+
+  Policies unreadable leaves `IsCoveredByDlp` ``, never ``.
+
+- `Get-MsecEntraPimPolicy` - the Privileged Identity Management rules for each directory role.
+
+  `Get-MsecEntraRoleHolder` says who holds a role and whether it is active or eligible. This
+  says what the eligibility is worth: a role activatable for eight hours with no MFA, no
+  approval and no ticket is barely different from a permanent assignment, and nothing in the
+  holder list shows that.
+
+  TWO SETS OF RULES ANSWERING DIFFERENT QUESTIONS. The EndUser rules are what an eligible
+  person must do to switch the role on; the Admin rules are what an administrator may hand out,
+  which is where `PermanentActiveAllowed` lives - the setting that decides whether standing
+  privilege is possible at all.
+
+  `isExpirationRequired` IS INVERTED into `PermanentActiveAllowed`. Reading it straight reports
+  a tenant that forbids standing privilege as one that permits it. There is a test for it.
+
+  `ActivationRequiresMfa = False` DOES NOT MEAN ACTIVATION HAPPENS WITHOUT MFA - the person may
+  already be covered by Conditional Access. The setting controls whether PIM demands a FRESH
+  authentication at activation, which is what stops an already-authenticated stolen session
+  switching a role on. The help says so, because the short reading over-claims.
+
+  AN ABSENT RULE IS NULL, NEVER FALSE: a policy carrying no enablement rule was not measured,
+  and `` would claim PIM was asked and said no.
+
+  A POLICY ON A ROLE NOBODY IS ELIGIBLE FOR GOVERNS NOTHING, so `HasEligibleHolder` is on every
+  row - measured on one tenant, 34 of 147 roles had an eligible holder. Rows are still returned
+  for the rest: a policy may be deliberately pre-configured ahead of an assignment.
+
+  `` IS NOT SUPPORTED on `/roleManagement/directory/roleDefinitions` and returns 400; all
+  147 come back in one page regardless.
+
 - `Get-MsecExchangeInboxRule` - user-created inbox rules, flagging the ones that send mail out
   of the tenant or hide it from the person who owns the mailbox.
 

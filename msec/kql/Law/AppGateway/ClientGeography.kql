@@ -1,0 +1,83 @@
+// Application Gateway traffic by client country, across both diagnostic log modes.
+//
+// Loaded by Search-MsecLogAnalytics -Subject AppGateway -Name ClientGeography -WorkspaceName <ws>.
+//
+// THE ACCESS LOG LIVES IN UP TO THREE PLACES AND ONLY TWO CAN BE QUERIED HERE:
+//
+//   AzureDiagnostics          legacy diagnostic mode, one row per request, full detail
+//   AGWAccessSummary_CL       a summary rule's hourly aggregate: client IP, status class, counts
+//   AGWAccessLogs             resource-specific mode, one row per request
+//
+// AGWAccessLogs IS DELIBERATELY NOT UNIONED IN. On a workspace where that table has been moved
+// to the Basic (or Auxiliary) plan to save cost, it cannot be read by an ordinary KQL query at
+// all - the request fails rather than returning nothing, and it would take this whole query down
+// with it. Measured on one production workspace: AGWAccessLogs on the Basic plan returned
+// BadRequest to every query shape, while the summary table answered normally. Read Basic tables
+// through the portal or a search job.
+//
+// THAT MEANS THE ANSWER CAN CHANGE GRAIN PART-WAY THROUGH THE WINDOW. A gateway switched from
+// legacy to resource-specific mode stops writing AzureDiagnostics on the day of the switch, and
+// from then on only the hourly summary is visible here. Source says which leg a row came from,
+// and SourceGrain says whether it is per-request or pre-aggregated, so a drop in detail is
+// visible rather than looking like a drop in traffic.
+//
+// REQUESTS IS A SUM, NOT A COUNT. The summary leg already carries a Requests count per hour, so
+// counting rows would weight an hour of 4,000 requests the same as a single request. Both legs
+// are normalized to a Requests number and summed.
+//
+// BOTH LEGS MUST AGREE ON THE TYPE OF THAT NUMBER, and the failure mode if they do not is ugly.
+// A bare integer literal in KQL is a LONG; toint() returns an INT. Writing `Requests = 1` on one
+// leg and `toint(...)` on the other makes the union emit Requests_long and Requests_int as two
+// separate columns instead of failing - and the later `sum(Requests)` then references a column
+// that does not exist, which comes back only as 'BadRequest' with nothing naming the cause.
+// tolong() on both legs is what keeps them one column. Same trap as TransactionId in
+// Law/Waf/All.kql, hit again here.
+//
+// GEOGRAPHY IS NOT A VERDICT - most of what a public gateway sees from anywhere is crawlers and
+// scanners. Compare the status mix: a country whose traffic is entirely 4xx on robots.txt and
+// favicons is a search engine, not a visitor.
+//
+// NO TIME FILTER IN THIS FILE - Search-MsecLogAnalytics passes -Days to the API as a server-side
+// timespan against the TimeGenerated index.
+union isfuzzy=true
+    (
+        AzureDiagnostics
+        | where Category == 'ApplicationGatewayAccessLog'
+        | project TimeGenerated,
+                  ClientIp    = column_ifexists('clientIP_s', ''),
+                  StatusClass = strcat(substring(tostring(toint(column_ifexists('httpStatus_d', 0))), 0, 1), 'xx'),
+                  // tolong, not a bare 1: see the type note above.
+                  Requests    = tolong(1),
+                  Host        = column_ifexists('host_s', ''),
+                  Source      = 'AzureDiagnostics',
+                  SourceGrain = 'per-request'
+    ),
+    (
+        AGWAccessSummary_CL
+        | project TimeGenerated,
+                  ClientIp    = column_ifexists('ClientIp', ''),
+                  StatusClass = column_ifexists('StatusClass', ''),
+                  Requests    = tolong(column_ifexists('Requests', 0)),
+                  Host        = '',
+                  Source      = 'AGWAccessSummary_CL',
+                  SourceGrain = 'hourly-summary'
+    )
+| where isnotempty(ClientIp)
+// Private and link-local ranges are the gateway's own backend probes and internal callers.
+// Reported as their own bucket rather than dropped: a country breakdown that silently omits
+// 1.2 million internal requests misrepresents the totals.
+| extend IsPrivate = ipv4_is_private(ClientIp)
+| extend Country = case(
+      IsPrivate, '(private / internal)',
+      isempty(tostring(geo_info_from_ip_address(ClientIp).country)), '(IP not in geo database)',
+      tostring(geo_info_from_ip_address(ClientIp).country))
+| summarize
+    Requests    = sum(Requests),
+    ClientIps   = dcount(ClientIp),
+    Statuses    = make_set(StatusClass, 10),
+    Sources     = make_set(Source, 3),
+    Grains      = make_set(SourceGrain, 3),
+    FirstSeen   = min(TimeGenerated),
+    LastSeen    = max(TimeGenerated)
+    by Country
+| sort by Requests desc

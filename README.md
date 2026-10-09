@@ -275,6 +275,7 @@ answer, and an empty result with one as unread.
 
 ### Secure Score
 - [Get-MsecSecureScore](./docs/commands/Get-MsecSecureScore.md) - Microsoft Secure Score over time, overall and per category
+- [Get-MsecSecureScoreRecommendation](./docs/commands/Get-MsecSecureScoreRecommendation.md) - Secure Score recommended actions: what is not done, points available, and the remediation text
 - [Get-MsecAzureSecureScore](./docs/commands/Get-MsecAzureSecureScore.md) - Defender for Cloud Secure Score, per subscription
 - [Get-MsecDefenderScoreExposure](./docs/commands/Get-MsecDefenderScoreExposure.md) - Defender Vulnerability Management exposure score
 - [Get-MsecDefenderScoreDeviceConfiguration](./docs/commands/Get-MsecDefenderScoreDeviceConfiguration.md) - Secure Score for Devices
@@ -282,6 +283,8 @@ answer, and an empty result with one as unread.
 ### Defender XDR
 - [Get-MsecDefenderIncidentStats](./docs/commands/Get-MsecDefenderIncidentStats.md) - Incident severity, classification and status breakdown, plus current backlog
 - [Get-MsecDefenderEmailStats](./docs/commands/Get-MsecDefenderEmailStats.md) - Inbound email volume and threat breakdown
+- [Get-MsecDefenderEmail](./docs/commands/Get-MsecDefenderEmail.md) - Every message Exchange Online processed, one row each, with the sending server's country resolved - filter it in PowerShell
+- [Get-MsecDefenderTeamsMessage](./docs/commands/Get-MsecDefenderTeamsMessage.md) - Teams messages with recipients and URL domains resolved - no sender IP exists, so the trust boundary is SenderType and IsExternalThread
 - [Get-MsecDefenderIncident](./docs/commands/Get-MsecDefenderIncident.md) - Defender XDR incidents, one row each, with triage state and time to resolve
 - [Get-MsecDefenderAlert](./docs/commands/Get-MsecDefenderAlert.md) - Defender XDR alerts across endpoint, Office 365, identity and DLP, with the incident each belongs to
 - [Get-MsecDefenderDevice](./docs/commands/Get-MsecDefenderDevice.md) - Device inventory with per-device vulnerability counts
@@ -299,6 +302,7 @@ answer, and an empty result with one as unread.
 - [Get-MsecPurviewAutoLabelingPolicy](./docs/commands/Get-MsecPurviewAutoLabelingPolicy.md) - Auto-labeling policies - the only thing that applies a sensitivity label without a user
 - [Get-MsecPurviewInformationBarrier](./docs/commands/Get-MsecPurviewInformationBarrier.md) - Information barrier policies, and whether each is applied or merely authored
 - [Get-MsecPurviewAlertPolicy](./docs/commands/Get-MsecPurviewAlertPolicy.md) - Purview alert policies - what gets NOTICED, including detection that has been switched off
+- [Get-MsecPurviewActivity](./docs/commands/Get-MsecPurviewActivity.md) - Activity Explorer events with policy, rule and label names resolved - the only way to measure DLP without Defender for Cloud Apps
 
 `Connect-Msec` is all you need - the Purview commands open their compliance session on first
 use and reuse it afterwards (measured: ~15s for the first call, ~5s after).
@@ -320,6 +324,7 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Get-MsecEntraRoleHolder](./docs/commands/Get-MsecEntraRoleHolder.md) - Who holds which directory role, separating what a role is assigned to from who effectively holds it, including PIM-eligible assignments and role-assignable groups expanded
 - [Get-MsecEntraPimPolicy](./docs/commands/Get-MsecEntraPimPolicy.md) - The PIM rules for each directory role: what activation demands, and whether a permanent assignment is allowed at all
 - [Get-MsecEntraConditionalAccessPolicy](./docs/commands/Get-MsecEntraConditionalAccessPolicy.md) - Conditional Access policies with conditions and grant controls flattened to columns
+- [Get-MsecEntraConditionalAccessChange](./docs/commands/Get-MsecEntraConditionalAccessChange.md) - Who changed which Conditional Access policy, when, and the before/after of each setting that moved - diffed out of the whole-policy JSON Entra records
 - [Get-MsecEntraConditionalAccessStats](./docs/commands/Get-MsecEntraConditionalAccessStats.md) - Aggregated Conditional Access outcomes over a period
 - [Get-MsecEntraConditionalAccessSignInLog](./docs/commands/Get-MsecEntraConditionalAccessSignInLog.md) - Raw sign-in events with their Conditional Access outcomes
 - [Get-MsecEntraMfaRegistration](./docs/commands/Get-MsecEntraMfaRegistration.md) - Per-user authentication-method registration: who can actually do MFA, with what
@@ -336,13 +341,24 @@ Compliance Administrator), which is what a 403 there usually means.
 - [Get-MsecIntuneCompliancePolicy](./docs/commands/Get-MsecIntuneCompliancePolicy.md) - Compliance policies: what makes a device compliant, and therefore allowed through Conditional Access
 - [Get-MsecIntuneDevice](./docs/commands/Get-MsecIntuneDevice.md) - Every managed device known to Intune
 - [Get-MsecIntuneScriptResult](./docs/commands/Get-MsecIntuneScriptResult.md) - Per-device results from every kind of Intune script: remediations, platform scripts, macOS custom attributes and custom compliance scripts
+- [Get-MsecIntuneAuditEvent](./docs/commands/Get-MsecIntuneAuditEvent.md) - Who changed which Intune policy, when, and the before/after value of every setting that moved. Retains far longer than the Entra audit log
+- [Get-MsecIntuneAsrRule](./docs/commands/Get-MsecIntuneAsrRule.md) - Every Attack Surface Reduction rule, the mode it is set to, which policy sets it and who that reaches - including the rules no policy configures at all
+- [Get-MsecIntuneReusableSetting](./docs/commands/Get-MsecIntuneReusableSetting.md) - Reusable settings endpoint security policies point at, with how many policies reference each. An unreferenced one is a leftover Intune never cleans up
+- [Get-MsecDefenderCertificateUsage](./docs/commands/Get-MsecDefenderCertificateUsage.md) - Code-signing certificates in use on the fleet, with validity windows and days until expiry. SignerHash is the thumbprint a Defender indicator takes
+- [Get-MsecDefenderDetectionRule](./docs/commands/Get-MsecDefenderDetectionRule.md) - Defender XDR custom detection rules, with the `autoDisabled` ones Defender silently switched off when their query broke
+- [New-MsecDefenderDetectionRule](./docs/commands/New-MsecDefenderDetectionRule.md) - Create a custom detection rule, running the query first so a malformed one is refused rather than silently autoDisabled later. Runs as the signed-in user
+- [New-MsecDefenderIndicator](./docs/commands/New-MsecDefenderIndicator.md) - Create a Defender indicator - allow or block a certificate, hash, IP, domain or URL. Runs as the signed-in user
 
 ### Microsoft Sentinel
 - [Get-MsecSentinelRule](./docs/commands/Get-MsecSentinelRule.md) - Analytics rules with their tuning state - severity, alert grouping, suppression - and the id that joins them to the alerts they produced. Runs as the signed-in user
 
 ### Azure
+- [Get-MsecAppGatewayClientActivity](./docs/commands/Get-MsecAppGatewayClientActivity.md) - Everything a client IP did through an Application Gateway, with whether it ever completed an authentication - reaching a login page is not logging in
 - [Search-MsecAzureResourceGraph](./docs/commands/Search-MsecAzureResourceGraph.md) - Run a bundled KQL query against Azure Resource Graph
+  - -ResourceType ApplicationInsights answers where every component's telemetry actually lands, and which workspaces were auto-created rather than chosen
 - [Search-MsecLogAnalytics](./docs/commands/Search-MsecLogAnalytics.md) - Run a bundled KQL query against a Log Analytics workspace
+  - -Subject AppInsights -Name Secrets finds credential-shaped strings written into telemetry, reporting where they are and never what they are
+  - -Subject AppInsights -Name PersonalData does the same for identifiable information, redacting emails to their domain
 - [Search-MsecDefenderHunting](./docs/commands/Search-MsecDefenderHunting.md) - Advanced hunting KQL against the Defender XDR event store (~30 days of raw telemetry)
   - -ResourceType ResourceChange answers what changed on a resource in the last 14 days, who changed it and from what value
 - [Invoke-MsecAzureVMScript](./docs/commands/Invoke-MsecAzureVMScript.md) - Run a bundled script on one or more Azure VMs

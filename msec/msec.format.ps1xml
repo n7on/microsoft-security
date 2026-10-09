@@ -101,5 +101,414 @@
         </TableRowEntries>
       </TableControl>
     </View>
+    <View>
+      <Name>MsecIntuneAuditEvent</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecIntuneAuditEvent</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>ActivityDateTime</Label><Width>20</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Activity</Label><Width>30</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Actor</Label><Width>30</Width></TableColumnHeader>
+          <!--
+            Resource is a string[] because a bulk edit names several, and a caller filtering
+            with -contains must get the names apart. Joined here for the table only.
+          -->
+          <TableColumnHeader><Label>Resource</Label><Width>34</Width></TableColumnHeader>
+          <!--
+            The COUNT of changed settings, not the settings themselves: one event can carry
+            dozens, and a table cell cannot hold them. ChangedProperties has them in full -
+            reach for Format-List or $_.ChangedProperties. A zero here is meaningful rather
+            than missing data: a delete or an assignment change moves no property values.
+          -->
+          <TableColumnHeader><Label>Changes</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Result</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.ActivityDateTime) { $_.ActivityDateTime.ToString('yyyy-MM-dd HH:mm') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>Activity</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Actor</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>@($_.Resource) -join ', '</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>ChangedCount</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Result</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecIntuneAsrRule</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecIntuneAsrRule</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>RuleName</Label><Width>52</Width></TableColumnHeader>
+          <!--
+            Blank, not 'off', where nothing configures the rule. The two are different states -
+            an explicit off wins a policy conflict and an absent rule does not - so rendering
+            the gap as a value would be a lie in the one column people scan first.
+          -->
+          <TableColumnHeader><Label>Mode</Label><Width>6</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Policy</Label><Width>32</Width></TableColumnHeader>
+          <!--
+            Included groups, then exclusions after 'excluding'. Both here because an ASR ring is
+            usually defined BY its carve-out - 'everyone excluding developers' - and an empty
+            cell next to an all-users assignment would hide exactly that.
+          -->
+          <TableColumnHeader><Label>AssignedTo</Label></TableColumnHeader>
+          <TableColumnHeader><Label>Excl</Label><Width>5</Width><Alignment>Right</Alignment></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>RuleName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Mode</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>PolicyName</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>
+                  $inc = @(@($_.AssignedGroup) + @(if ($_.AssignedAllUsers) { 'All users' }) + @(if ($_.AssignedAllDevices) { 'All devices' })) -join ', '
+                  $exc = @($_.ExcludedGroup) -join ', '
+                  if ($exc) { (@($inc, "excluding $exc") | Where-Object { $_ }) -join ', ' } else { $inc }
+                </ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if (@($_.PerRuleExclusion).Count) { @($_.PerRuleExclusion).Count } else { '' }</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecDefenderCertificateUsage</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecDefenderCertificateUsage</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Signer</Label><Width>44</Width></TableColumnHeader>
+          <!--
+            Blank, not a number, where the record carries no expiry. A sentinel here would sort
+            alongside real values and put "unknown" at whichever end the sentinel happened to
+            fall - which for an expiry column is a wrong answer either way.
+          -->
+          <TableColumnHeader><Label>DaysLeft</Label><Width>9</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Devices</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Files</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Trusted</Label><Width>8</Width></TableColumnHeader>
+          <!-- The thumbprint an indicator takes. Full width: a truncated one is unusable. -->
+          <TableColumnHeader><Label>SignerHash</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>Signer</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.DaysUntilExpiry) { '' } else { $_.DaysUntilExpiry }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>Devices</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Files</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>IsTrusted</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>SignerHash</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecIntuneReusableSetting</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecIntuneReusableSetting</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>DisplayName</Label><Width>44</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Kind</Label><Width>20</Width></TableColumnHeader>
+          <!--
+            Blank where the count is unknown rather than 0. A zero here means "no policy uses
+            this, delete it"; printing an unknown as zero could get something in use removed.
+          -->
+          <TableColumnHeader><Label>Policies</Label><Width>9</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Entries</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>LastModified</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>DisplayName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Kind</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.ReferencingPolicyCount) { '' } else { $_.ReferencingPolicyCount }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>EntryCount</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.LastModified) { $_.LastModified.ToString('yyyy-MM-dd') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecDefenderDetectionRule</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecDefenderDetectionRule</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>DisplayName</Label><Width>40</Width></TableColumnHeader>
+          <!--
+            'autoDisabled' is why this column is wide enough to show it in full. Truncated to
+            'autoDisab...' it reads as a variant of 'disabled', which is the one conclusion that
+            must not be drawn: nobody chose it, Defender switched the rule off when its query
+            broke, and the rule still looks live in the portal.
+          -->
+          <TableColumnHeader><Label>Status</Label><Width>13</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Frequency</Label><Width>10</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Severity</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>NextRun</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem><PropertyName>DisplayName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Status</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Frequency</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Severity</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.NextRun) { $_.NextRun.ToString('yyyy-MM-dd HH:mm') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecEntraConditionalAccessChange</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecEntraConditionalAccessChange</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>ActivityDateTime</Label><Width>17</Width></TableColumnHeader>
+          <TableColumnHeader><Label>PolicyName</Label><Width>44</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Actor</Label><Width>30</Width></TableColumnHeader>
+          <!--
+            State transition, not the two values separately: 'enabled -> disabled' is the thing
+            worth seeing at a glance, and a blank where nothing moved keeps the column quiet.
+          -->
+          <TableColumnHeader><Label>State</Label><Width>34</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Changes</Label><Width>8</Width><Alignment>Right</Alignment></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.ActivityDateTime) { $_.ActivityDateTime.ToString('yyyy-MM-dd HH:mm') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>PolicyName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Actor</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.StateChanged) { "$($_.StateBefore) -> $($_.StateAfter)" } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>ChangedCount</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecAppGatewayClientActivity</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecAppGatewayClientActivity</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>TimeGenerated</Label><Width>17</Width></TableColumnHeader>
+          <TableColumnHeader><Label>ClientIp</Label><Width>16</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Method</Label><Width>7</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Status</Label><Width>7</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <!--
+            Blank, not False, where the row cannot answer. A summary row has no HTTP method, so
+            'did this authenticate' is unanswerable there - printing False would assert something
+            nobody measured, which is the one mistake this command is built to avoid.
+          -->
+          <TableColumnHeader><Label>Auth</Label><Width>6</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Uri</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.TimeGenerated) { $_.TimeGenerated.ToString('MM-dd HH:mm:ss') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>ClientIp</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Method</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.Status) { '' } else { $_.Status }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.Authenticated) { '' } elseif ($_.Authenticated) { 'YES' } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>Uri</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecDefenderEmail</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecDefenderEmail</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Time</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Dir</Label><Width>9</Width></TableColumnHeader>
+          <!--
+            Where the message was INJECTED - the last SMTP hop - not where its author was.
+            Relayed mail geolocates to the relay, so this is a statement about infrastructure.
+          -->
+          <TableColumnHeader><Label>SenderCountry</Label><Width>16</Width></TableColumnHeader>
+          <TableColumnHeader><Label>From</Label><Width>34</Width></TableColumnHeader>
+          <TableColumnHeader><Label>To</Label><Width>30</Width></TableColumnHeader>
+          <!--
+            Blank on clean mail. Printing 'None' would read as a verdict Defender never gave;
+            an empty cell says only that no threat type was recorded.
+          -->
+          <TableColumnHeader><Label>Threat</Label><Width>12</Width></TableColumnHeader>
+          <!--
+            Where the message ENDED UP, after ZAP - what a user could actually have opened -
+            rather than where it was first delivered.
+          -->
+          <TableColumnHeader><Label>LandedIn</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Subject</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.Timestamp) { $_.Timestamp.ToString('MM-dd HH:mm') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>EmailDirection</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>SenderCountry</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>SenderFromAddress</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>RecipientEmailAddress</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>ThreatTypes</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>LatestDeliveryLocation</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Subject</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecDefenderTeamsMessage</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecDefenderTeamsMessage</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Time</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Thread</Label><Width>9</Width></TableColumnHeader>
+          <!--
+            Teams has no sender IP, so the trust boundary is the nearest thing to mail's
+            direction. EXT is loud because an external thread is the one worth noticing.
+          -->
+          <TableColumnHeader><Label>Ext</Label><Width>4</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Sender</Label><Width>34</Width></TableColumnHeader>
+          <!--
+            The COUNT of recipients, not the addresses: one row is one message and a group chat
+            carries dozens. RecipientAddress has them in full, as a string[] for -contains.
+          -->
+          <TableColumnHeader><Label>To</Label><Width>4</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <TableColumnHeader><Label>Urls</Label><Width>5</Width><Alignment>Right</Alignment></TableColumnHeader>
+          <!--
+            Blank where Defender gave no verdict. Printing 'None' would read as a judgement
+            nobody made; in a tenant Defender has never acted on, this column is blank
+            throughout and that absence is itself the finding.
+          -->
+          <TableColumnHeader><Label>Threat</Label><Width>12</Width></TableColumnHeader>
+          <!--
+            Subject is empty for chat and meeting messages, so the conversation name is the only
+            usable handle for most of the table. Falls back to Subject for channel posts.
+          -->
+          <TableColumnHeader><Label>Thread/Subject</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.Timestamp) { $_.Timestamp.ToString('MM-dd HH:mm') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>ThreadType</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.IsExternalThread) { 'EXT' } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>SenderEmailAddress</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>@($_.RecipientAddress).Count</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.UrlCount) { $_.UrlCount } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>ThreatTypes</PropertyName></TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.ThreadName) { $_.ThreadName } else { $_.Subject }</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>MsecPurviewActivity</Name>
+      <ViewSelectedBy>
+        <TypeName>MsecPurviewActivity</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader><Label>Happened</Label><Width>17</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Activity</Label><Width>22</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Workload</Label><Width>17</Width></TableColumnHeader>
+          <TableColumnHeader><Label>User</Label><Width>32</Width></TableColumnHeader>
+          <!--
+            Blank on a non-DLP event. Flattened out of PolicyMatchInfo, because grouping by the
+            raw API's PolicyName puts every row under one empty key.
+          -->
+          <TableColumnHeader><Label>Policy</Label><Width>26</Width></TableColumnHeader>
+          <!--
+            Resolved from the GUID. A label deleted since the event shows as its GUID rather
+            than blank - historical events outlive their labels, and blank would read as
+            "unlabelled".
+          -->
+          <TableColumnHeader><Label>Label</Label><Width>14</Width></TableColumnHeader>
+          <TableColumnHeader><Label>Item</Label></TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <ScriptBlock>if ($_.Happened) { $_.Happened.ToString('MM-dd HH:mm:ss') } else { '' }</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem><PropertyName>Activity</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>Workload</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>User</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>PolicyName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>SensitivityLabelName</PropertyName></TableColumnItem>
+              <TableColumnItem><PropertyName>ItemName</PropertyName></TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
   </ViewDefinitions>
 </Configuration>

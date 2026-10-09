@@ -1,0 +1,47 @@
+// Inbound mail by the geography of the SENDING SERVER, with how much of it was let through.
+//
+// Loaded by Search-MsecDefenderHunting -Subject Email -Name SenderGeography.
+//
+// THIS IS THE SENDING INFRASTRUCTURE, NOT THE SENDER. SenderIPv4 is the last hop that handed
+// the message to Microsoft, so a message from a Russian author sent through Gmail geolocates
+// as the United States, and a message from a London colleague relayed through a provider's
+// Frankfurt egress geolocates as Germany. The country answers "where was this injected", which
+// is a question about infrastructure and reputation - not about who wrote it.
+//
+// GEOGRAPHY IS NOT A VERDICT. Every tenant has legitimate mail from everywhere, and bulk
+// senders, newsletters and SaaS notifications dominate the long tail. What makes a row worth
+// reading is the combination: a country with few domains, few recipients, and a high Delivered
+// share is a different shape from one with hundreds of domains and normal delivery.
+//
+// DELIVERED USES LatestDeliveryLocation, not DeliveryLocation, so a message that reached a
+// mailbox and was pulled back later by ZAP is not counted as delivered. Counting the original
+// location overstates what actually sat in front of a user.
+//
+// IPv6 SENDERS ARE REPORTED SEPARATELY RATHER THAN DROPPED. geo_info_from_ip_address resolves
+// IPv4 here; a message that arrived over IPv6 has an empty SenderIPv4 and would silently vanish
+// from a country breakdown, understating volume with no indication that it had. They are
+// counted under '(IPv6 - not geolocated)' so the gap is visible in the same table.
+//
+// NO TIME FILTER IN THIS FILE, deliberately - Search-MsecDefenderHunting passes the window to
+// the API as its own timespan parameter, so one file serves every -Days.
+EmailEvents
+| where EmailDirection == "Inbound"
+| extend Country = case(
+      isnotempty(SenderIPv4), tostring(geo_info_from_ip_address(SenderIPv4).country),
+      isnotempty(SenderIPv6), "(IPv6 - not geolocated)",
+                              "(no sender IP)")
+| extend Country = iff(isempty(Country), "(IP not in geo database)", Country)
+| summarize
+    Messages        = count(),
+    SenderDomains   = dcount(SenderFromDomain),
+    SenderIps       = dcount(SenderIPv4),
+    Recipients      = dcount(RecipientEmailAddress),
+    // Reached a mailbox and stayed there.
+    Delivered       = countif(LatestDeliveryLocation !in ("Quarantine", "Deleted items", "Junk folder")),
+    Threats         = countif(isnotempty(ThreatTypes)),
+    FirstContact    = countif(IsFirstContact == true),
+    TopDomains      = make_set(SenderFromDomain, 10),
+    LastSeen        = max(Timestamp)
+    by Country
+| extend DeliveredPercent = round(todouble(Delivered) * 100 / Messages, 1)
+| sort by Messages desc

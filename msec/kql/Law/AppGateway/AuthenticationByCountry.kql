@@ -1,0 +1,71 @@
+// Completed sign-ins through an Application Gateway, by client country.
+//
+// Loaded by Search-MsecLogAnalytics -Subject AppGateway -Name AuthenticationByCountry -WorkspaceName <ws>.
+//
+// REACHING A LOGIN PAGE IS NOT LOGGING IN, AND THE DIFFERENCE IS THE WHOLE QUERY. A gateway
+// access log has no usernames and no authentication result - it has HTTP. So 'who got in' has
+// to be read off the shape of an OpenID Connect exchange:
+//
+//   GET  /connect/authorize            302   the application sends the browser to the IdP
+//   GET  /Account/Login                200   the IdP renders its login page      <- anyone can reach this
+//   POST /Account/Login                      credentials submitted
+//   POST /signin-oidc                  302   THE APPLICATION ACCEPTS AN IDENTITY TOKEN
+//   GET  /connect/authorize/callback   200   the authorization code is exchanged
+//
+// A 200 on /Account/Login means a login page was DISPLAYED. Crawlers, scanners and link
+// previewers all produce it in volume, and treating it as a sign-in turns every search engine
+// into an intruder. The two rows below that are marked AuthCompleted are the ones a client
+// cannot reach without the identity provider having authenticated it.
+//
+// ONLY THE PER-REQUEST LOG CAN ANSWER THIS. AGWAccessSummary_CL carries client IP and a status
+// class but no HTTP method and no full URI, so a failed POST to a login page is indistinguishable
+// from a GET of it there. A workspace whose gateways have moved to resource-specific logging
+// writes AGWAccessLogs instead, which on the Basic plan cannot be queried by KQL at all - so on
+// such a workspace this query answers only for the period BEFORE the switch, and returns nothing
+// for the days after it. An empty result therefore means EITHER no sign-ins OR no readable
+// per-request log; check the window in ClientGeography before concluding.
+//
+// SESSION ACTIVITY IS THE CORROBORATION. An address that authenticated and then did nothing is
+// a different thing from one that went on to work in the application for an hour, so requests
+// after the authentication point are counted alongside.
+//
+// NO TIME FILTER IN THIS FILE - the window comes from -Days as a server-side timespan.
+let AccessLog =
+    AzureDiagnostics
+    | where Category == 'ApplicationGatewayAccessLog'
+    | project TimeGenerated,
+              ClientIp   = column_ifexists('clientIP_s', ''),
+              Method     = column_ifexists('httpMethod_s', ''),
+              Uri        = column_ifexists('requestUri_s', ''),
+              Status     = toint(column_ifexists('httpStatus_d', 0)),
+              Host       = column_ifexists('host_s', ''),
+              UserAgent  = column_ifexists('userAgent_s', '')
+    | where isnotempty(ClientIp);
+let Authenticated =
+    AccessLog
+    // Both signatures require the identity provider to have already authenticated the client.
+    | where (Method == 'POST' and Uri has '/signin-oidc' and Status in (302, 200))
+         or (Uri has '/connect/authorize/callback' and Status == 200)
+    | summarize AuthEvents = count(), FirstAuth = min(TimeGenerated), LastAuth = max(TimeGenerated),
+                AuthPaths = make_set(Uri, 5)
+              by ClientIp;
+AccessLog
+| join kind=inner Authenticated on ClientIp
+| summarize
+    TotalRequests  = count(),
+    // Everything after the first authentication - the shape of an actual working session.
+    SessionRequests = countif(TimeGenerated >= FirstAuth),
+    Hosts          = make_set(Host, 10),
+    Agents         = make_set(UserAgent, 5),
+    FirstSeen      = min(TimeGenerated),
+    LastSeen       = max(TimeGenerated),
+    AuthEvents     = any(AuthEvents),
+    FirstAuth      = any(FirstAuth),
+    AuthPaths      = any(AuthPaths)
+    by ClientIp
+| extend geo = geo_info_from_ip_address(ClientIp)
+| extend Country = tostring(geo.country), State = tostring(geo.state), City = tostring(geo.city)
+| project Country, State, City, ClientIp,
+          AuthEvents, FirstAuth, SessionRequests, TotalRequests,
+          FirstSeen, LastSeen, Hosts, Agents, AuthPaths
+| sort by Country asc, SessionRequests desc

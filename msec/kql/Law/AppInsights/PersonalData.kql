@@ -1,0 +1,82 @@
+// Personal-data-shaped strings in Application Insights and App Service telemetry - where
+// identifiable information has been written into a log, and which application wrote it.
+//
+// Loaded by Search-MsecLogAnalytics -Subject AppInsights -Name PersonalData -WorkspaceName <ws>.
+//
+// WHY THIS IS A DIFFERENT QUESTION FROM Secrets.kql. A leaked secret is a vulnerability: rotate
+// it and the exposure ends. Personal data in a log is a PROCESSING activity - it has a lawful
+// basis or it does not, it falls inside the workspace's retention period, and it has to be
+// findable if somebody exercises a right to erasure. The answer is not always 'remove it'; it
+// is 'know it is there, and be able to say why'.
+//
+// REDACTION IS HARDER HERE AND IS DELIBERATELY HEAVIER. Six characters of a secret is nothing;
+// six characters of an email address or a personal identity number is identifying. So no
+// fragment of a match is projected at all:
+//   * emails are reduced to their DOMAIN, which is the triage signal that matters - whether
+//     these are staff addresses, a sponsor's, or trial participants' - without naming anyone.
+//   * everything else is reduced to a length.
+// DistinctValues is how many different people may be behind an occurrence count.
+//
+// FALSE POSITIVES ARE EXPECTED AND SOME ARE INFORMATIVE. A Swedish personal identity number is
+// ten or twelve digits in a shape that an order number, a timestamp or a correlation id can
+// also take - the pattern below requires a plausible date to cut most of that, and will still
+// match some non-people. Treat a hit as 'go and look', not as a finding. An email address in a
+// sign-in URL is usually expected; the same address in an exception message usually is not.
+//
+// WHAT THIS CANNOT SEE. Nothing here recognises a name, a free-text address, a date of birth
+// written out, or a study participant identifier - those are organisation-specific and look
+// like ordinary words. A clean result from this query means the listed PATTERNS were not found.
+// It is not a statement that the workspace holds no personal data, and must not be quoted as
+// one in a DPIA or a records-of-processing entry.
+//
+// -Days is the cost control, as in Secrets.kql, and the window is deliberately not baked into
+// this file - see the note there.
+
+// One branch per COLUMN - see the note in Secrets.kql for why concatenating them and keeping
+// one label is worse than not reporting the column at all.
+union isfuzzy=true
+  (AppServiceConsoleLogs | extend Col='ResultDescription', Txt=ResultDescription),
+  (AppServiceAppLogs     | extend Col='ResultDescription', Txt=ResultDescription),
+  (AppServiceAppLogs     | extend Col='Message',           Txt=Message),
+  (AppExceptions         | extend Col='Message',           Txt=Message),
+  (AppExceptions         | extend Col='OuterMessage',      Txt=OuterMessage),
+  (AppExceptions         | extend Col='InnermostMessage',  Txt=InnermostMessage),
+  (AppRequests           | extend Col='Url',               Txt=Url),
+  (AppDependencies       | extend Col='Data',              Txt=Data),
+  (AppServiceHTTPLogs    | extend Col='CsUriQuery',        Txt=CsUriQuery),
+  (AppServiceHTTPLogs    | extend Col='Cookie',            Txt=Cookie),
+  (AppPageViews          | extend Col='Url',               Txt=Url)
+| where isnotempty(Txt)
+| extend
+    H_Mail = extract(@'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', 1, Txt),
+    // Swedish personnummer, 10 or 12 digits, with the date part constrained to something
+    // plausible. Without the date constraint this matches almost any long number.
+    H_Pnr  = extract(@'\b((?:19|20)?\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[-+]?\d{4})\b', 1, Txt),
+    // Country code restricted to a real IBAN-issuing set. The unrestricted form - any two
+    // letters then two digits - matched base64 and GUID fragments in URL query strings far more
+    // often than it matched an IBAN, which is a false positive that reads alarmingly in a report
+    // about personal data.
+    H_Iban = extract(@'\b((?:SE|NO|DK|FI|DE|FR|GB|NL|BE|ES|IT|AT|CH|PL|IE|PT|LU)\d{2}[A-Z0-9]{11,28})\b', 1, Txt),
+    // Card-shaped only - no Luhn check, which KQL cannot do cheaply. Expect noise.
+    H_Card = extract(@'\b((?:4\d{12}(?:\d{3})?|5[1-5]\d{14}|3[47]\d{13}))\b', 1, Txt)
+| extend Pattern = case(
+    isnotempty(H_Pnr),  'SwedishPersonalIdentityNumber',
+    isnotempty(H_Card), 'PaymentCardShaped',
+    isnotempty(H_Iban), 'Iban',
+    isnotempty(H_Mail), 'EmailAddress',
+    '')
+| where isnotempty(Pattern)
+// The redaction. Emails keep only the domain; everything else keeps only a length.
+| extend Shape = case(
+    Pattern == 'EmailAddress',
+        strcat('<local part redacted>@', tostring(split(H_Mail, '@')[1])),
+    Pattern == 'SwedishPersonalIdentityNumber',
+        strcat('<', tostring(strlen(H_Pnr)), ' digits redacted>'),
+    Pattern == 'Iban',
+        strcat('<', tostring(strlen(H_Iban)), ' chars redacted>'),
+        strcat('<', tostring(strlen(H_Card)), ' digits redacted>'))
+| extend Value = coalesce(H_Pnr, H_Card, H_Iban, H_Mail)
+| summarize Occurrences=count(), FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated),
+            DistinctValues=dcount(Value), ExampleShape=any(Shape)
+          by Pattern, Table=Type, Column=Col, Resource=tostring(split(_ResourceId,'/')[-1])
+| order by Occurrences desc

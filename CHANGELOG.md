@@ -28,6 +28,408 @@ All notable changes to this project will be documented in this file.
   called. Every stub now declares `[CmdletBinding()]` and the parameters the tests filter on.
 
 ### Added
+- `Get-MsecPurviewActivity` - Purview Activity Explorer events, one row each, with policy, rule
+  and sensitivity-label names resolved. Narrow server-side with `-Activity`, then `Group-Object`
+  the rest.
+
+  THIS IS THE ONLY WAY TO MEASURE DLP IN A TENANT WITHOUT DEFENDER FOR CLOUD APPS. Advanced
+  hunting has no DLP table at all, and `CloudAppEvents` is present but empty unless Defender for
+  Cloud Apps is onboarded - so "how often does this policy actually fire" is unanswerable from
+  hunting and answerable from here.
+
+  THE API HAS THREE WAYS OF SILENTLY RETURNING NOTHING, and the command exists mostly to stop
+  each from reading as "there was no activity". All three were hit while writing it.
+
+  A WINDOW OF 30 DAYS OR MORE RETURNS A WHOLLY EMPTY RESPONSE - no rows, no total, no result
+  code, and no error. Measured: 29 days returned 143,952 events, 30 days returned silence.
+  `-Days` is capped at 29 rather than the 30 the documentation implies, and the empty-response
+  shape is detected and thrown on by testing `ResultCode`, because row count alone cannot tell
+  it from a quiet window.
+
+  THE FILTER TAKES THE `ActivityId` TOKEN, NOT THE DISPLAYED NAME. `DLPRuleMatch` matches;
+  `DLP rule matched` - the string the portal and the `Activity` column both show - returns an
+  empty result rather than an error. `-Activity` refuses the displayed form and names the token
+  to use instead.
+
+  ONE CALL IS ONE PAGE, NOT THE RESULT SET. The response carries `TotalResultCount` for the
+  whole query and at most `PageSize` rows; paging continues through `WaterMark` until
+  `LastPage`. Summarising page one of a 29,000-row week is a confident answer drawn from 17% of
+  it. The command pages to the end and warns when the pull falls materially short of the total,
+  while tolerating the small drift from events landing mid-pull.
+
+  NESTED FIELDS ARE FLATTENED because the useful ones are not top-level. `PolicyName` and
+  `RuleName` live inside `PolicyMatchInfo`, so grouping by `PolicyName` on the raw output puts
+  every row under one blank key - which reads as "no policy matched". `SensitivityLabel` is a
+  bare GUID and is resolved to the label's display name; a label deleted since the event is
+  reported as its GUID rather than as a blank, because historical events outlive their labels
+  and blank would read as "unlabelled".
+
+- `Get-MsecDefenderEmail` - messages from the Defender `EmailEvents` table, one row each, with
+  the sending server's country resolved as a column. A general pivot rather than a command per
+  question: narrow server-side with `-SenderCountry`, `-SenderDomain`, `-SenderAddress`,
+  `-RecipientAddress`, `-SenderIp`, `-Subject`, `-ThreatType`, `-DeliveryLocation`,
+  `-ThreatsOnly` or `-Direction`, then `Where-Object` and `Group-Object` the rest.
+
+  `EmailEvents` IS NOT A SPAM TABLE. It holds every message Exchange Online Protection
+  processed - inbound, outbound and intra-org, clean mail included. The verdict is a column,
+  not a filter.
+
+  SENDERCOUNTRY IS THE SENDING INFRASTRUCTURE, NOT THE AUTHOR. `SenderIPv4` is the last SMTP hop
+  that connected to Exchange Online, so a message relayed through Gmail or SendGrid geolocates
+  to that provider's egress and says nothing about where the person was. Nothing in
+  `EmailEvents` holds the author's client address - it never reaches the recipient's mail
+  system. `AuthenticationDetails` sits next to it because SPF/DKIM/DMARC answer the stronger
+  question: was that infrastructure authorised to send for the domain it claims.
+
+  A MESSAGE THAT ARRIVED OVER IPv6 HAS NO COUNTRY AT ALL and carries
+  `(IPv6 - not geolocated)` rather than a blank. `geo_info_from_ip_address` resolves IPv4, and a
+  blank would be swallowed by a `-eq` filter exactly like a real miss. The unplaceable buckets
+  can be asked for by name, so they are reachable and not merely visible.
+
+  THE FILTER PARAMETERS ARE NOT A CONVENIENCE WRAPPER AROUND `Where-Object`. They apply in KQL
+  before the row ceiling, so they change which messages are available to filter downstream -
+  filtering a truncated fetch in PowerShell does not. Ask for a window holding 40,000 messages,
+  take the newest ceiling-worth, filter to one country, and the answer looks complete and is
+  wrong.
+
+  THE CEILING CANNOT BE REMOVED, ONLY MOVED, which is why `-MaxMessages` defaults to the
+  `/security/runHuntingQuery` ceiling instead of a smaller number of msec's own invention: a
+  command without the parameter would still be truncated by the service, it would just stop
+  saying so. The matching total is counted separately and compared with what was returned, so
+  truncation is reported with both numbers either way. Both queries are built from one filter
+  expression - a count over a different population than the rows would be worse than no count.
+
+  `-SenderDomain` and `-SenderAddress` match the header From OR the envelope MailFrom, because
+  relayed mail carries different values in the two and matching one would quietly miss it.
+  `-Subject` uses `contains` rather than `has`: `has` is token-based and finds "Invoice" in
+  "Invoice due" but not in "Invoice-2451".
+
+- `Get-MsecDefenderTeamsMessage` - Teams messages from the Defender `MessageEvents` table, one
+  row each, with recipients flattened out of `RecipientDetails` and URL counts and domains
+  joined from `MessageUrlInfo`. Same shape as `Get-MsecDefenderEmail`: narrow server-side with
+  `-SenderAddress`, `-RecipientAddress`, `-Subject`, `-ThreadName`, `-ThreadType`,
+  `-SenderType`, `-ExternalOnly`, `-ThreatType` or `-ThreatsOnly`, then filter the rest in
+  PowerShell.
+
+  THERE IS NO SENDER IP, SO THERE IS NO COUNTRY. Teams is not SMTP - a message arrives through
+  Microsoft's service from an authenticated identity, and `MessageEvents` has no address column
+  of any kind. The geography question `SenderCountry` answers for mail cannot be asked here.
+  What stands in its place is identity and trust boundary: `SenderType` (User, Anonymous,
+  Applications) and `IsExternalThread`.
+
+  ONE ROW PER MESSAGE, NOT PER RECIPIENT - the opposite of `EmailEvents`. `RecipientAddress` is
+  a `string[]`, so test it with `-contains`. Joining the addresses into one string would force
+  `-like '*someone@x*'` on every such query, and a substring match reports `anna@x` as a hit
+  for `joanna@x`.
+
+  SUBJECT IS EMPTY FOR CHAT AND MEETING MESSAGES - populated only for channel posts. `-Subject`
+  therefore matches nothing across the bulk of the table, so `-ThreadName` is offered beside it
+  as the usable handle for chat. Both exist because channel posts really do have subjects.
+
+  A LEFTOUTER JOIN THAT MISSES RETURNS AN EMPTY OBJECT, NOT NULL, which `??` does not catch and
+  a cast does not survive: `[int]` on it throws, and `[bool]` on it returns `$true` - so a
+  missing `IsExternalThread` would have silently reported an internal thread as crossing the
+  tenant boundary. Every value from the API is coerced through a string first.
+
+  VERDICT COLUMNS CAN BE EMPTY ACROSS THE WHOLE TABLE AND THAT IS NOT A BUG. `ThreatTypes`,
+  `DetectionMethods`, `ConfidenceLevel` and `SafetyTip` are populated only where Defender for
+  Office 365 acted on a Teams message; they are returned regardless, because their absence is
+  the finding when you expected otherwise. `MessagePostDeliveryEvents` is NOT joined, so there
+  is no equivalent of mail's `LatestDeliveryLocation`: `DeliveryLocation` says where a message
+  was delivered, not whether it was removed afterwards.
+
+- `Get-MsecAppGatewayClientActivity` - everything one or more client IPs did through an
+  Application Gateway, and whether any of them ever completed an authentication.
+
+  REACHING A LOGIN PAGE IS NOT LOGGING IN, and that distinction is the command. A gateway access
+  log has no usernames and no authentication result, so a 200 on a login page says only that a
+  page was rendered - crawlers produce those constantly. Authentication is inferred from the two
+  points a client cannot reach unless the identity provider already authenticated it:
+  `POST /signin-oidc` and `GET /connect/authorize/callback`. Treating a login-page 200 as a
+  sign-in turns every search engine into an intruder.
+
+  `Authenticated` is `$null`, never `$false`, on hourly-summary rows: that table carries client
+  IP and a status class but NO HTTP method and NO full URI, so the question is unanswerable
+  there and `$false` would assert something unmeasured. `-SummaryOnly` keeps the same
+  distinction per address - `$false` only where a per-request log existed and showed none.
+
+  `Grain` says which source each row came from, because a window can change grain part-way
+  through: a gateway switched to resource-specific logging stops writing AzureDiagnostics, and
+  on the Basic plan the replacement table cannot be read by KQL at all. An address whose detail
+  stops on a given day was not necessarily quiet from then on.
+
+  A malformed address is refused before the query rather than filtered - a CIDR suffix or a
+  stray space matches nothing, and an empty result reads as "this address did nothing".
+
+- Two bundled KQL queries for the same ground: `Law/AppGateway/ClientGeography` (traffic by
+  client country across both log modes) and `Law/AppGateway/AuthenticationByCountry` (completed
+  sign-ins only), plus `Hunting/Email/SenderGeography` (inbound mail by sending-server country,
+  with delivered share and threat counts).
+
+  `SenderGeography` documents that `SenderIPv4` is the LAST HOP, not the author - mail from a
+  Russian sender relayed through Gmail geolocates as the United States - and buckets IPv6
+  senders explicitly rather than letting them vanish from a country breakdown.
+
+  BOTH UNION LEGS MUST AGREE ON COLUMN TYPE. A bare integer literal in KQL is a `long` while
+  `toint()` returns an `int`; mismatched legs make Kusto emit `Requests_long` and `Requests_int`
+  as two columns instead of failing, and the later `sum(Requests)` then references a column that
+  does not exist - surfacing only as `BadRequest` with nothing naming the cause. Found the hard
+  way; `tolong()` on both legs is the fix, and the same trap is already documented for
+  `TransactionId` in `Law/Waf/All.kql`.
+
+- `Get-MsecEntraConditionalAccessChange` - who changed which Conditional Access policy, when,
+  and the before/after of each setting that actually moved.
+
+  Entra records a CA change as ONE audit property whose old and new values are the entire policy
+  as a JSON string. Read raw that is two multi-kilobyte blobs and no answer; this parses both and
+  reports only the differing fields, so "MFA was removed from policy X" is a row.
+
+  `modifiedDateTime` is EXCLUDED from the diff because it changes on every edit by definition -
+  left in, every change carries a meaningless entry and the real one is harder to find. Same for
+  `id` and `createdDateTime`, which cannot change at all.
+
+  `state` is lifted into its own column. A policy moving `enabled` to `disabled`, or out of
+  `enabledForReportingButNotEnforced` into enforcement, is the highest-signal CA change there is
+  and is otherwise one field inside a large object.
+
+  AN APP CAN CHANGE CONDITIONAL ACCESS AND USUALLY DOES. Measured on one tenant, 11 of 15 changes
+  came from a Microsoft365DSC orchestrator service principal and 4 from people, so the actor
+  falls back from user principal name to application display name - reading only
+  `initiatedBy.user` would report the majority of changes as authorless.
+
+  An empty result WARNS: the directory audit log retains 30 days on Entra ID P1/P2 and 7 on the
+  free tier, so silence is not stability. `ModifiedDateTime` on the policy object persists
+  indefinitely, and the help points at comparing the two.
+
+  Needs only `AuditLog.Read.All`, which `New-MsecApp` already grants.
+
+- `New-MsecDefenderDetectionRule` - creates a Defender XDR custom detection rule from an
+  advanced hunting query, after running the query to check it works.
+
+  THE VALIDATION IS THE POINT, NOT THE POST. A custom detection whose query is malformed,
+  references a table the tenant does not have, or omits a column its entity mapping names is
+  accepted by the portal and by the API, then fails on its schedule - and Defender eventually
+  marks it `autoDisabled` while it carries on looking live in the rule list. So the query is
+  executed first through the app's read-only hunting access and creation is refused if it does
+  not run, naming the missing column, because Defender's own rejection does not say which.
+
+  Row count is checked too: the other way a new detection goes wrong is working perfectly and
+  matching eight hundred things. A query matching more than `-MaxExpectedRows` warns before
+  anything is created.
+
+  A query matching NOTHING is explicitly allowed - that is the normal state of a good detection,
+  and refusing it would block exactly the rules worth having. Column names simply cannot be
+  checked against an empty result, which the verbose stream says rather than passing silently.
+
+  TWO IDENTITIES BY DESIGN: validation reads through the app certificate
+  (`ThreatHunting.Read.All`); creation writes through the delegated session from
+  `Connect-MsecAdmin -Scope CustomDetection.ReadWrite.All`, which is the only scope this API
+  accepts - there is no read-only or lesser one. A read-only app that could add alert rules
+  would not be read-only in any sense that matters.
+
+- `Get-MsecDefenderDetectionRule` - Defender XDR custom detection rules: the scheduled advanced
+  hunting queries that raise alerts, with their run status, schedule and query.
+
+  NOT THE SAME AS `Get-MsecSentinelRule`, and the two are easy to confuse because Microsoft
+  calls both "detection rules". They are different products reading different stores, and
+  neither can see the other's. Measured on one tenant: 53 Sentinel rules, none of them able to
+  see a Defender device event, because no `Device*` table exists in that workspace. Asking the
+  wrong command returns a confident list of the wrong rules.
+
+  'AUTODISABLED' IS THE REASON IT EXISTS. Defender switches a custom detection off by itself
+  when its query starts failing - a renamed column, a table that stops resolving. The rule
+  still exists, still appears in the portal list, and has silently stopped running. That is
+  indistinguishable from a rule that works and finds nothing, which is the most expensive
+  failure a detection can have.
+
+  `status`, NOT `isEnabled`: that property was removed from the resource on 2026-10-01 along
+  with `detectorId` and `lastRunDetails`. Code still reading it gets `$null`, which is falsy,
+  and reports every live rule as disabled. The retired property is read only as a fallback when
+  `status` is absent, and neither present reports `$null` - unknown, not off.
+
+  Needs `CustomDetection.Read.All`, added to `New-MsecApp`. RUNNING a hunting query and SEEING
+  the scheduled detections built on it are separate grants: `ThreatHunting.Read.All` covers only
+  the first, so without this the module could execute any query it liked and still not answer
+  "do we detect that?".
+
+- `Get-MsecIntuneReusableSetting` - the device groups and setting blocks endpoint security
+  policies reference, with how many policies use each and what is inside them.
+
+  A Device Control policy says "Allow only authorized USBs" and then points at a reusable
+  setting by GUID. The policy is the rule; the reusable setting is the answer - which devices,
+  by serial number. Reading the policy alone tells you a decision is being made and not what it
+  decides, and `Get-MsecIntuneAsrRule` prints that GUID unresolved.
+
+  AN UNREFERENCED REUSABLE SETTING IS A LEFTOVER AND INTUNE DOES NOT CLEAN THEM UP. Deleting a
+  policy leaves its reusable settings behind, unreferenced and shown as unused by no blade -
+  measured on one tenant, deleting two Device Control policies left two orphans.
+
+  BOTH THE REFERENCE COUNT AND THE CONTENTS ARE ABSENT WITHOUT AN EXPLICIT `$select`. A plain
+  GET returns id, displayName, description, settingDefinitionId and lastModifiedDateTime, and
+  silently omits `referencingConfigurationPolicyCount` and `settingInstance` - not null,
+  absent. Code that reads them without asking gets `$null` and reports every setting as
+  unreferenced and empty, which is how an in-use allow-list gets deleted.
+
+  A missing count is therefore reported as `$null`, never `0`, and `-UnreferencedOnly` excludes
+  unknowns: orphaned and unmeasured are different, and only one of them justifies deletion.
+
+  Entries nest at varying depths in the payload, so they are collected by walking the whole
+  setting instance rather than assuming a fixed shape.
+
+- `Get-MsecDefenderCertificateUsage` and `New-MsecDefenderIndicator` - the code-signing
+  certificates in use on the fleet, and the ability to allow or block one.
+
+  `SignerHash` IS THE WINDOWS THUMBPRINT, which is what makes the pair useful rather than merely
+  informative. Verified both ways on one tenant: the value Defender reported and the SHA-1
+  computed from the vendor's own installer were identical. The Defender portal's wizard wants a
+  `.CER` upload and derives the thumbprint from it; the API takes the thumbprint directly, so
+  "notice a new signing certificate, allow it" needs nothing downloaded or extracted.
+
+  A CERTIFICATE EXPIRY IS A ROTATION, AND A ROTATION BREAKS INDICATORS SILENTLY. Only leaf
+  certificates can be used in an indicator, so when a publisher renews, everything signed
+  afterwards carries a thumbprint no existing indicator matches - while the old indicator keeps
+  covering everything already signed, because timestamped Authenticode signatures outlive the
+  certificate. Old files keep working, new ones stop. `-ExpiringWithinDays` is how that is seen
+  coming; measured on one tenant it surfaced a vendor certificate 13 days from expiry and the
+  organisation's own signing certificate 17 days from expiry.
+
+  `New-MsecDefenderIndicator` RUNS AS THE SIGNED-IN USER and could not do otherwise: the
+  indicator API has no read-only permission, so even listing indicators needs `Ti.ReadWrite` -
+  the same scope that creates and deletes them. Granting that to the msec app would let a
+  certificate in Key Vault allow-list arbitrary publishers across every onboarded device, which
+  is the ability to disable blocking for malware of someone's choosing. It takes a delegated
+  token from the Az context instead, and the app keeps its read-only property.
+
+  A malformed thumbprint is rejected before the call, because the API accepts one without
+  complaint and the indicator then matches nothing - indistinguishable from a working indicator
+  the product is ignoring. `-Description` is mandatory although the API treats it as optional:
+  an allow indicator with no recorded reason is indistinguishable from a mistake six months
+  later. `ConfirmImpact` is High and an existing identical indicator is reported rather than
+  duplicated.
+
+- `Get-MsecIntuneAsrRule` - every Attack Surface Reduction rule, the mode it is set to, which
+  policy sets it, who that policy reaches, and the rules no policy configures at all.
+
+  THE UNCONFIGURED RULES ARE THE POINT AND THEY ARE INVISIBLE IN THE PORTAL. A policy blade
+  shows the rules that policy sets; a rule set by no policy appears nowhere, so the gap can only
+  be found by diffing against the full catalogue by hand. Measured on one tenant: two baselines
+  of 16 rules each, with 'Block rebooting machine in Safe Mode' and 'Block Webshell creation for
+  Servers' in neither.
+
+  The catalogue is read from the Graph setting definitions rather than hardcoded, so a rule
+  Microsoft adds appears the day it ships instead of being silently absent. Only the GUIDs are
+  local, and a rule with no GUID mapping is still emitted with `RuleId` `$null`.
+
+  `Mode` is `$null` for an unconfigured rule and `'off'` for one explicitly disabled - different
+  states, because an explicit off wins a policy conflict and an absent rule does not.
+
+  TWO MODES IS NOT AUTOMATICALLY A CONFLICT. The commonest deliberate ASR design is a rule in
+  audit for one group and block for everyone else, with the policies excluding each other's
+  groups; on the tenant this was built against, the only rule set to two modes was exactly that.
+  `ModesDiffer` is the fact and `Conflicting` the judgement - true only where the policies do not
+  carve each other out.
+
+  Two defects found against live data and covered by tests: Device Control policies share the
+  `endpointSecurityAttackSurfaceReduction` template family, and their settings sliced at the ASR
+  prefix length produced rules named `uleid}_ruledata`; and `exclusionGroupAssignmentTarget` also
+  matches the wildcard `*groupAssignmentTarget` while PowerShell's `switch` runs every matching
+  branch, so carve-out groups landed in the included list and "everyone except developers" read
+  as "everyone".
+
+  ASR set through the older intents API, classic endpoint protection profiles, Group Policy or
+  local PowerShell is not read; where the first two exist a warning names them, because an
+  unqualified `Configured = $false` would claim a completeness the command cannot deliver.
+
+  PER-RULE EXCLUSIONS ARE NESTED UNDER THE RULE, NOT BESIDE IT. The setting id reads
+  `<rule>_perruleexclusions`, which suggests a sibling; Intune actually hangs the list off the
+  rule's own `choiceSettingValue`, one level deeper. The first version indexed at the wrong
+  depth and reported no exclusions on a policy that had one - and the test fixture encoded the
+  same wrong assumption, so it passed. Found only when a live Git exclusion was added and did
+  not appear. The rule's subtree is now walked rather than indexed, a sibling is still accepted
+  in case the shape varies elsewhere, and a test asserts one rule is never handed its
+  neighbour's exclusions.
+
+  Fixing it surfaced a pre-existing fleet-wide exclusion of `msiexec.exe` from the LSASS
+  credential-theft rule - a standard-protection rule - which had been invisible.
+
+- `Get-MsecIntuneAuditEvent` - the Intune audit log: who changed which policy, when, and the
+  before/after value of every setting that moved.
+
+  This is a DIFFERENT STORE from the Entra directory audit log, with a different and much
+  longer retention. Entra keeps 30 days on P1/P2 and 7 on the free tier, which is the ceiling
+  `Get-MsecEntraDisabledUser` is built around; a policy change long gone from there is usually
+  still here. Nothing in the endpoint path hints at the distinction - both are "the audit log"
+  in conversation, and reaching for the wrong one returns an empty result rather than an error.
+
+  THE PERMISSION IS THE LEAST GUESSABLE IN THE MODULE: `/deviceManagement/auditEvents` is gated
+  by `DeviceManagementApps.Read.All`, the Intune APPS scope. It is not covered by
+  `DeviceManagementConfiguration.Read.All` - which reads the very policies whose changes are
+  logged here - nor by `DeviceManagementManagedDevices.Read.All`, nor by `AuditLog.Read.All`.
+  Added to `New-MsecApp`, so an app created before this must re-run it and re-consent. The 403
+  is rewritten to say all of that rather than returning Graph's bare status line.
+
+  `ChangedProperties` is the reason the command exists: an audit event names the policy that was
+  touched, but only the modified properties say what moved, as `Setting: old -> new`. That is
+  what tells an ASR rule going from Audit to Block apart from someone renaming the policy.
+
+  An empty result WARNS rather than returning silence: "nothing changed" and "the window does
+  not reach back that far" are the same empty array, and the second is the answer that matters
+  when dating a change somebody rolled back. `-Days` sets what is asked for, never what is
+  available - the verbose stream reports the oldest event that actually came back, because
+  Microsoft does not document the retention and guessing it in a module anyone can run against
+  any tenant would be inventing a number.
+
+  `-Category` uses an ArgumentCompleter rather than a ValidateSet: the category set is not
+  documented and differs between tenants, so a ValidateSet would reject real values.
+- Three bundled queries for the Application Insights estate: where telemetry lands, and whether
+  it holds things it should not.
+
+  `Search-MsecAzureResourceGraph -ResourceType ApplicationInsights` maps every component to the
+  Log Analytics workspace it writes into. A component is a front door, not a store - since the
+  workspace-based model the telemetry lives in a workspace - so "what is in our telemetry" can
+  only be asked once you know which workspace to ask. Measured on one estate: 703 components
+  across 66 workspaces, 44 of them auto-created `managed-*` or `DefaultWorkspace-*` rather than
+  chosen.
+
+  `Search-MsecLogAnalytics -Subject AppInsights -Name Secrets` and `-Name PersonalData` scan the
+  free-text columns of the App* and AppService* tables.
+
+  THEY REPORT WHERE A SECRET IS, NEVER WHAT IT IS. A query returning the matching line would
+  move every secret it found into a console scrollback, an exported CSV, a ticket and a chat
+  transcript - multiplying the exposure it was run to measure. Only the SHAPE is projected: six
+  characters, which are the pattern's own literal prefix (`eyJhbG` is the base64 of every JWT
+  header), plus a length. `DistinctValues` separates one secret logged a thousand times from a
+  thousand secrets.
+
+  PERSONAL DATA IS REDACTED HARDER, because six characters of an email address identifies
+  somebody where six characters of a token does not: emails keep only their domain - enough to
+  tell staff addresses from participants' - and everything else keeps only a length.
+
+  ONE UNION BRANCH PER COLUMN. The first version concatenated CsUriQuery and Cookie into one
+  haystack and labelled every hit `CsUriQuery`. Every JWT it found was in the Cookie header - an
+  ordinary place for a session token - and the report said they were in URLs, which is a far
+  more serious and completely different finding. Measured after the fix: 13,566 in Cookie across
+  19 apps, 61 in Url across 4. A Column value that is not the column the match came from is
+  worse than no Column value at all.
+
+  WORD BOUNDARIES ON PREFIXED-TOKEN PATTERNS. Without `\b`, `AKIA` and `eyJ` match INSIDE
+  base64, and ASP.NET data-protection cookies carry those sequences as ordinary substrings. An
+  exploratory scan without them reported 302 "GitHub tokens" and 222 "npm tokens" that were all
+  auth cookies.
+  `extract()` CANNOT TAKE A COMPUTED PATTERN. Selecting a regex with `case()` fails at parse
+  time with SEM0040, so each pattern is extracted with its own constant regex and the first
+  non-empty match wins.
+
+  NO TIME FILTER IN THE FILES. The repo already had a test failing any `kql/Law` query that
+  contains `ago()`, and the first draft of these tripped it: a window baked into a file
+  intersects silently with the one the caller asked for, so `-Days 30` would have quietly
+  returned one day. Verified after the fix - one day returns 1,664 occurrences and three days
+  5,453.
+
+  The IBAN pattern was tightened to real issuing-country prefixes after the unrestricted form -
+  any two letters then two digits - matched base64 and GUID fragments in URL query strings on
+  every hit. All ten matches it produced were false positives.
+
 - `Get-MsecSentinelRule` - Sentinel analytics rules with their tuning state, and the id that
   joins them to the alerts they produced.
 

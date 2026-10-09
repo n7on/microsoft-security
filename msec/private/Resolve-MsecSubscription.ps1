@@ -46,7 +46,17 @@ function Resolve-MsecSubscription {
                    "Pass one of these ids instead: $ids")
         }
 
+        # NAME THE TENANT. Get-MsecSubscriptionList only enumerates the ACTIVE tenant, so the
+        # usual reason a subscription is "not found" is that the context moved to a different
+        # tenant - not a typo. Listing what is available without saying where it was looked for
+        # sends the reader to check a spelling that was already right.
         $available = (($all | ForEach-Object { $_.Name }) | Sort-Object -Unique) -join ', '
-        throw "Subscription '$item' not found. Available: $available"
+        $context = Get-AzContext -ErrorAction SilentlyContinue
+        $where = if ($context) {
+            " in tenant $($context.Tenant.Id) (signed in as $($context.Account.Id))"
+        } else { '' }
+        throw ("Subscription '$item' not found$where. Available there: $available. " +
+               'Subscriptions are per-tenant, so one that exists in another tenant will not ' +
+               'appear here - Select-MsecAzureContext switches tenant as well as subscription.')
     }
 }

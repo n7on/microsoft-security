@@ -31,8 +31,10 @@ function Connect-MsecAdmin {
         another is the kind of mistake that is obvious afterwards and invisible at the time.
 
     .PARAMETER Scope
-        Delegated scopes to request. Defaults to resolving alerts and incidents. Ask for the
-        narrowest set that covers what you intend to do in this session.
+        Delegated scopes to request. DEFAULTS TO EVERY SCOPE THE MODULE'S WRITE COMMANDS NEED,
+        so a bare Connect-MsecAdmin makes all of them work and nobody has to know which consent
+        belongs to which command. Pass it explicitly for a least-privilege session covering only
+        what you intend to do.
 
     .PARAMETER TenantId
         Tenant to sign in to. Defaults to the tenant Connect-Msec is using, which is almost
@@ -62,7 +64,23 @@ function Connect-MsecAdmin {
     [CmdletBinding()]
     [OutputType([PSCustomObject])]
     param(
-        [string[]] $Scope = @('SecurityIncident.ReadWrite.All', 'SecurityAlert.ReadWrite.All'),
+        # THE DEFAULT IS EVERY SCOPE THE MODULE'S WRITE COMMANDS NEED, so one connection makes
+        # all of them work. The alternative - defaulting to a subset - means knowing which scope
+        # a given command wants before you can run it, and discovering you guessed wrong only
+        # when the write fails. Nobody should have to remember that resolving an incident and
+        # creating a detection rule are different consents.
+        #
+        # ADDING A WRITE COMMAND MEANS ADDING ITS SCOPE HERE. Pass -Scope explicitly for a
+        # least-privilege session covering only what you intend to do.
+        #
+        #   SecurityAlert.ReadWrite.All      Set-MsecDefenderAlert
+        #   SecurityIncident.ReadWrite.All   Set-MsecDefenderIncident
+        #   CustomDetection.ReadWrite.All    New-MsecDefenderDetectionRule
+        [string[]] $Scope = @(
+            'SecurityIncident.ReadWrite.All'
+            'SecurityAlert.ReadWrite.All'
+            'CustomDetection.ReadWrite.All'
+        ),
 
         [string] $TenantId,
 

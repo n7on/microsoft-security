@@ -733,8 +733,14 @@ Describe 'Bundled KQL files' {
     # Resource Graph accepts `let` for scalars only - a tabular `let` (the natural way to
     # name a lookup subquery) fails server-side with ParserFailure, which you only find out
     # by running it against a real tenant. Inline such lookups into join()/union() instead.
+    #
+    # SCOPED TO kql/Graph, BECAUSE THE LIMITATION IS RESOURCE GRAPH'S ALONE. This check used to
+    # walk the whole kql tree and so banned a construct that Log Analytics and Defender advanced
+    # hunting both support perfectly well - verified against a live workspace, where a Law query
+    # using two tabular lets returned 13,589 rows. A rule enforced where its reason does not
+    # apply stops being a safeguard and becomes folklore.
     It 'uses no tabular let statements, which Resource Graph cannot parse' {
-        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql'
+        $kqlRoot = Join-Path (Get-Module Msec).ModuleBase 'kql/Graph'
         $offenders = Get-ChildItem -LiteralPath $kqlRoot -Filter *.kql -File -Recurse |
             Where-Object {
                 # let <name> = <TableOrExpr> ... | ...  (pipe on the same or a later line)

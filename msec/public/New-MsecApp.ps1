@@ -30,7 +30,8 @@ function New-MsecApp {
         Current required permissions (configured at the top of the function in $resources):
           - Microsoft Graph: SecurityEvents.Read.All, DeviceManagementConfiguration.Read.All,
                              DeviceManagementManagedDevices.Read.All, DeviceManagementScripts.Read.All,
-                             ThreatHunting.Read.All,
+                             DeviceManagementApps.Read.All, ThreatHunting.Read.All,
+                             CustomDetection.Read.All,
                              SecurityIncident.Read.All, Policy.Read.All, AuditLog.Read.All,
                              Organization.Read.All, RoleManagement.Read.Directory,
                              User.Read.All, Group.Read.All, Application.Read.All,
@@ -216,7 +217,20 @@ function New-MsecApp {
                 # the configuration policies, but DeviceManagementConfiguration.Read.All does
                 # not cover them and they 403 without this (Get-MsecIntuneScriptResult).
                 'DeviceManagementScripts.Read.All',
+                # The Intune AUDIT LOG is gated by the Apps scope, which is the least guessable
+                # mapping in this list: /deviceManagement/auditEvents is NOT covered by
+                # DeviceManagementConfiguration.Read.All, NOT by
+                # DeviceManagementManagedDevices.Read.All, and NOT by AuditLog.Read.All - that
+                # last one is Entra's audit log, a different store with a different retention.
+                # Without this the endpoint returns a bare 403 (Get-MsecIntuneAuditEvent).
+                'DeviceManagementApps.Read.All',
                 'ThreatHunting.Read.All',                 # Advanced hunting / EmailEvents (Get-MsecDefenderEmailStats)
+                # RUNNING a hunting query and SEEING the scheduled detections built on it are
+                # separate grants. ThreatHunting.Read.All covers the first only, so without this
+                # the module can execute any query it likes and cannot answer "do we detect
+                # that?" - which is how an autoDisabled rule stays invisible
+                # (Get-MsecDefenderDetectionRule).
+                'CustomDetection.Read.All',
                 'SecurityIncident.Read.All',              # Defender XDR incidents (Get-MsecDefenderIncidentStats)
                 'Policy.Read.All',                        # CA policies + tenant security settings (Get-MsecEntraConditionalAccessPolicy, Get-MsecEntraTenantSecuritySetting)
                 'AuditLog.Read.All',                      # Sign-in logs + MFA registration report (Get-MsecEntraConditionalAccessSignInLog, Get-MsecEntraMfaRegistration) - both also need Entra ID P1/P2 on the tenant
@@ -511,6 +525,14 @@ function New-MsecApp {
     # from the outside, from having done nothing at all.
     $grantedNow     = [System.Collections.Generic.List[string]]::new()
     $alreadyGranted = [System.Collections.Generic.List[string]]::new()
+    # FAILED GRANTS ARE TRACKED SEPARATELY AND REPORTED LOUDLY. This list used not to exist:
+    # a grant that was refused printed a raw REST error, execution carried on, and the label
+    # was added to $grantedNow anyway - so the summary said "5 granted now" for five
+    # permissions that were never assigned. Measured on one tenant: the command reported 19
+    # permissions in place while the service principal carried 14. Reporting a permission as
+    # granted when it is not is worse than failing outright, because every later 403 then
+    # looks like a different problem.
+    $failedGrants   = [System.Collections.Generic.List[string]]::new()
 
     foreach ($r in $resources) {
         foreach ($role in $r.Roles) {
@@ -522,18 +544,38 @@ function New-MsecApp {
                 continue
             }
             Write-Verbose "Granting admin consent: $label"
-            & $graph POST "/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments" @{
-                principalId = $appSp.id
-                resourceId  = $r.ResourceSpId
-                appRoleId   = $role.Id
-            } | Out-Null
-            $grantedNow.Add($label)
+            try {
+                & $graph POST "/v1.0/servicePrincipals/$($appSp.id)/appRoleAssignments" @{
+                    principalId = $appSp.id
+                    resourceId  = $r.ResourceSpId
+                    appRoleId   = $role.Id
+                } | Out-Null
+                $grantedNow.Add($label)
+            }
+            catch {
+                $reason = "$($_.Exception.Message)"
+                if ($_.ErrorDetails.Message) {
+                    $parsed = try { ($_.ErrorDetails.Message | ConvertFrom-Json).error.message } catch { $null }
+                    if ($parsed) { $reason = $parsed }
+                }
+                $failedGrants.Add("$label - $reason")
+            }
         }
     }
 
     # ---- 8. Say what happened ----------------------------------------------------------
-    Write-Host "Permissions: $($grantedNow.Count) granted now, $($alreadyGranted.Count) already present$(if ($missingRoles) { ", $(@($missingRoles).Count) unavailable in this cloud" })."
+    Write-Host "Permissions: $($grantedNow.Count) granted now, $($alreadyGranted.Count) already present$(if ($missingRoles) { ", $(@($missingRoles).Count) unavailable in this cloud" })$(if ($failedGrants.Count) { ", $($failedGrants.Count) REFUSED" })."
     foreach ($g in $grantedNow) { Write-Host "  + $g" }
+    foreach ($f in $failedGrants) { Write-Host "  x $f" -ForegroundColor Red }
+
+    if ($failedGrants.Count) {
+        Write-Warning ("$($failedGrants.Count) permission(s) were REFUSED and the app does NOT have them. " +
+            "Granting an application permission needs a directory role that can write app role assignments - " +
+            "Application Administrator, Cloud Application Administrator, Privileged Role Administrator or " +
+            "Global Administrator - and being able to READ the application is not the same thing. " +
+            "Every msec command depending on a refused permission will return 403 until this is re-run by " +
+            "someone who holds one of those roles.")
+    }
 
     if ($grantedNow.Count) {
         # The grant is immediate, but a token already issued does not carry it - consent
@@ -622,6 +664,7 @@ function New-MsecApp {
         # Returned as well as printed, so a caller can assert on them rather than scrape
         # the console - and so the tests can pin this behaviour.
         GrantedNow      = $grantedNow.ToArray()
+        FailedGrants    = $failedGrants.ToArray()
         AlreadyGranted  = $alreadyGranted.ToArray()
         UnavailableRoles = @($missingRoles)
         # Null unless -Workload included Exchange or Teams. Worth asserting on: it is the

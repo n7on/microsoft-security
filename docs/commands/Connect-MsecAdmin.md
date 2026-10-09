@@ -72,9 +72,11 @@ Connect-MsecAdmin -Scope SecurityAlert.ReadWrite.All
 
 ### -Scope
 Delegated scopes to request.
-Defaults to resolving alerts and incidents.
-Ask for the
-narrowest set that covers what you intend to do in this session.
+DEFAULTS TO EVERY SCOPE THE MODULE'S WRITE COMMANDS NEED,
+so a bare Connect-MsecAdmin makes all of them work and nobody has to know which consent
+belongs to which command.
+Pass it explicitly for a least-privilege session covering only
+what you intend to do.
 
 ```yaml
 Type: String[]
@@ -83,7 +85,11 @@ Aliases:
 
 Required: False
 Position: 1
-Default value: @('SecurityIncident.ReadWrite.All', 'SecurityAlert.ReadWrite.All')
+Default value: @(
+            'SecurityIncident.ReadWrite.All'
+            'SecurityAlert.ReadWrite.All'
+            'CustomDetection.ReadWrite.All'
+        )
 Accept pipeline input: False
 Accept wildcard characters: False
 ```

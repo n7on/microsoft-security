@@ -1,0 +1,81 @@
+// One row per Application Insights component, and the Log Analytics workspace its telemetry
+// lands in.
+//
+// Loaded by Search-MsecAzureResourceGraph -ResourceType ApplicationInsights.
+//
+// WHERE THE TELEMETRY GOES IS THE QUESTION. An Application Insights component is a front door,
+// not a store: since the workspace-based model it writes into a Log Analytics workspace, and
+// the component itself holds nothing. So "what is in our telemetry" is answered against the
+// WORKSPACE, and you cannot ask it until you know which workspace each component feeds.
+//
+//   # The whole estate, by where it lands:
+//   Search-MsecAzureResourceGraph -ResourceType ApplicationInsights |
+//       Group-Object WorkspaceName | Sort-Object Count -Descending
+//
+//   # Components whose workspace was auto-created rather than chosen:
+//   ... | Where-Object WorkspaceIsAutoCreated
+//
+//   # Then search one of those workspaces for what should not be in it:
+//   Search-MsecLogAnalytics -Subject AppInsights -Name Secrets -WorkspaceName <name>
+//
+// A COMPONENT WITH NO WORKSPACE IS NOT A COMPONENT WITH NO DATA. Classic (pre-workspace)
+// Application Insights kept telemetry in its own store, and Microsoft retired that model in
+// February 2024 - a component still showing no WorkspaceResourceId is either migrated-and-
+// unreported, disabled, or holding data nothing here can see. WorkspaceResourceId empty is
+// therefore reported as 'none' rather than silently blank, because it means "look at this",
+// not "nothing to see".
+//
+// INGESTION KEYS ARE DELIBERATELY NOT PROJECTED. Resource Graph does return
+// properties.InstrumentationKey and properties.ConnectionString on every component. They are
+// write credentials - anyone holding one can inject telemetry into your workspace - and msec
+// does not put credential values into output that gets cached, exported or pasted into a
+// ticket. DisableLocalAuth below says whether those keys alone are enough; the keys themselves
+// stay in Azure.
+//
+// NB: the subscription lookup is inlined rather than hoisted into a `let`. Resource Graph only
+// supports `let` for scalars, not for tabular expressions.
+
+Resources
+| where type =~ 'microsoft.insights/components'
+| extend WorkspaceId = tostring(properties.WorkspaceResourceId)
+| join kind=leftouter (
+    ResourceContainers
+    | where type =~ 'microsoft.resources/subscriptions'
+    | project subscriptionId, SubscriptionName = name
+  ) on subscriptionId
+| project Name              = name,
+          ResourceGroupName = resourceGroup,
+          SubscriptionName,
+          SubscriptionId    = subscriptionId,
+          Location          = location,
+          ApplicationType   = tostring(properties.Application_Type),
+          // LogAnalytics = workspace-based. Disabled = ingestion switched off, so the component
+          // exists and collects nothing. Anything else is a classic component.
+          IngestionMode     = tostring(properties.IngestionMode),
+          // 'none' rather than blank: see the note above.
+          WorkspaceName     = iff(isempty(WorkspaceId), 'none', tostring(split(WorkspaceId, '/')[-1])),
+          WorkspaceResourceGroup = iff(isempty(WorkspaceId), 'none', tostring(split(WorkspaceId, '/')[4])),
+          WorkspaceSubscriptionId = iff(isempty(WorkspaceId), 'none', tostring(split(WorkspaceId, '/')[2])),
+          // A workspace Azure created for this component rather than one somebody chose. These
+          // are per-component, so telemetry ends up scattered across many single-use workspaces
+          // that nobody is querying or retaining deliberately.
+          WorkspaceIsAutoCreated = iff(isempty(WorkspaceId), false,
+                                       tostring(split(WorkspaceId, '/')[-1]) startswith 'managed-'
+                                    or tostring(split(WorkspaceId, '/')[-1]) startswith 'DefaultWorkspace-'),
+          // Telemetry crossing a subscription boundary is worth seeing: it decides who can read
+          // it, and which subscription pays for it.
+          WorkspaceInOtherSubscription = iff(isempty(WorkspaceId), false,
+                                             tostring(split(WorkspaceId, '/')[2]) != subscriptionId),
+          // Null means NOT SET, which means local auth is allowed - the same as false. Reported
+          // as a three-state value rather than coerced, so "nobody configured this" stays
+          // distinguishable from "somebody considered it and left it on".
+          LocalAuthDisabled = properties.DisableLocalAuth,
+          RetentionDays     = toint(properties.RetentionInDays),
+          SamplingPercentage = toreal(properties.SamplingPercentage),
+          PublicIngestionAccess = iff(isempty(tostring(properties.publicNetworkAccessForIngestion)),
+                                      'Enabled', tostring(properties.publicNetworkAccessForIngestion)),
+          PublicQueryAccess     = iff(isempty(tostring(properties.publicNetworkAccessForQuery)),
+                                      'Enabled', tostring(properties.publicNetworkAccessForQuery)),
+          WorkspaceResourceId = iff(isempty(WorkspaceId), 'none', WorkspaceId),
+          Id = id
+| order by SubscriptionName asc, WorkspaceName asc, Name asc

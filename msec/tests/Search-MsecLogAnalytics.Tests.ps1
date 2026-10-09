@@ -173,9 +173,17 @@ Describe 'Kql/Law bundled queries' {
     It 'carries no time filter - the window belongs to -Days' {
         # -Days is passed to the API as a server-side timespan. A window baked into a file is
         # invisible at the call site and silently intersects with the one the caller asked for.
+        #
+        # WHAT COUNTS IS A COMPARISON AGAINST A FIXED POINT IN TIME - ago() or a datetime
+        # literal. Comparing TimeGenerated to ANOTHER COLUMN is not a window and must not be
+        # flagged: 'countif(TimeGenerated >= FirstAuth)' counts the requests a client made after
+        # it authenticated, which is per-row arithmetic the caller's -Days has no bearing on.
+        # Matching any '[<>]' after TimeGenerated banned that too, which is a false positive -
+        # and the cost of a test that over-matches is a correct query being rewritten to appease
+        # it.
         $offenders = Get-ChildItem -LiteralPath $script:LawRoot -Filter *.kql -File -Recurse | ForEach-Object {
             $code = ((Get-Content -LiteralPath $_.FullName) | Where-Object { $_ -notmatch '^\s*//' }) -join "`n"
-            if ($code -match 'TimeGenerated\s*[<>]' -or $code -match '\bago\s*\(') { $_.Name }
+            if ($code -match 'TimeGenerated\s*[<>]=?\s*(ago\s*\(|datetime\s*\()' -or $code -match '\bago\s*\(') { $_.Name }
         }
         $offenders | Should -BeNullOrEmpty
     }

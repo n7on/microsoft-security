@@ -280,14 +280,53 @@ Describe 'New-MsecApp' {
             # context stands for is a GRAPH reduction; a cloud with no Defender at all skips
             # that resource entirely rather than finding its roles missing.
             @($out.Result.GrantedNow).Count | Should -Be 5
-            # The twelve Graph roles that do not exist in this cloud are named rather than
+            # The fourteen Graph roles that do not exist in this cloud are named rather than
             # silently lost.
             # This count is deliberately literal: it has to be updated by hand whenever a
             # permission is added to $resources, which is the point - a role that vanishes
             # from the list should fail a test rather than quietly stop being requested.
-            @($out.Result.UnavailableRoles).Count | Should -Be 12
+            @($out.Result.UnavailableRoles).Count | Should -Be 14
             ($out.Warnings -join "`n") | Should -Match 'not available'
             ($out.Warnings -join "`n") | Should -Match 'Group\.Read\.All'
+        }
+    }
+
+    Context 'a grant the directory refuses' {
+
+        It 'reports a refused permission as refused, never as granted' {
+            # REGRESSION. A refused appRoleAssignment used to print a raw REST error, carry on,
+            # and add the label to GrantedNow anyway - so the summary claimed permissions the
+            # service principal did not have. Measured on one tenant: reported 19 in place while
+            # the SP carried 14, which turned every later 403 into a different-looking problem.
+            $out = InModuleScope Msec -Parameters @{ MockText = $script:MockText } {
+                param($MockText)
+                & ([scriptblock]::Create($MockText))
+
+                # Let everything through except the consent POST, which the directory refuses.
+                Mock Invoke-RestMethod -ParameterFilter {
+                    $Method -eq 'POST' -and "$Uri" -match 'appRoleAssignments'
+                } -MockWith {
+                    $e = [System.Management.Automation.ErrorRecord]::new(
+                        [System.Exception]::new('Response status code does not indicate success: 403 (Forbidden).'),
+                        'Denied', 'PermissionDenied', $null)
+                    throw $e
+                }
+
+                $w = @()
+                $r = New-MsecApp -KeyVaultName 'kv-test' -WarningVariable w -WarningAction SilentlyContinue 6>$null
+                [pscustomobject]@{ Result = $r; Warnings = "$($w -join ' ')" }
+            }
+
+            @($out.Result.FailedGrants).Count | Should -BeGreaterThan 0
+            # The decisive assertion: nothing refused may appear as granted.
+            foreach ($f in @($out.Result.FailedGrants)) {
+                $name = ($f -split ' - ')[0]
+                @($out.Result.GrantedNow) | Should -Not -Contain $name
+            }
+            $out.Warnings | Should -Match 'REFUSED'
+            # Names the roles that can actually write an app role assignment.
+            $out.Warnings | Should -Match 'Application Administrator'
+            $out.Warnings | Should -Match '403'
         }
     }
 
